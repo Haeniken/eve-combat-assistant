@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="164" height="314" viewBox="0 0 164 314">
+<defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#0d2636"/><stop offset="1" stop-color="#050d15"/></linearGradient></defs>
+<rect width="164" height="314" fill="url(#bg)"/>
+<g fill="#89dcef" opacity=".32"><circle cx="17" cy="25" r="1"/><circle cx="64" cy="92" r="0.5"/><circle cx="111" cy="159" r="0.5"/><circle cx="158" cy="226" r="0.5"/><circle cx="49" cy="293" r="1"/><circle cx="96" cy="60" r="0.5"/><circle cx="143" cy="127" r="0.5"/><circle cx="34" cy="194" r="0.5"/><circle cx="81" cy="261" r="1"/><circle cx="128" cy="28" r="0.5"/><circle cx="19" cy="95" r="0.5"/><circle cx="66" cy="162" r="0.5"/><circle cx="113" cy="229" r="1"/><circle cx="4" cy="296" r="0.5"/><circle cx="51" cy="63" r="0.5"/><circle cx="98" cy="130" r="0.5"/><circle cx="145" cy="197" r="1"/><circle cx="36" cy="264" r="0.5"/><circle cx="83" cy="31" r="0.5"/><circle cx="130" cy="98" r="0.5"/><circle cx="21" cy="165" r="1"/><circle cx="68" cy="232" r="0.5"/><circle cx="115" cy="299" r="0.5"/><circle cx="6" cy="66" r="0.5"/><circle cx="53" cy="133" r="1"/><circle cx="100" cy="200" r="0.5"/><circle cx="147" cy="267" r="0.5"/><circle cx="38" cy="34" r="0.5"/><circle cx="85" cy="101" r="1"/><circle cx="132" cy="168" r="0.5"/><circle cx="23" cy="235" r="0.5"/><circle cx="70" cy="302" r="0.5"/><circle cx="117" cy="69" r="1"/><circle cx="8" cy="136" r="0.5"/><circle cx="55" cy="203" r="0.5"/><circle cx="102" cy="270" r="0.5"/><circle cx="149" cy="37" r="1"/><circle cx="40" cy="104" r="0.5"/><circle cx="87" cy="171" r="0.5"/><circle cx="134" cy="238" r="0.5"/><circle cx="25" cy="305" r="1"/><circle cx="72" cy="72" r="0.5"/><circle cx="119" cy="139" r="0.5"/><circle cx="10" cy="206" r="0.5"/></g>
+<g fill="none" stroke="#28495c"><path d="M12 12H152V302H12Z"/><path d="M16 230H148 M16 235H70"/>
+<circle cx="82" cy="150" r="59"/><circle cx="82" cy="150" r="47" stroke-dasharray="2 8"/>
+<path d="M82 78V100 M82 200V222 M10 150H32 M132 150H154"/>
+</g>
+<path d="M14 31V14H37 M127 300H150V279" fill="none" stroke="#89dcef" stroke-width="2"/>
+<text x="24" y="42" font-family="DejaVu Sans" font-size="17" letter-spacing="2" fill="#d7e5ed">EVE</text>
+<text x="24" y="59" font-family="DejaVu Sans Mono" font-size="8" letter-spacing="1" fill="#89dcef">COMBAT ASSISTANT</text>
+<path d="M82 107L93 147L131 178L98 169L82 184L66 169L33 178L71 147Z" fill="#163748" stroke="#89dcef" stroke-width="1.2"/>
+<path d="M82 107V184 M71 147L82 162L93 147 M66 169L82 162L98 169" fill="none" stroke="#547d92"/>
+<circle cx="82" cy="150" r="3" fill="#d7e5ed"/>
+<text x="24" y="257" font-family="DejaVu Sans Mono" font-size="9" letter-spacing="1" fill="#89dcef">SOLO / PVP</text>
+<text x="24" y="276" font-family="DejaVu Sans Mono" font-size="6.5" letter-spacing=".6" fill="#7794a6">READY TO UNDOCK</text>
+<path d="M24 288H70 M75 288H85" stroke="#89dcef"/>
+</svg>

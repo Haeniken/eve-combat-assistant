@@ -1,0 +1,15 @@
+.venv/
+.tools/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+native/target/
+target/
+.prototype/
+build/
+dist/
+data/
+*.log
+
+installer/*.exe

@@ -1,0 +1,41 @@
+# EVE Combat Assistant
+
+Оверлей для соло-PvP в EVE Online. Сравнивает свой фит с популярными вариантами противника и подсказывает дистанцию, боеприпасы, тип урона, нейтрики и разницу в скорости.
+
+Общая статистика zKillboard хранится локально и обновляется вручную. Фит выбранного пилота загружается отдельно и появляется выше общих вариантов. Проценты считаются по подходящим потерям кораблей после фильтрации флотов.
+
+<img src="design/overlay-windows.png" width="280" alt="Оверлей"> <img src="design/settings-windows.png" width="470" alt="Настройки">
+
+## Установка
+
+Windows 10/11 x64. [Скачать установщик или portable-архив](https://github.com/Haeniken/eve-combat-assistant/releases/latest). Python, Rust и WSL для запуска не нужны.
+
+1. В шестерёнке открой **Мой корабль** и вставь EFT-фит из EVE/Pyfa.
+2. Выбери корпус противника и заранее загрузи статистику в разделе **Данные**.
+3. В **Экран** выдели панель Selected Item с ником и корпусом, затем включи OCR.
+
+Фон, непрозрачность окна и масштаб 75–175% настраиваются там же. Рекомендуется оконный режим игры или окно без рамок. `Демонстрация.cmd` показывает пример без сети.
+
+<details>
+<summary>Установщик</summary>
+
+<img src="design/installer-progress-windows.png" width="497" alt="Установка тактических систем">
+
+</details>
+
+Удаление доступно через «Установленные приложения». Настройки, кеш и базу можно удалить отдельным флажком. Приложение не создаёт служб и заданий планировщика; фоновые потоки завершаются вместе с ним.
+
+## Разработка
+
+Rust, egui/eframe, SQLite и встроенный EVEShipFit dogma-engine. Один процесс, три рабочих потока. Данные приложения: `%LOCALAPPDATA%\EVECombatAssistant`.
+
+```sh
+cargo build --release --locked
+cargo fmt -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+```
+
+Для сборки Windows нужны Rust 1.99.1, C++ Build Tools и NSIS 3. Скрипты: `build_windows.ps1` → `package_windows.ps1` → `build_installer.ps1` в папке `scripts/`.
+
+[Архитектура](docs/architecture.md) · [Подробная инструкция и ограничения модели](docs/usage.md) · [Лицензии](THIRD_PARTY_NOTICES.md)

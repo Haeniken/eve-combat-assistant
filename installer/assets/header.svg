@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="57" viewBox="0 0 150 57">
+<rect width="150" height="57" fill="#09131d"/>
+<path d="M5 10V5H25 M125 5H145V25 M145 42V52H125 M25 52H5V37" fill="none" stroke="#89dcef"/>
+<circle cx="115" cy="28" r="15" fill="none" stroke="#2b4859"/><circle cx="115" cy="28" r="7" fill="none" stroke="#89dcef"/>
+<path d="M91 28H103 M127 28H139 M115 4V16 M115 40V52" stroke="#89dcef"/>
+<text x="16" y="30" font-family="DejaVu Sans" font-size="20" fill="#d7e5ed">ECA</text>
+<text x="17" y="43" font-family="DejaVu Sans Mono" font-size="6" letter-spacing="1" fill="#7794a6">TACTICAL / PVP</text>
+</svg>

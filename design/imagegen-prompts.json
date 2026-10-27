@@ -1,0 +1,9 @@
+{
+  "mode": "built-in image_gen; generate then edit",
+  "output": "overlay-concept.png",
+  "prompt_summary": [
+    "Generate a high fidelity desktop UI concept for an EVE Online tactical overlay. Dark graphite translucent panels, thin cyan technical borders and typography, restrained amber alerts, futuristic industrial HUD. An EVE-like space scene behind the overlay; Russian labels. Selected Rifter, pilot Haeniken, preferred range 12–16 km, popular solo fit cards with illustrative percentages 42/28/16, damage, ammunition, neuts, speed and four resistance bars. No dates or reconstruction labels.",
+    "Edit the concept to move every setting out of the combat HUD. Keep a small gear icon at its top. Place settings in a separate floating window on the left with independent background opacity, overall opacity and UI scale sliders. Keep the spacecraft scene and tactical HUD on the right."
+  ],
+  "note": "Summaries of the generation/edit instructions; illustrative concept values are not live game statistics. Actual application screenshots are overlay-windows.png and settings-windows.png."
+}

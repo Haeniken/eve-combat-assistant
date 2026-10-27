@@ -1,0 +1,13 @@
+* text=auto
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.dat binary
+*.gz binary
+*.png binary
+*.bmp binary
+*.ico binary
+native/vendor/** -text
+third_party/licenses/** -text
