@@ -2,5 +2,10 @@
   "tag": "v8.1.0",
   "commit": "0fc93335555de8e091ef408c45ddb723143d4cfd",
   "sde_package": "1.3503375.2",
-  "sde_build": "3503375"
+  "sde_build": "3503375",
+  "local_patches": [
+    "Bounded EFT quantities and header validation; slot indexes continue across sections",
+    "Character implant and booster items participate in dogma locations and effects",
+    "Booster side effects are opt-in by dogma effect ID"
+  ]
 }

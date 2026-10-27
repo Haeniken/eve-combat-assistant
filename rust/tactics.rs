@@ -19,7 +19,7 @@ fn vector(v: &Value) -> [f64; 4] {
 fn sum(v: &[f64; 4]) -> f64 {
     v.iter().sum()
 }
-pub fn compatible(module: &Value, charge: &Value) -> bool {
+pub fn accepts_charge(module: &Value, charge: &Value) -> bool {
     let a = &module["attributes"];
     let ca = &charge["attributes"];
     let group = id(charge, "group") as f64;
@@ -31,9 +31,12 @@ pub fn compatible(module: &Value, charge: &Value) -> bool {
             })
         })
         .unwrap_or(false);
-    groups
+    charge["category"] == 8
+        && groups
         && (n(a, "chargeSize") == 0. || n(a, "chargeSize") == n(ca, "chargeSize"))
-        && sum(&vector(charge)) > 0.
+}
+pub fn compatible(module: &Value, charge: &Value) -> bool {
+    accepts_charge(module, charge) && sum(&vector(charge)) > 0.
 }
 pub fn fill_charges(fit: &Value, catalog: &Catalog) -> Value {
     let mut fit = fit.clone();
@@ -345,14 +348,7 @@ pub fn advise(
 ) -> Result<Advice, String> {
     let mut own_profile = Profile::new(own);
     let mut enemy_profile = Profile::new(enemy);
-    for (profile, skills, level) in [
-        (
-            &mut own_profile,
-            settings.skills.clone(),
-            settings.skill_level,
-        ),
-        (&mut enemy_profile, None, 5),
-    ] {
+    for (profile, own_pilot) in [(&mut own_profile, true), (&mut enemy_profile, false)] {
         if profile.mwd {
             let mut fit = profile.result["fit"].clone();
             for module in fit["modules"].as_array_mut().unwrap() {
@@ -364,10 +360,11 @@ pub fn advise(
                     module["state"] = json!("Online");
                 }
             }
-            let mut request = json!({"fit":fit,"skill_level":level});
-            if let Some(skills) = skills {
-                request["skills"] = skills;
-            }
+            let request = if own_pilot {
+                settings.own_request(fit, false)
+            } else {
+                json!({"fit":fit,"skill_level":5})
+            };
             let disabled = engine.evaluate(request)?;
             profile.base_speed = n(&disabled["hull"]["attributes"], "maxVelocity");
             profile.base_signature = n(&disabled["hull"]["attributes"], "signatureRadius");
@@ -408,10 +405,7 @@ pub fn advise(
             }
         }
         if changed {
-            let mut request = json!({"fit":fit,"skill_level":settings.skill_level});
-            if let Some(skills) = &settings.skills {
-                request["skills"] = skills.clone();
-            }
+            let request = settings.own_request(fit, false);
             let mut profile = Profile::new(&engine.evaluate(request)?);
             profile.base_speed = own_profile.base_speed;
             profile.base_signature = own_profile.base_signature;

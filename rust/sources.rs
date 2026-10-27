@@ -23,6 +23,49 @@ pub struct Sources {
     last: Instant,
 }
 impl Sources {
+    pub fn refresh_statistics(
+        &mut self,
+        ship: i32,
+        settings: &crate::model::Settings,
+        progress: &dyn Fn(String),
+    ) -> Result<usize, String> {
+        if settings.force_refresh {
+            self.store.invalidate_statistics_cache()?;
+        }
+        if settings.sync_scope == 2 {
+            let end = Utc::now().date_naive() - TimeDelta::days(1);
+            let start = if settings.days == 0 {
+                NaiveDate::from_ymd_opt(2003, 5, 1).unwrap()
+            } else {
+                end - TimeDelta::days(settings.days.saturating_sub(1) as i64)
+            };
+            if settings.force_refresh {
+                self.store.prepare_archive_refresh(
+                    &start.format("%Y%m%d").to_string(),
+                    &end.format("%Y%m%d").to_string(),
+                )?;
+            }
+            let count = self.archive(start, end, progress)?;
+            self.store
+                .set_meta("archive_refresh_pending", &Value::Null)?;
+            return Ok(count);
+        }
+        let mut ships = if settings.sync_scope == 1 {
+            self.store.global_ships()?
+        } else {
+            Vec::new()
+        };
+        if !ships.contains(&ship) {
+            ships.push(ship);
+        }
+        let mut count = 0;
+        for (index, hull) in ships.iter().enumerate() {
+            self.check()?;
+            let report = |text| progress(format!("Корпус {}/{} · {text}", index + 1, ships.len()));
+            count += self.sync_ship(*hull, settings.days, &report)?;
+        }
+        Ok(count)
+    }
     pub fn new(store: Store, cancel: Arc<AtomicBool>) -> Self {
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(25)))
@@ -53,7 +96,9 @@ impl Sources {
     pub fn request(&mut self, url: &str, body: Option<&Value>, ttl: i64) -> Result<Value, String> {
         self.check()?;
         let key = format!("{url}{}", body.map(Value::to_string).unwrap_or_default());
-        if let Some(v) = self.store.cached(&key) {
+        if ttl > 0
+            && let Some(v) = self.store.cached(&key)
+        {
             return Ok(v);
         }
         if url.contains("zkillboard.com/api/") {
@@ -249,8 +294,22 @@ impl Sources {
         }
         let mut date = start;
         let mut count = 0;
+        let totals = self.request("https://r2z2.zkillboard.com/history/totals.json", None, 0)?;
+        let totals = totals
+            .as_object()
+            .ok_or("Некорректный указатель дневного архива")?;
         while date <= end {
             let stamp = date.format("%Y%m%d");
+            self.check()?;
+            if totals
+                .get(&stamp.to_string())
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+                == 0
+            {
+                date += TimeDelta::days(1);
+                continue;
+            }
             if self.store.meta(&format!("archive:{stamp}")) == Some(json!(true)) {
                 date += TimeDelta::days(1);
                 continue;
@@ -259,7 +318,7 @@ impl Sources {
             let rows = self.request(
                 &format!("https://r2z2.zkillboard.com/history/raw/{stamp}.json"),
                 None,
-                86400,
+                0,
             )?;
             let rows: Vec<Value> = if rows.is_array() {
                 array(&rows).to_vec()

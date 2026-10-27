@@ -108,7 +108,7 @@ pub fn load_eft(info: &impl InfoName, eft: &str) -> Result<EftFit, String> {
     let eft_lines: Vec<&str> = eft.lines().collect();
 
     /* First line of an EFT always start with "[ship-type,name]". */
-    let header = eft_lines[0];
+    let header = eft_lines.first().ok_or("Пустой фит")?;
     if !header.starts_with("[") || !header.ends_with("]") {
         return Err("Invalid EFT header".to_string());
     }
@@ -116,7 +116,9 @@ pub fn load_eft(info: &impl InfoName, eft: &str) -> Result<EftFit, String> {
 
     let header = header.split(",").collect::<Vec<&str>>();
     let ship_type_name = header[0];
-    let name = header[1];
+    let name = header
+        .get(1)
+        .ok_or("В заголовке нужны корпус и название фита")?;
 
     let mut eft_fit = EftFit {
         name: name.to_string(),
@@ -124,9 +126,14 @@ pub fn load_eft(info: &impl InfoName, eft: &str) -> Result<EftFit, String> {
             ship_type_id: info.type_name_to_id(ship_type_name),
             modules: Vec::new(),
             drones: Vec::new(),
+            implants: Vec::new(),
+            boosters: Vec::new(),
+            booster_effects: Vec::new(),
         },
         cargo: Vec::new(),
     };
+
+    let mut module_slots: HashMap<data_types::EsfSlotType, i32> = HashMap::new();
 
     /* An EFT has sections, which are seperated by a new line. */
     for section in section_iter(eft_lines) {
@@ -135,8 +142,6 @@ pub fn load_eft(info: &impl InfoName, eft: &str) -> Result<EftFit, String> {
 
         match is_module_section {
             true => {
-                let mut module_slots: HashMap<data_types::EsfSlotType, i32> = HashMap::new();
-
                 for line in section {
                     let mut line = line.trim();
                     let mut state = data_types::EsfState::Active;

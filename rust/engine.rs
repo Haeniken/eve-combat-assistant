@@ -19,6 +19,12 @@ struct Request {
     #[serde(default = "five")]
     skill_level: i32,
     skills: Option<BTreeMap<i32, i32>>,
+    #[serde(default)]
+    implants: Vec<i32>,
+    #[serde(default)]
+    boosters: Vec<i32>,
+    #[serde(default)]
+    booster_effects: Vec<i32>,
 }
 fn five() -> i32 {
     5
@@ -61,9 +67,12 @@ fn type_json(sde: &sde::Sde, id: i32) -> Result<Value, String> {
         .flatten()
         .map(|a| a.effect_id())
         .collect();
+    let side_effects: Vec<_> = effects.iter().filter_map(|id| sde.get_dogma_effect(*id))
+        .filter(|effect| effect.fitting_usage_chance_attribute_id() > 0)
+        .map(|effect| json!({"id":effect.id(),"name":effect.display_name().unwrap_or(effect.name())})).collect();
     Ok(
         json!({"id": id, "name": t.name(), "category": t.category_id(), "group": t.group_id(),
-        "attributes": attrs, "effects": effects, "published": t.published()}),
+        "attributes": attrs, "effects": effects, "side_effects":side_effects, "published": t.published()}),
     )
 }
 
@@ -108,7 +117,7 @@ fn run(req: Request) -> Result<Value, String> {
     if req.op == "catalog" {
         let types: Vec<_> = sde
             .types()
-            .filter(|t| t.published() && [6, 7, 8, 16, 18, 32, 66].contains(&t.category_id()))
+            .filter(|t| t.published() && [6, 7, 8, 16, 18, 20, 32, 66].contains(&t.category_id()))
             .map(|t| type_json(sde, t.id()))
             .collect::<Result<_, _>>()?;
         return Ok(json!({"sde_build": sde.build_number(), "types": types}));
@@ -117,7 +126,8 @@ fn run(req: Request) -> Result<Value, String> {
         return Err("invalid skill level".into());
     }
     let name_info = sde::InfoNameSde::new(sde, Some(&data.names))?;
-    let (fit, cargo) = if let Some(raw) = req.raw_fit {
+    let (mut fit, cargo) = if let Some(raw) = req.raw_fit {
+        let raw = raw.trim().trim_start_matches('\u{feff}').trim();
         if raw.len() > 131072 || raw.lines().count() > 2048 {
             return Err("fit too large".into());
         }
@@ -150,6 +160,38 @@ fn run(req: Request) -> Result<Value, String> {
     } else {
         (req.fit.ok_or("fit required")?, Vec::new())
     };
+    fit.implants = req.implants;
+    fit.boosters = req.boosters;
+    fit.booster_effects = req.booster_effects;
+    let mut implant_slots = BTreeSet::new();
+    let mut booster_slots = BTreeSet::new();
+    for (types, attribute, slots) in [
+        (&fit.implants, "implantness", &mut implant_slots),
+        (&fit.boosters, "boosterness", &mut booster_slots),
+    ] {
+        for type_id in types {
+            let t = type_json(sde, *type_id)?;
+            let slot = crate::model::n(&t["attributes"], attribute) as i32;
+            if t["category"] != 20 || slot <= 0 || !slots.insert(slot) {
+                return Err(format!("Неверный или повторяющийся слот: {}", t["name"]));
+            }
+        }
+    }
+    // EFT перечисляет запас боеприпасов отдельно. Если заряд не указан у модуля,
+    // берём первый совместимый из трюма: сам импорт не должен давать нулевой DPS.
+    for module in &mut fit.modules {
+        if module.charge.is_none() {
+            let module_type = type_json(sde, module.type_id)?;
+            for item in &cargo {
+                let tid = crate::model::id(item, "type_id") as i32;
+                let charge_type = type_json(sde, tid)?;
+                if crate::tactics::accepts_charge(&module_type, &charge_type) {
+                    module.charge = Some(data_types::EsfCharge { type_id: tid });
+                    break;
+                }
+            }
+        }
+    }
     if fit.modules.len() > 64 || fit.drones.len() > 100 {
         return Err("fit too large".into());
     }
@@ -214,7 +256,8 @@ fn run(req: Request) -> Result<Value, String> {
         "modules": fit.modules.iter().map(|m| json!({"type_id":m.type_id,
             "slot":{"type":format!("{:?}",m.slot.r#type),"index":m.slot.index},
             "state":format!("{:?}",m.state), "charge":m.charge.as_ref().map(|c|json!({"type_id":c.type_id}))})).collect::<Vec<_>>(),
-        "drones":fit.drones.iter().map(|d|json!({"type_id":d.type_id,"state":format!("{:?}",d.state)})).collect::<Vec<_>>()});
+        "drones":fit.drones.iter().map(|d|json!({"type_id":d.type_id,"state":format!("{:?}",d.state)})).collect::<Vec<_>>(),
+        "implants":fit.implants,"boosters":fit.boosters,"booster_effects":fit.booster_effects});
     let info = sde::InfoSde::new(fit, skills, sde);
     let stats = calculate::calculate(&info);
     let modules = stats
@@ -245,12 +288,21 @@ impl Catalog {
         let mut raw = Vec::new();
         decoder.read_to_end(&mut raw).map_err(|e| e.to_string())?;
         let value: Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
-        let types: HashMap<i32, Value> = value["types"]
+        let mut types: HashMap<i32, Value> = value["types"]
             .as_array()
             .ok_or("bad catalog")?
             .iter()
             .map(|t| (t["id"].as_i64().unwrap_or(0) as i32, t.clone()))
             .collect();
+        // Импланты и бустеры берём из того же SDE, что использует расчётчик.
+        let data = static_data()?;
+        for t in data
+            .sde
+            .types()
+            .filter(|t| t.published() && t.category_id() == 20)
+        {
+            types.insert(t.id(), type_json(&data.sde, t.id())?);
+        }
         let names = types
             .iter()
             .map(|(id, t)| (t["name"].as_str().unwrap_or("").to_lowercase(), *id))
@@ -301,14 +353,6 @@ impl Engine {
         }
         let result = std::panic::catch_unwind(|| run(req))
             .unwrap_or_else(|_| Err("Не удалось рассчитать фит".into()))?;
-        if request.get("raw_fit").is_some() {
-            if result["summary"]["cpu"]["free"].as_f64().unwrap_or(0.) < -0.01 {
-                return Err("Фиту не хватает CPU при выбранных навыках".into());
-            }
-            if result["summary"]["power"]["free"].as_f64().unwrap_or(0.) < -0.01 {
-                return Err("Фиту не хватает мощности при выбранных навыках".into());
-            }
-        }
         if self.cache.len() > 256 {
             self.cache.clear();
         }

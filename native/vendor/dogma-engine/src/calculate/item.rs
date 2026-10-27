@@ -65,6 +65,8 @@ pub enum SlotType {
     SubSystem,
     Service,
     DroneBay,
+    Implant,
+    Booster,
     Charge,
     None,
 }
@@ -117,7 +119,10 @@ impl Slot {
 
     /* Drones are owned by the character, but not located in the ship. */
     pub fn is_in_ship(&self) -> bool {
-        !matches!(self.r#type, SlotType::DroneBay)
+        !matches!(
+            self.r#type,
+            SlotType::DroneBay | SlotType::Implant | SlotType::Booster
+        )
     }
 }
 

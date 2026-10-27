@@ -1,8 +1,10 @@
 //! Точка входа, CLI для диагностики и запуск Windows-оверлея.
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+mod account;
 mod app;
 mod engine;
+mod fit_plan;
 mod fits;
 mod model;
 mod ocr;
@@ -51,6 +53,12 @@ pub struct Args {
     ocr_test: Option<PathBuf>,
     #[arg(long, num_args = 4, allow_hyphen_values = true)]
     capture_test: Vec<i32>,
+    #[arg(long, num_args = 2)]
+    target_test: Vec<PathBuf>,
+    #[arg(long)]
+    open_settings: bool,
+    #[arg(long, default_value_t = 0)]
+    settings_tab: usize,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -63,6 +71,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     std::fs::create_dir_all(&directory)?;
+    if args.target_test.len() == 2 {
+        let selected = platform::ocr_image(&image::open(&args.target_test[0])?.to_rgba8(), "eng")?;
+        let cards = platform::ocr_document(&image::open(&args.target_test[1])?.to_rgba8(), "eng")?;
+        let target = ocr::selected_card(&selected, &cards, &engine::Catalog::load()?);
+        let value =
+            serde_json::json!({"target":target,"selected_text":selected,"cards_text":cards.text()});
+        std::fs::write(
+            directory.join("target-result.json"),
+            serde_json::to_vec_pretty(&value)?,
+        )?;
+        println!("{value}");
+        return Ok(());
+    }
     if !args.capture_test.is_empty() {
         let rect: [i32; 4] = args
             .capture_test

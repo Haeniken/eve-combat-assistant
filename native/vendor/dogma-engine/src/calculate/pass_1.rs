@@ -102,6 +102,20 @@ impl Pass for PassOne {
             ship.items.push(item);
         }
 
+        // Импланты и выбранные бустеры принадлежат персонажу, а не корабельным слотам.
+        for (types, booster) in [(&info.fit().implants, false), (&info.fit().boosters, true)] {
+            for type_id in types {
+                let mut item = Item::new_fake(*type_id);
+                item.slot.r#type = if booster {
+                    SlotType::Booster
+                } else {
+                    SlotType::Implant
+                };
+                item.set_attributes(info);
+                ship.items.push(item);
+            }
+        }
+
         for drone in &info.fit().drones {
             let state = match drone.state {
                 EsfState::Passive => EffectCategory::Passive,

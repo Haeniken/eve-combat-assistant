@@ -46,6 +46,12 @@ pub struct CombatApp {
     generation: u64,
     workers: Workers,
     rx: mpsc::Receiver<Message>,
+    tx: mpsc::Sender<Message>,
+    profile: crate::account::Profile,
+    fit_state: crate::settings_ui::FitState,
+    account_busy: bool,
+    fit_busy: bool,
+    account_cancel: Arc<std::sync::atomic::AtomicBool>,
     status: String,
     tab: usize,
     syncing: bool,
@@ -53,6 +59,7 @@ pub struct CombatApp {
     gate: Gate,
     details: Option<String>,
     selecting: bool,
+    selecting_targets: bool,
     selection_start: Option<egui::Pos2>,
     ship_texture: egui::TextureHandle,
     root_shot: bool,
@@ -124,7 +131,7 @@ impl CombatApp {
         cc.egui_ctx.set_global_style(style);
         cc.egui_ctx.set_zoom_factor(settings.scale / 100.);
         #[cfg(windows)]
-        let tray = crate::tray::Tray::new(tx, cc.egui_ctx.clone()).ok();
+        let tray = crate::tray::Tray::new(tx.clone(), cc.egui_ctx.clone()).ok();
         #[cfg(windows)]
         if tray.is_none() {
             settings.click_through = false;
@@ -150,10 +157,17 @@ impl CombatApp {
             ))
         });
         Self {
+            tab: args.settings_tab.min(6),
+            draft: args.open_settings.then(|| settings.clone()),
+            profile: crate::account::Profile::load(&directory),
+            fit_state: Default::default(),
+            account_busy: false,
+            fit_busy: false,
+            account_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            tx,
             args,
             directory,
             settings,
-            draft: None,
             catalog,
             target,
             matchup: None,
@@ -162,12 +176,12 @@ impl CombatApp {
             workers,
             rx,
             status: "Локальный анализ · zKillboard".into(),
-            tab: 0,
             syncing: false,
             ocr_epoch: 0,
             gate: Gate::default(),
             details: None,
             selecting: false,
+            selecting_targets: false,
             selection_start: None,
             ship_texture: texture,
             root_shot: false,
@@ -222,23 +236,28 @@ impl CombatApp {
     }
     fn open_settings(&mut self) {
         if self.draft.is_none() {
-            self.draft = Some(self.settings.clone());
+            let mut draft = self.settings.clone();
+            if let Some(target) = &self.target {
+                draft.ship = target.ship.clone();
+            }
+            self.draft = Some(draft);
             self.configure_ocr();
         }
     }
-    fn sync(&mut self) {
+    fn sync(&mut self, settings: Settings) {
         if self.syncing {
             return;
         }
         self.syncing = true;
-        let target = self.target.clone().unwrap_or(Target {
-            ship: self.settings.ship.clone(),
+        self.workers.cancel.store(false, Ordering::Relaxed);
+        let target = Target {
+            ship: settings.ship.clone(),
             pilot: String::new(),
             distance: None,
             angular: 0.,
-        });
+        };
         let _ = self.workers.network.send(NetworkRequest {
-            settings: self.settings.clone(),
+            settings,
             target,
             global: true,
         });
@@ -251,10 +270,7 @@ impl CombatApp {
             return Err("Выдели область экрана".into());
         }
         if !draft.own_fit.trim().is_empty() {
-            let mut request = json!({"raw_fit":draft.own_fit,"skill_level":draft.skill_level});
-            if let Some(skills) = &draft.skills {
-                request["skills"] = skills.clone();
-            }
+            let request = draft.own_request(json!(draft.own_fit), true);
             Engine::default().evaluate(request)?;
         }
         self.settings = draft;
@@ -276,6 +292,42 @@ impl CombatApp {
         let _ = ctx;
         while let Ok(message) = self.rx.try_recv() {
             match message {
+                Message::CharacterReady(result) => {
+                    self.account_busy = false;
+                    match result {
+                        Ok(profile) => {
+                            let settings = self.draft.as_mut().unwrap_or(&mut self.settings);
+                            settings.skills = Some(json!(profile.skills));
+                            settings.implants = profile.implants.clone();
+                            if let Some(fit) = &profile.current_fit {
+                                settings.own_fit = fit.clone();
+                            }
+                            self.status = format!(
+                                "{} · загружено навыков: {}",
+                                profile.name,
+                                profile.skills.len()
+                            );
+                            self.profile = profile;
+                            if self.draft.is_none() {
+                                if let Err(error) = self.settings.save(&self.directory) {
+                                    self.status = error;
+                                }
+                                self.recalculate();
+                            }
+                        }
+                        Err(error) => self.status = error,
+                    }
+                }
+                Message::FitReady(key, result) => {
+                    self.fit_busy = false;
+                    match result {
+                        Ok(plan) => {
+                            self.fit_state.plan = Some(plan);
+                            self.fit_state.plan_key = key;
+                        }
+                        Err(error) => self.status = error,
+                    }
+                }
                 Message::Analyzed(generation, result) => {
                     if generation == self.generation {
                         match result {
@@ -633,6 +685,10 @@ impl CombatApp {
                 status: &self.status,
                 syncing: self.syncing,
                 cancel_sync: &self.workers.cancel,
+                profile: &self.profile,
+                fit_state: &mut self.fit_state,
+                account_busy: self.account_busy,
+                fit_busy: self.fit_busy,
             }
             .show(ui, &mut draft);
             response.action = current.action.or(response.action);
@@ -661,12 +717,73 @@ impl CombatApp {
         }
         use crate::settings_ui::Action;
         match response.action {
-            Some(Action::Save) | Some(Action::Sync) => {
+            Some(Action::Login) | Some(Action::RefreshCharacter) => {
+                if !self.account_busy {
+                    self.account_busy = true;
+                    self.account_cancel.store(false, Ordering::Relaxed);
+                    let tx = self.tx.clone();
+                    let ctx = ctx.clone();
+                    let dir = self.directory.clone();
+                    let client = draft.sso_client_id.clone();
+                    let catalog = self.catalog.clone();
+                    let cancel = self.account_cancel.clone();
+                    let login = response.action == Some(Action::Login);
+                    std::thread::spawn(move || {
+                        platform::low_priority();
+                        let progress = |text| {
+                            let _ = tx.send(Message::Status(text));
+                            ctx.request_repaint();
+                        };
+                        let result = crate::account::synchronize(
+                            &dir, &client, login, &catalog, &cancel, &progress,
+                        );
+                        let _ = tx.send(Message::CharacterReady(result));
+                        ctx.request_repaint();
+                    });
+                }
+                self.draft = Some(draft);
+            }
+            Some(Action::Logout) => {
+                match crate::account::logout(&self.directory) {
+                    Ok(()) => {
+                        self.profile = Default::default();
+                        self.status = "Вход удалён с этого компьютера".into();
+                    }
+                    Err(error) => self.status = error,
+                }
+                self.draft = Some(draft);
+            }
+            Some(Action::CalculateFit) => {
+                if !self.fit_busy {
+                    self.fit_busy = true;
+                    let settings = draft.clone();
+                    let key = settings
+                        .own_request(json!(settings.own_fit), true)
+                        .to_string();
+                    let catalog = self.catalog.clone();
+                    let tx = self.tx.clone();
+                    let ctx = ctx.clone();
+                    std::thread::spawn(move || {
+                        platform::low_priority();
+                        let result = crate::fit_plan::calculate(&settings, &catalog);
+                        let _ = tx.send(Message::FitReady(key, result));
+                        ctx.request_repaint();
+                    });
+                }
+                self.draft = Some(draft);
+            }
+            Some(Action::Sync) => {
+                if self.catalog.ship_id(&draft.ship).is_some() {
+                    self.sync(draft.clone());
+                } else {
+                    self.status = "Выберите корпус цели".into();
+                }
+                self.draft = Some(draft);
+            }
+            Some(Action::Save) => {
                 if let Err(error) = self.apply(draft.clone()) {
                     self.status = error;
                     self.draft = Some(draft);
-                } else if response.action == Some(Action::Sync) {
-                    self.sync();
                 }
             }
             Some(Action::Cancel) => {
@@ -674,9 +791,10 @@ impl CombatApp {
                 ctx.set_zoom_factor(self.settings.scale / 100.);
                 self.configure_ocr();
             }
-            Some(Action::SelectRegion) => {
+            Some(Action::SelectRegion) | Some(Action::SelectTargetsRegion) => {
                 self.draft = Some(draft);
                 self.selecting = true;
+                self.selecting_targets = response.action == Some(Action::SelectTargetsRegion);
                 self.selection_start = None;
                 ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(false));
             }
@@ -704,7 +822,11 @@ impl CombatApp {
                 ui.painter().text(
                     rect.left_top() + Vec2::splat(30.),
                     egui::Align2::LEFT_TOP,
-                    "Выдели область выбранной цели · Esc — отмена",
+                    if self.selecting_targets {
+                        "Выделите ники и корпуса со звёздочкой на карточках целей · Esc — отмена"
+                    } else {
+                        "Выделите ник в правой панели текущего выбора · Esc — отмена"
+                    },
                     egui::FontId::proportional(20.),
                     CYAN,
                 );
@@ -748,7 +870,11 @@ impl CombatApp {
             if let Some(rect) = chosen
                 && let Some(draft) = &mut self.draft
             {
-                draft.region = Some(rect);
+                if self.selecting_targets {
+                    draft.targets_region = Some(rect);
+                } else {
+                    draft.region = Some(rect);
+                }
             }
             self.selecting = false;
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(true));
@@ -899,6 +1025,7 @@ impl eframe::App for CombatApp {
 }
 impl Drop for CombatApp {
     fn drop(&mut self) {
+        self.account_cancel.store(true, Ordering::Relaxed);
         self.workers.cancel.store(true, Ordering::Relaxed);
         let _ = self.settings.save(&self.directory);
     }
@@ -962,7 +1089,7 @@ pub fn cli(args: &Args, dir: &Path) -> Result<(), String> {
     let mut engine = Engine::default();
     let raw = std::fs::read_to_string(args.fit.as_ref().ok_or("Укажи --fit")?)
         .map_err(|e| e.to_string())?;
-    let own = engine.evaluate(json!({"raw_fit":raw,"skill_level":settings.skill_level}))?;
+    let own = engine.evaluate(settings.own_request(json!(raw), true))?;
     let mut variants = Vec::new();
     for v in pop.variants {
         let result = engine.evaluate(json!({"fit":tactics::fill_charges(&v.fit,&catalog)}));

@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::sde::eve;
 
 use super::attribute_ids::{ATTRIBUTE_CAPACITOR_NEED_ID, ATTRIBUTE_SKILLS};
-use super::item::{Attribute, Effect, EffectCategory, EffectOperator, Item, Object};
+use super::item::{Attribute, Effect, EffectCategory, EffectOperator, Item, Object, SlotType};
 use super::{Info, Pass, Ship};
 
 /** Categories of the effect source which are exempt of stacking penalty.
@@ -88,7 +88,11 @@ fn for_each_in_location(ship: &mut Ship, location: Object, mut apply: impl FnMut
         }
         Object::Char => {
             apply(&mut ship.char);
-            ship.skills.iter_mut().for_each(apply);
+            ship.skills.iter_mut().for_each(&mut apply);
+            ship.items
+                .iter_mut()
+                .filter(|item| matches!(item.slot.r#type, SlotType::Implant | SlotType::Booster))
+                .for_each(apply);
         }
         Object::Item(_) | Object::Charge(_) | Object::Skill(_) | Object::Target => {
             apply(ship.get_mut(location).unwrap())
@@ -173,6 +177,16 @@ impl Item {
             let Some(type_dogma_effect) = info.get_dogma_effect(dogma_effect.effect_id()) else {
                 continue;
             };
+            // Побочные эффекты наркотиков случайны: применяем только отмеченные игроком.
+            if self.category_id == 20
+                && type_dogma_effect.fitting_usage_chance_attribute_id() > 0
+                && !info
+                    .fit()
+                    .booster_effects
+                    .contains(&dogma_effect.effect_id())
+            {
+                continue;
+            }
             let category = get_effect_category(type_dogma_effect.effect_category());
 
             /* Find the highest state an item can be in. */

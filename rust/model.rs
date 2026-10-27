@@ -15,6 +15,12 @@ pub struct Settings {
     pub own_fit: String,
     pub skill_level: u8,
     pub skills: Option<Value>,
+    pub implants: Vec<i32>,
+    pub boosters: Vec<i32>,
+    pub booster_effects: Vec<i32>,
+    pub sso_client_id: String,
+    pub sync_scope: u8,
+    pub force_refresh: bool,
     pub ship: String,
     pub pilot: String,
     pub days: u32,
@@ -26,6 +32,7 @@ pub struct Settings {
     pub ocr: bool,
     pub ocr_interval: f64,
     pub region: Option<[i32; 4]>,
+    pub targets_region: Option<[i32; 4]>,
     pub excluded: Vec<String>,
     pub language: String,
     #[serde(alias = "auto_sync")]
@@ -44,6 +51,13 @@ impl Default for Settings {
             own_fit: String::new(),
             skill_level: 5,
             skills: None,
+            implants: Vec::new(),
+            boosters: Vec::new(),
+            booster_effects: Vec::new(),
+            // Client ID публичен; Client Secret для desktop PKCE не используется.
+            sso_client_id: "fdfad289b04d473195edc49717e9fc10".into(),
+            sync_scope: 0,
+            force_refresh: true,
             ship: "Rifter".into(),
             pilot: String::new(),
             days: 90,
@@ -55,6 +69,7 @@ impl Default for Settings {
             ocr: false,
             ocr_interval: 1.5,
             region: None,
+            targets_region: None,
             excluded: Vec::new(),
             language: "eng".into(),
             auto_pilot_lookup: true,
@@ -63,6 +78,16 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    /// Единый профиль собственного пилота для всех повторных расчётов и боеприпасов.
+    pub fn own_request(&self, fit: Value, raw: bool) -> Value {
+        let mut request = serde_json::json!({"skill_level":self.skill_level,
+            "implants":self.implants,"boosters":self.boosters,"booster_effects":self.booster_effects});
+        request[if raw { "raw_fit" } else { "fit" }] = fit;
+        if let Some(skills) = &self.skills {
+            request["skills"] = skills.clone();
+        }
+        request
+    }
     pub fn load(dir: &Path) -> Self {
         let mut s: Self = std::fs::read(dir.join("settings.json"))
             .ok()
@@ -75,6 +100,7 @@ impl Settings {
         s.max_variants = s.max_variants.clamp(1, 12);
         s.max_attackers = s.max_attackers.clamp(1, 5);
         s.skill_level = s.skill_level.min(5);
+        s.sync_scope = s.sync_scope.min(2);
         s
     }
     pub fn save(&self, dir: &Path) -> Result<(), String> {

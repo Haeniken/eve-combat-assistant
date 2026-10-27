@@ -48,4 +48,10 @@ pub struct EsfFit {
     pub ship_type_id: i32,
     pub modules: Vec<EsfModule>,
     pub drones: Vec<EsfDrone>,
+    #[serde(default)]
+    pub implants: Vec<i32>,
+    #[serde(default)]
+    pub boosters: Vec<i32>,
+    #[serde(default)]
+    pub booster_effects: Vec<i32>,
 }

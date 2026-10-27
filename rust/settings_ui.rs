@@ -18,7 +18,12 @@ pub enum Action {
     Save,
     Cancel,
     SelectRegion,
+    SelectTargetsRegion,
     Sync,
+    Login,
+    RefreshCharacter,
+    Logout,
+    CalculateFit,
 }
 
 #[derive(Default)]
@@ -33,11 +38,28 @@ pub struct Window<'a> {
     pub status: &'a str,
     pub syncing: bool,
     pub cancel_sync: &'a AtomicBool,
+    pub profile: &'a crate::account::Profile,
+    pub fit_state: &'a mut FitState,
+    pub account_busy: bool,
+    pub fit_busy: bool,
+}
+
+#[derive(Default)]
+pub struct FitState {
+    pub search: String,
+    pub plan: Option<crate::fit_plan::Plan>,
+    pub plan_key: String,
 }
 
 impl Window<'_> {
     pub fn show(&mut self, ui: &mut Ui, draft: &mut Settings) -> Response {
         let mut response = Response::default();
+        let save_shortcut = ui.ctx().input_mut(|input| {
+            input.consume_shortcut(&egui::KeyboardShortcut::new(
+                egui::Modifiers::CTRL,
+                egui::Key::Enter,
+            ))
+        });
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -47,10 +69,18 @@ impl Window<'_> {
             .show(ui, |ui| {
                 ui.label(RichText::new("НАСТРОЙКИ").size(22.).color(CYAN));
                 ui.add_space(8.);
-                ui.horizontal(|ui| {
-                    for (index, title) in ["Вид", "Мой корабль", "Цель", "Экран", "Данные"]
-                        .iter()
-                        .enumerate()
+                ui.horizontal_wrapped(|ui| {
+                    for (index, title) in [
+                        "Вид",
+                        "Мой корабль",
+                        "Цель",
+                        "Экран",
+                        "Данные",
+                        "Фит",
+                        "EVE SSO",
+                    ]
+                    .iter()
+                    .enumerate()
                     {
                         if ui.selectable_label(*self.tab == index, *title).clicked() {
                             *self.tab = index;
@@ -69,13 +99,22 @@ impl Window<'_> {
                         1 => response.error = own_fit(ui, draft),
                         2 => target(ui, draft, self.catalog),
                         3 => response.action = screen(ui, draft),
-                        _ => response.action = data(ui, draft, self.syncing, self.cancel_sync),
+                        4 => response.action = data(ui, draft, self.syncing, self.cancel_sync),
+                        5 => {
+                            response.action =
+                                fit_plan(ui, draft, self.catalog, self.fit_state, self.fit_busy)
+                        }
+                        _ => {
+                            response.action =
+                                account(ui, draft, self.profile, self.catalog, self.account_busy)
+                        }
                     });
                 ui.add_space(10.);
                 style::separator(ui);
                 ui.label(RichText::new(self.status).size(11.).color(MUTED));
                 ui.horizontal(|ui| {
-                    if ui.button("Сохранить").clicked() {
+                    if ui.button("Сохранить").on_hover_text("Ctrl+Enter").clicked() || save_shortcut
+                    {
                         response.action = Some(Action::Save);
                     }
                     if ui.button("Отмена").clicked() {
@@ -121,12 +160,25 @@ fn own_fit(ui: &mut Ui, draft: &mut Settings) -> Option<String> {
     );
     ui.add(
         egui::TextEdit::multiline(&mut draft.own_fit)
+            .id(egui::Id::unique("own_fit_editor"))
             .code_editor()
             .desired_width(f32::INFINITY)
             .desired_rows(13)
             .hint_text("[Tristan, Solo]\n…"),
     );
     ui.horizontal(|ui| {
+        if ui.button("Вставить из буфера").clicked() {
+            // Кнопка заменяет весь фит и сообщает об ошибке системного буфера.
+            // Она не зависит от положения курсора или раскладки клавиатуры.
+            match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
+                Ok(text) if !text.trim().is_empty() => draft.own_fit = text.replace("\r\n", "\n"),
+                Ok(_) => error = Some("В буфере обмена нет текста фита".into()),
+                Err(_) => {
+                    error =
+                        Some("Не удалось прочитать буфер обмена. Повторите копирование фита".into())
+                }
+            }
+        }
         if ui.button("Открыть EFT / TXT").clicked()
             && let Some(path) = platform::choose_file()
         {
@@ -207,7 +259,10 @@ fn screen(ui: &mut Ui, draft: &mut Settings) -> Option<Action> {
         ui,
         "Неизменившаяся область не отправляется на повторное OCR.",
     );
-    let select = ui.button("Выделить область экрана").clicked();
+    let mut action = ui
+        .button("Выделить панель текущего выбора — справа")
+        .clicked()
+        .then_some(Action::SelectRegion);
     if let Some(region) = &mut draft.region {
         ui.label("Координаты в пикселях");
         ui.horizontal(|ui| {
@@ -216,6 +271,25 @@ fn screen(ui: &mut Ui, draft: &mut Settings) -> Option<Action> {
                 ui.add(egui::DragValue::new(&mut region[index]).speed(1.));
             }
         });
+    }
+    style::separator(ui);
+    if ui
+        .button("Выделить карточки захваченных целей — слева")
+        .clicked()
+    {
+        action = Some(Action::SelectTargetsRegion);
+    }
+    if let Some(region) = &mut draft.targets_region {
+        ui.label("Область ников и корпусов со звёздочкой");
+        ui.horizontal(|ui| {
+            for (index, title) in ["X", "Y", "Ширина", "Высота"].iter().enumerate() {
+                ui.label(*title);
+                ui.add(egui::DragValue::new(&mut region[index]).speed(1.));
+            }
+        });
+        if ui.small_button("Отключить вторую область").clicked() {
+            draft.targets_region = None;
+        }
     }
     egui::ComboBox::from_id_salt("ocr_lang")
         .selected_text(if draft.language == "rus" {
@@ -229,9 +303,9 @@ fn screen(ui: &mut Ui, draft: &mut Settings) -> Option<Action> {
         });
     style::caption(
         ui,
-        "Выдели панель Selected Item: она обновляется при смене цели. Должны быть видны ник и тип корпуса.",
+        "Справа читается ник текущего выбора. Если корпус там не виден, выделите слева всю полосу ников и названий со звёздочкой, например Orca*. Позиции карточек могут меняться; изображения и анимированные кольца в область включать не нужно.",
     );
-    select.then_some(Action::SelectRegion)
+    action
 }
 
 fn data(
@@ -272,9 +346,30 @@ fn data(
         ui,
         "Общая статистика обновляется только вручную. Во время игры используется локальная база.",
     );
+    egui::ComboBox::from_id_salt("sync_scope")
+        .selected_text(match draft.sync_scope {
+            1 => "Все загруженные корпуса",
+            2 => "Все корпуса — дневной архив",
+            _ => "Выбранный корпус цели",
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut draft.sync_scope, 0, "Выбранный корпус цели");
+            ui.selectable_value(&mut draft.sync_scope, 1, "Все загруженные корпуса");
+            ui.selectable_value(&mut draft.sync_scope, 2, "Все корпуса — дневной архив");
+        });
+    ui.checkbox(
+        &mut draft.force_refresh,
+        "Принудительно обновить, обходя локальный кеш статистики",
+    );
+    if draft.sync_scope == 2 {
+        style::caption(
+            ui,
+            "Дневной архив загружает все корпуса за выбранный период, до вчерашнего дня. Большой период может занять много времени. Загрузку можно остановить и продолжить.",
+        );
+    }
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(!syncing, egui::Button::new("Обновить общую статистику"))
+            .add_enabled(!syncing, egui::Button::new("Обновить статистику сейчас"))
             .clicked()
         {
             action = Some(Action::Sync);
@@ -288,6 +383,268 @@ fn data(
         .clicked()
     {
         draft.excluded.clear();
+    }
+    action
+}
+
+fn account(
+    ui: &mut Ui,
+    draft: &mut Settings,
+    profile: &crate::account::Profile,
+    catalog: &Catalog,
+    busy: bool,
+) -> Option<Action> {
+    let mut action = None;
+    ui.label(RichText::new("ПЕРСОНАЖ").color(CYAN));
+    if profile.character_id > 0 {
+        ui.label(format!(
+            "{} · {} навыков",
+            profile.name,
+            profile.skills.len()
+        ));
+        ui.label(format!(
+            "Корабль: {}",
+            catalog.name(crate::model::id(&profile.ship, "ship_type_id") as i32)
+        ));
+    }
+    ui.label("Client ID приложения EVE SSO");
+    ui.text_edit_singleline(&mut draft.sso_client_id);
+    ui.collapsing("Как подключить", |ui| {
+        ui.hyperlink_to(
+            "Зарегистрировать приложение",
+            "https://developers.eveonline.com/applications",
+        );
+        ui.label("Тип: Authentication & API Access. Используется вход PKCE без Client Secret.");
+        ui.label("Callback URL:");
+        ui.monospace(crate::account::CALLBACK);
+        ui.label("Разрешения:");
+        ui.monospace(crate::account::SCOPES.replace(' ', "\n"));
+        style::caption(
+            ui,
+            "Скопируйте Client ID в поле выше. Пароль вводится только на сайте EVE.",
+        );
+    });
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add_enabled(!busy, egui::Button::new("Войти через EVE Online"))
+            .clicked()
+        {
+            action = Some(Action::Login);
+        }
+        if ui
+            .add_enabled(
+                !busy && profile.character_id > 0,
+                egui::Button::new("Обновить персонажа"),
+            )
+            .clicked()
+        {
+            action = Some(Action::RefreshCharacter);
+        }
+        if ui
+            .add_enabled(
+                !busy && profile.character_id > 0,
+                egui::Button::new("Выйти"),
+            )
+            .clicked()
+        {
+            action = Some(Action::Logout);
+        }
+    });
+    if busy {
+        ui.label("Ожидание EVE API…");
+    }
+    style::caption(
+        ui,
+        "Навыки и импланты загружаются по кнопке. Модули и карго текущего корабля читаются из assets с задержкой ESI; при отсутствии данных остаётся ручной EFT.",
+    );
+    if let Some(eft) = &profile.current_fit
+        && ui.button("Взять фит текущего корабля из ESI").clicked()
+    {
+        draft.own_fit = eft.clone();
+    }
+    if !profile.fittings.is_empty() {
+        ui.collapsing("Сохранённые фиты EVE", |ui| {
+            for fit in &profile.fittings {
+                if ui.button(crate::model::s(fit, "name")).clicked() {
+                    match crate::account::items_to_eft(
+                        crate::model::id(fit, "ship_type_id") as i32,
+                        crate::model::s(fit, "name"),
+                        array(&fit["items"]),
+                        catalog,
+                    ) {
+                        Ok(text) => draft.own_fit = text,
+                        Err(error) => {
+                            ui.label(error);
+                        }
+                    }
+                }
+            }
+        });
+    }
+    for warning in &profile.warnings {
+        ui.label(RichText::new(warning).color(AMBER));
+    }
+    action
+}
+
+fn fit_plan(
+    ui: &mut Ui,
+    draft: &mut Settings,
+    catalog: &Catalog,
+    state: &mut FitState,
+    busy: bool,
+) -> Option<Action> {
+    let mut action = None;
+    style::caption(
+        ui,
+        "Импланты установлены в клоне; запасные импланты можно добавить в план. Бустер учитывается в расчёте только после выбора.",
+    );
+    for booster in [false, true] {
+        ui.label(
+            RichText::new(if booster {
+                "ВЫБРАННЫЕ БУСТЕРЫ"
+            } else {
+                "ИМПЛАНТЫ"
+            })
+            .color(CYAN),
+        );
+        let types = if booster {
+            &mut draft.boosters
+        } else {
+            &mut draft.implants
+        };
+        let mut remove = None;
+        for tid in types.iter() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!(
+                    "{} · слот {}",
+                    catalog.name(*tid),
+                    crate::fit_plan::slot(catalog, *tid, booster)
+                ));
+                if ui.small_button("×").clicked() {
+                    remove = Some(*tid);
+                }
+            });
+        }
+        if let Some(tid) = remove {
+            types.retain(|id| *id != tid);
+        }
+        if types.is_empty() {
+            style::caption(ui, "Не выбраны");
+        }
+    }
+    for tid in &draft.boosters {
+        for effect in array(&catalog.get(*tid)["side_effects"]) {
+            let eid = crate::model::id(effect, "id") as i32;
+            let mut enabled = draft.booster_effects.contains(&eid);
+            if ui
+                .checkbox(
+                    &mut enabled,
+                    format!("Побочный эффект: {}", crate::model::s(effect, "name")),
+                )
+                .changed()
+            {
+                if enabled {
+                    draft.booster_effects.push(eid);
+                } else {
+                    draft.booster_effects.retain(|id| *id != eid);
+                }
+            }
+        }
+    }
+    ui.label("Добавить имплант или бустер по названию");
+    ui.text_edit_singleline(&mut state.search);
+    if state.search.chars().count() >= 3 {
+        let search = state.search.to_lowercase();
+        let mut matches: Vec<_> = catalog
+            .types
+            .iter()
+            .filter(|(_, t)| {
+                t["category"] == 20 && crate::model::s(t, "name").to_lowercase().contains(&search)
+            })
+            .collect();
+        matches.sort_by_key(|(_, t)| crate::model::s(t, "name"));
+        for (tid, t) in matches.into_iter().take(12) {
+            if ui
+                .small_button(format!("+ {}", crate::model::s(t, "name")))
+                .clicked()
+            {
+                let booster = crate::fit_plan::slot(catalog, *tid, true) > 0;
+                let types = if booster {
+                    &mut draft.boosters
+                } else {
+                    &mut draft.implants
+                };
+                crate::fit_plan::select(types, *tid, booster, catalog);
+            }
+        }
+    }
+    style::separator(ui);
+    if ui
+        .add_enabled(!busy, egui::Button::new("Рассчитать фит и рекомендации"))
+        .clicked()
+    {
+        action = Some(Action::CalculateFit);
+    }
+    if busy {
+        ui.label("Расчёт…");
+    }
+    if let Some(plan) = &state.plan {
+        let current_key = draft
+            .own_request(serde_json::json!(draft.own_fit), true)
+            .to_string();
+        if state.plan_key != current_key {
+            style::caption(ui, "Фит или профиль изменён: пересчитайте рекомендации.");
+            return action;
+        }
+        ui.label(format!(
+            "{} · {:.0} DPS · {:.0} м/с",
+            crate::model::s(&plan.result["hull"], "name"),
+            crate::model::n(&plan.result["summary"]["offense"], "dps"),
+            crate::model::n(&plan.result["hull"]["attributes"], "maxVelocity")
+        ));
+        for warning in &plan.warnings {
+            ui.label(RichText::new(warning).color(AMBER));
+        }
+        ui.label("Бустеры в карго");
+        if plan.cargo_boosters.is_empty() {
+            style::caption(
+                ui,
+                "Нет в импортированном карго. Можно добавить вручную через поиск выше.",
+            );
+        }
+        for tid in &plan.cargo_boosters {
+            let mut enabled = draft.boosters.contains(tid);
+            if ui.checkbox(&mut enabled, catalog.name(*tid)).changed() {
+                if enabled {
+                    crate::fit_plan::select(&mut draft.boosters, *tid, true, catalog);
+                } else {
+                    draft.boosters.retain(|id| id != tid);
+                }
+            }
+        }
+        ui.label(RichText::new("ЧТО ВЗЯТЬ С СОБОЙ").color(CYAN));
+        style::caption(
+            ui,
+            "Каждый вариант сравнивается с текущим набором отдельно; предмет того же слота заменяется. Имплант надо установить в клона до вылета. Подбор ограничен распространёнными PvP-вариантами и не учитывает цены.",
+        );
+        for suggestion in &plan.suggestions {
+            ui.horizontal_wrapped(|ui| {
+                if ui.small_button("В план").clicked() {
+                    let types = if suggestion.booster {
+                        &mut draft.boosters
+                    } else {
+                        &mut draft.implants
+                    };
+                    crate::fit_plan::select(types, suggestion.type_id, suggestion.booster, catalog);
+                }
+                ui.label(catalog.name(suggestion.type_id));
+            });
+            style::caption(ui, &suggestion.benefit);
+        }
+        if plan.suggestions.is_empty() {
+            style::caption(ui, "Среди проверенных вариантов улучшений нет.");
+        }
     }
     action
 }

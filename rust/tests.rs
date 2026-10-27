@@ -274,6 +274,289 @@ fn legacy_settings_keep_the_pilot_lookup_preference() {
 }
 
 #[test]
+fn talwar_import_loads_ammunition_and_scripts_from_cargo() {
+    let c = catalog();
+    let result = Engine::default()
+        .evaluate(json!({"raw_fit":include_str!("../tests/fixtures/talwar.eft")}))
+        .unwrap();
+    assert_eq!(result["hull"]["name"], "Talwar");
+    let launchers: Vec<_> = crate::model::array(&result["modules"])
+        .iter()
+        .filter(|m| m["id"] == 8089)
+        .collect();
+    assert_eq!(launchers.len(), 7);
+    assert!(
+        launchers
+            .iter()
+            .all(|m| m["charge"]["id"] == tid(&c, "Caldari Navy Nova Light Missile"))
+    );
+    assert_eq!(
+        crate::model::array(&result["modules"])
+            .iter()
+            .filter(|m| m["charge"]["name"] == "Scan Resolution Script")
+            .count(),
+        3
+    );
+    assert!(crate::model::n(&result["summary"]["offense"], "dps") > 100.);
+    assert_eq!(crate::model::array(&result["cargo"]).len(), 5);
+}
+
+#[test]
+fn personal_implants_and_selected_boosters_change_dogma() {
+    let c = catalog();
+    let mut engine = Engine::default();
+    let raw = include_str!("../tests/fixtures/talwar.eft");
+    let base = engine.evaluate(json!({"raw_fit":raw})).unwrap();
+    let rl = tid(&c, "Zainou 'Deadeye' Rapid Launch RL-1003");
+    let crash = tid(&c, "Synth Crash Booster");
+    let changed = engine
+        .evaluate(json!({"raw_fit":raw,"implants":[rl],"boosters":[crash]}))
+        .unwrap();
+    let a = crate::model::n(&base["summary"]["offense"], "dps");
+    let b = crate::model::n(&changed["summary"]["offense"], "dps");
+    assert!((b / a - 1. / 0.97).abs() < 1e-5, "ROF implant: {a} -> {b}");
+    let cloud = |r: &Value| {
+        crate::model::array(&r["modules"])
+            .iter()
+            .find(|m| m["id"] == 8089)
+            .unwrap()["charge"]["attributes"]["aoeCloudSize"]
+            .as_f64()
+            .unwrap()
+    };
+    assert!(cloud(&changed) < cloud(&base));
+    let cargo = engine
+        .evaluate(json!({"raw_fit":format!("{raw}\nSynth Crash Booster x2\n")}))
+        .unwrap();
+    assert_eq!(cloud(&cargo), cloud(&base));
+    assert!(
+        engine
+            .evaluate(json!({"raw_fit":raw,"implants":[rl,rl]}))
+            .is_err()
+    );
+    assert!(
+        engine
+            .evaluate(json!({"raw_fit":raw,"boosters":[crash,crash]}))
+            .is_err()
+    );
+}
+
+#[test]
+fn booster_penalties_are_applied_only_when_selected() {
+    let c = catalog();
+    let booster = tid(&c, "Strong Crash Booster");
+    let effects = crate::model::array(&c.get(booster)["side_effects"]);
+    assert!(!effects.is_empty());
+    let ids: Vec<_> = effects
+        .iter()
+        .map(|effect| crate::model::id(effect, "id"))
+        .collect();
+    let raw = include_str!("../tests/fixtures/talwar.eft");
+    let mut engine = Engine::default();
+    let clean = engine
+        .evaluate(json!({"raw_fit":raw,"boosters":[booster]}))
+        .unwrap();
+    let penalized = engine
+        .evaluate(json!({"raw_fit":raw,"boosters":[booster],"booster_effects":ids}))
+        .unwrap();
+    assert_ne!(clean["hull"]["attributes"], penalized["hull"]["attributes"]);
+}
+
+#[test]
+fn fitting_plan_has_real_improvements_for_talwar() {
+    let c = catalog();
+    let settings = Settings {
+        own_fit: include_str!("../tests/fixtures/talwar.eft").into(),
+        ..Default::default()
+    };
+    let plan = crate::fit_plan::calculate(&settings, &c).unwrap();
+    assert!(
+        plan.suggestions
+            .iter()
+            .any(|suggestion| c.name(suggestion.type_id) == "Synth Crash Booster")
+    );
+    assert!(plan.suggestions.iter().any(|suggestion| c.name(suggestion.type_id)=="Zainou 'Deadeye' Rapid Launch RL-1003"));
+}
+
+#[test]
+fn pkce_and_callback_match_standard_and_reject_wrong_sessions() {
+    assert_eq!(
+        crate::account::challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+    );
+    assert_eq!(
+        crate::account::callback_code("/callback?code=abc&state=expected", "expected").unwrap(),
+        "abc"
+    );
+    for target in [
+        "/callback?code=abc&state=other",
+        "/callback?code=abc&state=expected&state=other",
+        "/callback?state=expected",
+        "/other?code=abc&state=expected",
+    ] {
+        assert!(crate::account::callback_code(target, "expected").is_err());
+    }
+}
+
+#[test]
+fn esi_fitting_import_keeps_cargo_separate() {
+    let c = catalog();
+    let items = json!([
+        {"flag":"HiSlot0","type_id":8089,"quantity":1},
+        {"flag":"HiSlot1","type_id":8089,"quantity":1},
+        {"flag":"Cargo","type_id":tid(&c,"Caldari Navy Nova Light Missile"),"quantity":1000},
+        {"flag":"Cargo","type_id":tid(&c,"Warp Scrambler II"),"quantity":1}
+    ]);
+    let eft = crate::account::items_to_eft(
+        c.ship_id("Talwar").unwrap(),
+        "ESI",
+        crate::model::array(&items),
+        &c,
+    )
+    .unwrap();
+    let result = Engine::default().evaluate(json!({"raw_fit":eft})).unwrap();
+    assert_eq!(crate::model::array(&result["modules"]).len(), 2);
+    assert_eq!(crate::model::array(&result["cargo"]).len(), 2);
+}
+
+#[test]
+fn forced_refresh_preserves_global_and_personal_records() {
+    let temp = Temp::new();
+    let c = catalog();
+    let mut store = Store::open(&temp.0).unwrap();
+    store
+        .ingest_global(&[mail(&c, 1, "200mm AutoCannon II")])
+        .unwrap();
+    store.ingest(&[mail(&c, 2, "200mm AutoCannon II")]).unwrap();
+    let page = "https://zkillboard.com/api/losses/shipTypeID/587/year/2026/month/10/page/1/";
+    store.cache(page, &json!([]), 3600).unwrap();
+    store
+        .cache(
+            "https://esi.evetech.net/killmails/1/hash",
+            &json!({"immutable":true}),
+            3600,
+        )
+        .unwrap();
+    store.invalidate_statistics_cache().unwrap();
+    assert!(store.cached(page).is_none());
+    assert!(
+        store
+            .cached("https://esi.evetech.net/killmails/1/hash")
+            .is_some()
+    );
+    assert_eq!(store.global_ships().unwrap(), vec![587]);
+    assert_eq!(store.global_mails(587).unwrap().len(), 1);
+    assert_eq!(store.pilot_mails(587, 90000002).unwrap().len(), 1);
+}
+
+#[test]
+fn current_selection_matches_starred_hull_in_the_right_card_after_reordering() {
+    use crate::ocr::{Document, TextLine, Word};
+    let c = catalog();
+    let word = |text: &str, x, y, width| Word {
+        text: text.into(),
+        x,
+        y,
+        width,
+        height: 10.,
+    };
+    let cards = |swap: bool| {
+        let (a, b) = if swap { (150., 0.) } else { (0., 150.) };
+        let mut names = vec![
+            word("Kurenai", a, 0., 40.),
+            word("Uchiha", a + 45., 0., 40.),
+            word("Vladimir", b, 0., 45.),
+            word("A1", b + 50., 0., 20.),
+        ];
+        names.sort_by(|a, b| a.x.total_cmp(&b.x));
+        let mut hulls = vec![
+            word("Orca*", a + 25., 25., 35.),
+            word("Thrasher*", b + 5., 25., 65.),
+        ];
+        hulls.sort_by(|a, b| a.x.total_cmp(&b.x));
+        Document {
+            lines: vec![
+                TextLine {
+                    text: "ignored reading order".into(),
+                    words: names,
+                },
+                TextLine {
+                    text: "ignored reading order".into(),
+                    words: hulls,
+                },
+            ],
+        }
+    };
+    for swap in [false, true] {
+        let target = crate::ocr::selected_card(
+            "Kurenai Uchiha\n38 км\nСтатус безопасности 0,0",
+            &cards(swap),
+            &c,
+        )
+        .unwrap();
+        assert_eq!(target.ship, "Orca");
+        assert_eq!(target.pilot, "Kurenai Uchiha");
+        assert_eq!(target.distance, Some(38000.));
+        assert_eq!(
+            crate::ocr::selected_card("Vladimir A1\n31 km", &cards(swap), &c)
+                .unwrap()
+                .ship,
+            "Thrasher"
+        );
+        assert!(crate::ocr::selected_card("Unknown Pilot\n31 km", &cards(swap), &c).is_none());
+        assert!(crate::ocr::selected_card("Kurenai\n31 km", &cards(swap), &c).is_none());
+    }
+    let mut no_star = cards(false);
+    for word in &mut no_star.lines[1].words {
+        word.text = word.text.replace('*', "");
+    }
+    assert!(crate::ocr::selected_card("Kurenai Uchiha", &no_star, &c).is_none());
+}
+
+#[test]
+fn ten_locked_targets_in_two_rows_use_the_current_pilot_in_any_position() {
+    use crate::ocr::{Document, TextLine, Word};
+    let c = catalog();
+    for shift in 0..10 {
+        let mut lines = Vec::new();
+        for row in 0..2 {
+            let mut names = Vec::new();
+            let mut hulls = Vec::new();
+            for col in 0..5 {
+                let pilot = (row * 5 + col + shift) % 10;
+                let x = col as f32 * 150.;
+                let y = row as f32 * 100.;
+                names.push(Word {
+                    text: format!("Pilot{pilot}"),
+                    x: x + 10.,
+                    y,
+                    width: 60.,
+                    height: 10.,
+                });
+                hulls.push(Word {
+                    text: if pilot == 9 { "Talwar*" } else { "Rifter*" }.into(),
+                    x: x + 10.,
+                    y: y + 25.,
+                    width: 60.,
+                    height: 10.,
+                });
+            }
+            lines.push(TextLine {
+                text: String::new(),
+                words: names,
+            });
+            lines.push(TextLine {
+                text: String::new(),
+                words: hulls,
+            });
+        }
+        let target = crate::ocr::selected_card("Pilot9\n24 km", &Document { lines }, &c).unwrap();
+        assert_eq!(target.ship, "Talwar");
+        assert_eq!(target.pilot, "Pilot9");
+        assert_eq!(target.distance, Some(24000.));
+    }
+}
+
+#[test]
 fn enlarged_overlay_fits_full_hd_work_area_on_either_monitor() {
     use eframe::egui::{Rect, pos2};
     for left in [0., 1920.] {

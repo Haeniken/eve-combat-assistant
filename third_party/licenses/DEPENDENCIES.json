@@ -85,6 +85,16 @@
     ]
   },
   {
+    "name": "arboard",
+    "version": "3.7.0",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/1Password/arboard",
+    "files": [
+      "LICENSE-APACHE.txt",
+      "LICENSE-MIT.txt"
+    ]
+  },
+  {
     "name": "arrayvec",
     "version": "0.7.8",
     "license": "MIT OR Apache-2.0",
@@ -99,6 +109,16 @@
     "version": "1.5.1",
     "license": "Apache-2.0 OR MIT",
     "repository": "https://github.com/cuviper/autocfg",
+    "files": [
+      "LICENSE-MIT",
+      "LICENSE-APACHE"
+    ]
+  },
+  {
+    "name": "base64",
+    "version": "0.22.1",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/marshallpierce/rust-base64",
     "files": [
       "LICENSE-MIT",
       "LICENSE-APACHE"
@@ -272,6 +292,18 @@
     "files": [
       "LICENSE-MIT",
       "LICENSE-APACHE"
+    ]
+  },
+  {
+    "name": "clipboard-win",
+    "version": "5.4.3",
+    "license": "BSL-1.0",
+    "repository": "https://github.com/DoumanAsh/clipboard-win",
+    "files": [
+      "LICENSE"
+    ],
+    "upstream_notice_urls": [
+      "https://raw.githubusercontent.com/DoumanAsh/clipboard-win/master/LICENSE"
     ]
   },
   {
@@ -581,6 +613,15 @@
     ]
   },
   {
+    "name": "error-code",
+    "version": "3.4.0",
+    "license": "BSL-1.0",
+    "repository": "https://github.com/DoumanAsh/error-code",
+    "files": [
+      "LICENSE"
+    ]
+  },
+  {
     "name": "esf-dogma-engine",
     "version": "0.0.0-git",
     "license": "MIT",
@@ -596,7 +637,8 @@
     "repository": "https://github.com/servo/euclid",
     "files": [
       "LICENSE-MIT",
-      "LICENSE-APACHE"
+      "LICENSE-APACHE",
+      "COPYRIGHT"
     ]
   },
   {
@@ -617,6 +659,15 @@
     "files": [
       "LICENSE-MIT",
       "LICENSE-APACHE"
+    ]
+  },
+  {
+    "name": "fax",
+    "version": "0.2.7",
+    "license": "MIT",
+    "repository": "https://github.com/pdf-rs/fax",
+    "files": [
+      "LICENSE"
     ]
   },
   {
@@ -712,6 +763,16 @@
   {
     "name": "getrandom",
     "version": "0.2.17",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/rust-random/getrandom",
+    "files": [
+      "LICENSE-MIT",
+      "LICENSE-APACHE"
+    ]
+  },
+  {
+    "name": "getrandom",
+    "version": "0.3.4",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/rust-random/getrandom",
     "files": [
@@ -1021,6 +1082,15 @@
     ]
   },
   {
+    "name": "jsonwebtoken",
+    "version": "9.3.1",
+    "license": "MIT",
+    "repository": "https://github.com/Keats/jsonwebtoken",
+    "files": [
+      "LICENSE"
+    ]
+  },
+  {
     "name": "keyboard-types",
     "version": "0.8.3",
     "license": "MIT OR Apache-2.0",
@@ -1086,7 +1156,8 @@
     "repository": "https://github.com/linebender/raw_resource_handle",
     "files": [
       "LICENSE-MIT",
-      "LICENSE-APACHE"
+      "LICENSE-APACHE",
+      "AUTHORS"
     ]
   },
   {
@@ -1385,6 +1456,16 @@
     "files": [
       "LICENSE.md",
       "LICENSE-APACHE.md"
+    ]
+  },
+  {
+    "name": "quick-error",
+    "version": "2.0.1",
+    "license": "MIT/Apache-2.0",
+    "repository": "http://github.com/tailhook/quick-error",
+    "files": [
+      "LICENSE-MIT",
+      "LICENSE-APACHE"
     ]
   },
   {
@@ -1746,6 +1827,15 @@
     ]
   },
   {
+    "name": "tiff",
+    "version": "0.11.3",
+    "license": "MIT",
+    "repository": "https://github.com/image-rs/image-tiff",
+    "files": [
+      "LICENSE"
+    ]
+  },
+  {
     "name": "time",
     "version": "0.3.55",
     "license": "MIT OR Apache-2.0",
@@ -1862,7 +1952,8 @@
     "repository": "https://github.com/unicode-rs/unicode-properties",
     "files": [
       "LICENSE-MIT",
-      "LICENSE-APACHE"
+      "LICENSE-APACHE",
+      "COPYRIGHT"
     ]
   },
   {
@@ -1872,7 +1963,8 @@
     "repository": "https://github.com/unicode-rs/unicode-segmentation",
     "files": [
       "LICENSE-MIT",
-      "LICENSE-APACHE"
+      "LICENSE-APACHE",
+      "COPYRIGHT"
     ]
   },
   {
@@ -1882,7 +1974,8 @@
     "repository": "https://github.com/unicode-rs/unicode-width",
     "files": [
       "LICENSE-MIT",
-      "LICENSE-APACHE"
+      "LICENSE-APACHE",
+      "COPYRIGHT"
     ]
   },
   {
@@ -1941,7 +2034,8 @@
     "repository": "https://github.com/hsivonen/utf8_iter",
     "files": [
       "LICENSE-MIT",
-      "LICENSE-APACHE"
+      "LICENSE-APACHE",
+      "COPYRIGHT"
     ]
   },
   {
@@ -2015,12 +2109,32 @@
     ]
   },
   {
+    "name": "webbrowser",
+    "version": "1.2.5",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/amodm/webbrowser-rs",
+    "files": [
+      "LICENSE-MIT",
+      "LICENSE-APACHE"
+    ]
+  },
+  {
     "name": "webpki-roots",
     "version": "1.0.11",
     "license": "CDLA-Permissive-2.0",
     "repository": "https://github.com/rustls/webpki-roots",
     "files": [
       "LICENSE"
+    ]
+  },
+  {
+    "name": "weezl",
+    "version": "0.1.12",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/image-rs/weezl",
+    "files": [
+      "LICENSE-MIT",
+      "LICENSE-APACHE"
     ]
   },
   {

@@ -32,6 +32,33 @@ pub fn decompress(raw: &[u8]) -> Result<Value, String> {
     serde_json::from_slice(&b).map_err(|e| e.to_string())
 }
 impl Store {
+    pub fn global_ships(&self) -> Result<Vec<i32>, String> {
+        let mut statement = self.db.prepare("SELECT DISTINCT k.ship FROM killmails k JOIN global_membership g ON k.id=g.id ORDER BY k.ship")
+            .map_err(|e| e.to_string())?;
+        statement
+            .query_map([], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+    pub fn invalidate_statistics_cache(&self) -> Result<(), String> {
+        self.db.execute("DELETE FROM http_cache WHERE key LIKE 'https://zkillboard.com/api/losses/shipTypeID/%' OR key LIKE 'population:%'", [])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    pub fn prepare_archive_refresh(&self, start: &str, end: &str) -> Result<(), String> {
+        let period = serde_json::json!([start, end]);
+        if self.meta("archive_refresh_pending") != Some(period.clone()) {
+            self.db
+                .execute(
+                    "DELETE FROM meta WHERE key >= ? AND key <= ?",
+                    params![format!("archive:{start}"), format!("archive:{end}")],
+                )
+                .map_err(|e| e.to_string())?;
+            self.set_meta("archive_refresh_pending", &period)?;
+        }
+        Ok(())
+    }
     pub fn open(dir: &Path) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let db = Connection::open(dir.join("combat.sqlite3")).map_err(|e| e.to_string())?;

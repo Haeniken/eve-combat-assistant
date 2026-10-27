@@ -36,6 +36,8 @@ pub struct Matchup {
     pub failures: Vec<String>,
 }
 pub enum Message {
+    CharacterReady(Result<crate::account::Profile, String>),
+    FitReady(String, Result<crate::fit_plan::Plan, String>),
     Analyzed(u64, Result<Matchup, String>),
     Status(String),
     PilotReady(String, String, Result<(), String>),
@@ -140,10 +142,7 @@ impl AnalysisCore {
         let own = if settings.own_fit.trim().is_empty() {
             None
         } else {
-            let mut req = json!({"raw_fit":settings.own_fit,"skill_level":settings.skill_level});
-            if let Some(skills) = &settings.skills {
-                req["skills"] = skills.clone();
-            }
+            let req = settings.own_request(json!(settings.own_fit), true);
             Some(self.engine.evaluate(req)?)
         };
         let mut out = Matchup {
@@ -160,6 +159,9 @@ impl AnalysisCore {
                 settings.own_fit,
                 settings.skill_level,
                 settings.skills,
+                settings.implants,
+                settings.boosters,
+                settings.booster_effects,
                 (target.angular * 1000.).round()
             ])
             .to_string(),
@@ -284,11 +286,13 @@ impl Workers {
                             continue;
                         }
                     };
-                    cancel.store(false, Ordering::Relaxed);
+                    if !request.global {
+                        cancel.store(false, Ordering::Relaxed);
+                    }
                     let mut source = Sources::new(store, cancel.clone());
                     let progress = |text| emit(&event_tx, &ctx, Message::Status(text));
                     if request.global {
-                        let result = source.sync_ship(ship, request.settings.days, &progress);
+                        let result = source.refresh_statistics(ship, &request.settings, &progress);
                         emit(&event_tx, &ctx, Message::SyncDone(result));
                     } else {
                         let result = source.sync_pilot(&request.target.pilot, ship, &progress);
@@ -308,6 +312,9 @@ impl Workers {
                 platform::low_priority();
                 let mut config: Option<OcrConfig> = None;
                 let mut frames = ocr::FrameCache::default();
+                let mut card_frames = ocr::FrameCache::default();
+                let mut selected_text = String::new();
+                let mut card_document = ocr::Document::default();
                 let mut cached = None;
                 loop {
                     let interval = config
@@ -321,6 +328,9 @@ impl Workers {
                             }
                             config = Some(value);
                             frames = ocr::FrameCache::default();
+                            card_frames = ocr::FrameCache::default();
+                            selected_text.clear();
+                            card_document = ocr::Document::default();
                             continue;
                         }
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -341,6 +351,31 @@ impl Workers {
                     let mut should_emit = true;
                     let result = (|| -> Result<Option<Target>, String> {
                         let image = platform::read_screen(rect)?;
+                        if let Some(cards_rect) = config.settings.targets_region {
+                            let selected_decision = frames.inspect(image.as_raw());
+                            if selected_decision == ocr::FrameDecision::Recognize {
+                                selected_text =
+                                    platform::ocr_image(&image, &config.settings.language)?;
+                            }
+                            // Карточки могут менять позиции независимо от правой панели.
+                            let cards = platform::read_screen(cards_rect)?;
+                            let card_decision = card_frames.inspect(cards.as_raw());
+                            if card_decision == ocr::FrameDecision::Recognize {
+                                card_document =
+                                    platform::ocr_document(&cards, &config.settings.language)?;
+                            }
+                            if selected_decision == ocr::FrameDecision::Ignore
+                                && card_decision == ocr::FrameDecision::Ignore
+                            {
+                                should_emit = false;
+                                return Ok(None);
+                            }
+                            return Ok(ocr::selected_card(
+                                &selected_text,
+                                &card_document,
+                                &catalog,
+                            ));
+                        }
                         match frames.inspect(image.as_raw()) {
                             ocr::FrameDecision::Ignore => {
                                 should_emit = false;

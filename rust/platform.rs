@@ -174,7 +174,10 @@ pub fn read_screen(_: [i32; 4]) -> Result<image::RgbaImage, String> {
 }
 
 #[cfg(windows)]
-pub fn ocr_image(image: &image::RgbaImage, language: &str) -> Result<String, String> {
+pub fn ocr_document(
+    image: &image::RgbaImage,
+    language: &str,
+) -> Result<crate::ocr::Document, String> {
     use windows::{
         Globalization::Language,
         Graphics::Imaging::{BitmapAlphaMode, BitmapPixelFormat, SoftwareBitmap},
@@ -193,7 +196,7 @@ pub fn ocr_image(image: &image::RgbaImage, language: &str) -> Result<String, Str
             ready.set(true);
         }
     });
-    let run = || -> windows::core::Result<String> {
+    let run = || -> windows::core::Result<crate::ocr::Document> {
         let image = if image.width() > 2000 {
             image::imageops::resize(
                 image,
@@ -236,15 +239,32 @@ pub fn ocr_image(image: &image::RgbaImage, language: &str) -> Result<String, Str
             let result = cache.as_ref().unwrap().1.RecognizeAsync(&bitmap)?.join()?;
             let mut lines = Vec::new();
             for line in result.Lines()? {
-                lines.push(line.Text()?.to_string());
+                let mut words = Vec::new();
+                for word in line.Words()? {
+                    let rect = word.BoundingRect()?;
+                    words.push(crate::ocr::Word {
+                        text: word.Text()?.to_string(),
+                        x: rect.X,
+                        y: rect.Y,
+                        width: rect.Width,
+                        height: rect.Height,
+                    });
+                }
+                lines.push(crate::ocr::TextLine {
+                    text: line.Text()?.to_string(),
+                    words,
+                });
             }
-            Ok(lines.join("\n"))
+            Ok(crate::ocr::Document { lines })
         })
     };
     run().map_err(|e| format!("Windows OCR недоступен: {e}"))
 }
+pub fn ocr_image(image: &image::RgbaImage, language: &str) -> Result<String, String> {
+    Ok(ocr_document(image, language)?.text())
+}
 #[cfg(not(windows))]
-pub fn ocr_image(_: &image::RgbaImage, _: &str) -> Result<String, String> {
+pub fn ocr_document(_: &image::RgbaImage, _: &str) -> Result<crate::ocr::Document, String> {
     Err("Windows OCR доступен в Windows-сборке".into())
 }
 

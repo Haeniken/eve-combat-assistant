@@ -1,7 +1,160 @@
 //! Разбор видимого текста цели и подтверждение смены корабля по двум кадрам.
 
 use crate::engine::Catalog;
-#[derive(Clone, Debug, PartialEq)]
+
+#[derive(Clone, Debug)]
+pub struct Word {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+#[derive(Clone, Debug)]
+pub struct TextLine {
+    pub text: String,
+    pub words: Vec<Word>,
+}
+#[derive(Clone, Default, Debug)]
+pub struct Document {
+    pub lines: Vec<TextLine>,
+}
+impl Document {
+    pub fn text(&self) -> String {
+        self.lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// Ник берётся только из Selected Item: список захваченных целей не выбирает активную.
+pub fn selected_pilot(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let candidate = line
+            .trim()
+            .trim_start_matches("Pilot:")
+            .trim_start_matches("Пилот:")
+            .trim();
+        let lower = candidate.to_lowercase();
+        if candidate.is_empty()
+            || candidate.len() > 100
+            || candidate.contains(':')
+            || [
+                "selected item",
+                "выбранный объект",
+                "security status",
+                "статус безопасности",
+            ]
+            .iter()
+            .any(|word| lower.contains(word))
+            || candidate
+                .split_whitespace()
+                .any(|word| ["km", "км", "m", "м"].contains(&word.to_lowercase().as_str()))
+            || !candidate.chars().any(char::is_alphabetic)
+            || candidate
+                .chars()
+                .any(|c| !(c.is_alphanumeric() || [' ', '\'', '-'].contains(&c)))
+        {
+            continue;
+        }
+        return Some(candidate.into());
+    }
+    None
+}
+
+/// В карточках OCR может объединить несколько колонок в одну строку.
+/// Ищем точный ник и корпус со звёздочкой ниже в той же колонке.
+pub fn selected_card(selected: &str, cards: &Document, catalog: &Catalog) -> Option<Target> {
+    let pilot = selected_pilot(selected)?;
+    let normalized = pilot
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let mut anchors = Vec::new();
+    for line in &cards.lines {
+        for start in 0..line.words.len() {
+            for end in start + 1..=line.words.len().min(start + 8) {
+                let words = &line.words[start..end];
+                if words
+                    .iter()
+                    .map(|w| w.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_lowercase()
+                    == normalized
+                {
+                    let left = words[0].x;
+                    let right = words.iter().map(|w| w.x + w.width).fold(left, f32::max);
+                    let top = words.iter().map(|w| w.y).fold(f32::INFINITY, f32::min);
+                    let height = words.iter().map(|w| w.height).fold(0., f32::max);
+                    if start > 0
+                        && left - (line.words[start - 1].x + line.words[start - 1].width)
+                            < height * 1.5
+                    {
+                        continue;
+                    }
+                    if end < line.words.len() && line.words[end].x - right < height * 1.5 {
+                        continue;
+                    }
+                    anchors.push(((left + right) / 2., top, height));
+                }
+            }
+        }
+    }
+    let [(anchor_x, anchor_y, height)] = anchors.as_slice() else {
+        return None;
+    };
+    let mut matches = Vec::new();
+    for line in &cards.lines {
+        for start in 0..line.words.len() {
+            for end in start + 1..=line.words.len().min(start + 8) {
+                let words = &line.words[start..end];
+                if words
+                    .iter()
+                    .any(|word| word.height <= 0. || !word.x.is_finite() || !word.y.is_finite())
+                {
+                    continue;
+                }
+                let text = words
+                    .iter()
+                    .map(|word| word.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !text.trim_end().ends_with('*') {
+                    continue;
+                }
+                let Some(tid) = catalog.ship_id(text.trim_end().trim_end_matches('*').trim())
+                else {
+                    continue;
+                };
+                let x = (words[0].x + words.last()?.x + words.last()?.width) / 2.;
+                let y = words.iter().map(|w| w.y).fold(f32::INFINITY, f32::min);
+                // Отступы считаются от размера шрифта, а не от конкретного разрешения EVE.
+                if y > *anchor_y
+                    && y < anchor_y + height * 6.
+                    && (x - anchor_x).abs() <= height * 2.5
+                {
+                    matches.push(tid);
+                }
+            }
+        }
+    }
+    matches.sort();
+    matches.dedup();
+    let [tid] = matches.as_slice() else {
+        return None;
+    };
+    let ship = catalog.name(*tid).to_string();
+    // Дистанция в списке карточек может принадлежать соседу; читаем её справа.
+    let mut target = parse(&format!("{selected}\n{ship}"), catalog)?;
+    target.pilot = pilot;
+    target.ship = ship;
+    Some(target)
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct Target {
     pub ship: String,
     pub pilot: String,
