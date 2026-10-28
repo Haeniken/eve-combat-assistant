@@ -33,7 +33,10 @@ Copy-Item (Join-Path $LicenseDirectory '*') $licenses -Recurse -Force
 Copy-Item (Join-Path $root 'resources\WINDOWS_README.txt') (Join-Path $destination 'README.txt') -Force
 Get-ChildItem $destination -Recurse -File | Where-Object { $_.LastWriteTime.Year -lt 1980 -or $_.LastWriteTime.Year -gt 2107 } | ForEach-Object { $_.LastWriteTime = [datetime]'2000-01-01' }
 $archive = Join-Path $dist 'EVECombatAssistant-windows-x64.zip'
-Compress-Archive -Path $destination -DestinationPath $archive -Force -CompressionLevel Optimal
+# Create mode streams entries; Compress-Archive uses Update mode and buffers large files.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+if (Test-Path $archive) { Remove-Item $archive -Force }
+[System.IO.Compression.ZipFile]::CreateFromDirectory($destination, $archive, [System.IO.Compression.CompressionLevel]::Optimal, $true)
 Get-FileHash -Path $archive, (Join-Path $destination 'eve-combat-assistant.exe') -Algorithm SHA256 |
     Select-Object Path, Hash | ConvertTo-Json | Set-Content (Join-Path $dist 'SHA256.json') -Encoding UTF8
 Write-Output $archive
