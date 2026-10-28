@@ -11,6 +11,9 @@ use std::{
 };
 pub struct Store {
     db: Connection,
+    pub seed: Option<crate::seed::SeedInfo>,
+    pub seed_error: Option<String>,
+    trace: Option<crate::diagnostics::Trace>,
 }
 pub fn timestamp() -> i64 {
     SystemTime::now()
@@ -32,9 +35,14 @@ pub fn decompress(raw: &[u8]) -> Result<Value, String> {
     serde_json::from_slice(&b).map_err(|e| e.to_string())
 }
 impl Store {
+    #[cfg(test)]
     pub fn global_ships(&self) -> Result<Vec<i32>, String> {
-        let mut statement = self.db.prepare("SELECT DISTINCT k.ship FROM killmails k JOIN global_membership g ON k.id=g.id ORDER BY k.ship")
-            .map_err(|e| e.to_string())?;
+        let sql = if self.seed.is_some() {
+            "SELECT k.ship FROM main.killmails k JOIN main.global_membership g ON k.id=g.id UNION SELECT ship FROM bundled.killmails ORDER BY ship"
+        } else {
+            "SELECT DISTINCT k.ship FROM killmails k JOIN global_membership g ON k.id=g.id ORDER BY k.ship"
+        };
+        let mut statement = self.db.prepare(sql).map_err(|e| e.to_string())?;
         statement
             .query_map([], |row| row.get(0))
             .map_err(|e| e.to_string())?
@@ -60,6 +68,9 @@ impl Store {
         Ok(())
     }
     pub fn open(dir: &Path) -> Result<Self, String> {
+        Self::open_with_seed(dir, crate::seed::default_path().as_deref())
+    }
+    pub fn open_with_seed(dir: &Path, seed_path: Option<&Path>) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let db = Connection::open(dir.join("combat.sqlite3")).map_err(|e| e.to_string())?;
         db.busy_timeout(std::time::Duration::from_secs(15))
@@ -72,7 +83,12 @@ impl Store {
           CREATE TABLE IF NOT EXISTS http_cache(key TEXT PRIMARY KEY,expires REAL,raw BLOB);
           CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);
           CREATE TABLE IF NOT EXISTS global_membership(id INTEGER PRIMARY KEY);") .map_err(|e|e.to_string())?;
-        let store = Self { db };
+        let mut store = Self {
+            db,
+            seed: None,
+            seed_error: None,
+            trace: None,
+        };
         if store.meta("global_membership_v1").is_none() {
             store
                 .db
@@ -83,7 +99,58 @@ impl Store {
                 .map_err(|e| e.to_string())?;
             store.set_meta("global_membership_v1", &serde_json::json!(true))?;
         }
+        if let Some(path) = seed_path {
+            match crate::seed::attach(&store.db, path) {
+                Ok(info) => store.seed = Some(info),
+                Err(error) => {
+                    let _ = store.db.execute("DETACH DATABASE bundled", []);
+                    store.seed_error = Some(error);
+                }
+            }
+        }
         Ok(store)
+    }
+    pub fn set_trace(&mut self, trace: crate::diagnostics::Trace) {
+        self.trace = Some(trace);
+    }
+    fn record(&self, kind: &str, fields: Value) {
+        if let Some(trace) = &self.trace {
+            trace.event(kind, fields);
+        }
+    }
+    pub fn local_global_count(&self, ship: i32) -> Result<usize, String> {
+        self.db.query_row("SELECT count(*) FROM main.killmails k JOIN main.global_membership g ON k.id=g.id WHERE ship=?",[ship],|r|r.get::<_, i64>(0)).map(|n| n as usize).map_err(|e|e.to_string())
+    }
+    pub fn archive_count(&self, day: &str) -> usize {
+        let local = self
+            .meta(&format!("archive_count:{day}"))
+            .and_then(|v| v.as_u64());
+        let seed = if self.seed.is_some() {
+            self.db
+                .query_row(
+                    "SELECT coalesce(index_total,source_count) FROM bundled.days WHERE day=?",
+                    [day],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        local.map(|n| n as usize).unwrap_or(seed as usize)
+    }
+    pub fn seed_population(&self, key: &str) -> Option<Value> {
+        if !self.seed.as_ref().is_some_and(|s| s.prepared) {
+            return None;
+        }
+        let raw: Vec<u8> = self
+            .db
+            .query_row(
+                "SELECT raw FROM bundled.populations WHERE key=?",
+                [key],
+                |r| r.get(0),
+            )
+            .ok()?;
+        decompress(&raw).ok()
     }
     pub fn ingest(&mut self, mails: &[Value]) -> Result<usize, String> {
         let tx = self.db.transaction().map_err(|e| e.to_string())?;
@@ -140,39 +207,77 @@ impl Store {
         Ok(count)
     }
     pub fn global_mails(&self, ship: i32) -> Result<Vec<Value>, String> {
-        let sql = "SELECT k.raw FROM killmails k
-            JOIN global_membership g ON g.id = k.id
-            WHERE k.ship = ? ORDER BY k.happened DESC, k.id DESC";
-        let mut stmt = self.db.prepare(sql).map_err(|error| error.to_string())?;
-        let rows = stmt
-            .query_map([ship], |r| r.get::<_, Vec<u8>>(0))
-            .map_err(|e| e.to_string())?;
-        rows.map(|r| decompress(&r.map_err(|e| e.to_string())?))
-            .collect()
+        let sql = if self.seed.is_some() {
+            "SELECT raw,compressed FROM (SELECT k.id,k.happened,k.raw,1 AS compressed FROM main.killmails k JOIN main.global_membership g ON g.id=k.id WHERE k.ship=?1 UNION ALL SELECT k.id,k.happened,k.raw,0 AS compressed FROM bundled.killmails k WHERE k.ship=?1 AND NOT EXISTS(SELECT 1 FROM main.global_membership g JOIN main.killmails m ON m.id=g.id WHERE g.id=k.id)) ORDER BY happened DESC,id DESC"
+        } else {
+            "SELECT raw,1 AS compressed FROM main.killmails WHERE ship=?1 AND id IN (SELECT id FROM main.global_membership) ORDER BY happened DESC,id DESC"
+        };
+        self.mails(sql, ship, None, "popular_killmails")
     }
     pub fn pilot_mails(&self, ship: i32, pilot: i64) -> Result<Vec<Value>, String> {
-        let mut stmt = self
-            .db
-            .prepare(
-                "SELECT raw FROM killmails WHERE ship=? AND pilot=? ORDER BY happened DESC,id DESC",
-            )
+        let sql = if self.seed.is_some() {
+            "SELECT raw,compressed FROM (SELECT id,happened,raw,1 AS compressed FROM main.killmails WHERE ship=?1 AND pilot=?2 UNION ALL SELECT k.id,k.happened,k.raw,0 AS compressed FROM bundled.killmails k WHERE k.ship=?1 AND k.pilot=?2 AND NOT EXISTS(SELECT 1 FROM main.killmails m WHERE m.id=k.id)) ORDER BY happened DESC,id DESC"
+        } else {
+            "SELECT raw,1 AS compressed FROM main.killmails WHERE ship=?1 AND pilot=?2 ORDER BY happened DESC,id DESC"
+        };
+        self.mails(sql, ship, Some(pilot), "pilot_killmails")
+    }
+    fn mails(
+        &self,
+        sql: &str,
+        ship: i32,
+        pilot: Option<i64>,
+        label: &str,
+    ) -> Result<Vec<Value>, String> {
+        let started = std::time::Instant::now();
+        let result = (|| {
+            let mut stmt = self.db.prepare(sql).map_err(|e| e.to_string())?;
+            let decode = |row: &rusqlite::Row<'_>| -> rusqlite::Result<(Vec<u8>, bool)> {
+                let raw = match row.get_ref(0)? {
+                    rusqlite::types::ValueRef::Blob(raw) | rusqlite::types::ValueRef::Text(raw) => {
+                        raw.to_vec()
+                    }
+                    _ => Vec::new(),
+                };
+                Ok((raw, row.get::<_, i32>(1)? != 0))
+            };
+            let mut values = Vec::new();
+            let mut rows = if let Some(pilot) = pilot {
+                stmt.query(params![ship, pilot])
+            } else {
+                stmt.query([ship])
+            }
             .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(params![ship, pilot], |r| r.get::<_, Vec<u8>>(0))
-            .map_err(|e| e.to_string())?;
-        rows.map(|r| decompress(&r.map_err(|e| e.to_string())?))
-            .collect()
+            while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+                let (raw, compressed) = decode(row).map_err(|e| e.to_string())?;
+                values.push(if compressed {
+                    decompress(&raw)?
+                } else {
+                    serde_json::from_slice(&raw).map_err(|e| e.to_string())?
+                });
+            }
+            Ok::<_, String>(values)
+        })();
+        self.record("sql",serde_json::json!({"query":label,"statement":sql,"ship_id":ship,"pilot_id":pilot,"rows":result.as_ref().ok().map(Vec::len),"error":result.as_ref().err(),"elapsed_ms":started.elapsed().as_millis(),"bundled":self.seed}));
+        result
     }
     pub fn cached(&self, key: &str) -> Option<Value> {
-        let raw: Vec<u8> = self
-            .db
-            .query_row(
-                "SELECT raw FROM http_cache WHERE key=? AND expires>?",
-                params![key, timestamp()],
-                |r| r.get(0),
-            )
-            .ok()?;
-        decompress(&raw).ok()
+        let started = std::time::Instant::now();
+        let row = self.db.query_row(
+            "SELECT raw FROM http_cache WHERE key=? AND expires>?",
+            params![key, timestamp()],
+            |r| r.get::<_, Vec<u8>>(0),
+        );
+        let (value, error) = match row {
+            Ok(raw) => match decompress(&raw) {
+                Ok(value) => (Some(value), None),
+                Err(e) => (None, Some(e)),
+            },
+            Err(rusqlite::Error::QueryReturnedNoRows) => (None, None),
+            Err(e) => (None, Some(e.to_string())),
+        };
+        self.record("sql_cache",serde_json::json!({"query":"http_cache_get","key_hash":crate::fits::hash(key),"hit":value.is_some(),"error":error,"elapsed_ms":started.elapsed().as_millis()}));
+        value
     }
     pub fn cache(&self, key: &str, value: &Value, ttl: i64) -> Result<(), String> {
         self.db
@@ -182,6 +287,17 @@ impl Store {
             )
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+    pub fn cache_nonblocking(&self, key: &str, value: &Value, ttl: i64) -> Result<(), String> {
+        self.db
+            .busy_timeout(std::time::Duration::ZERO)
+            .map_err(|e| e.to_string())?;
+        let result = self.cache(key, value, ttl);
+        let restored = self
+            .db
+            .busy_timeout(std::time::Duration::from_secs(15))
+            .map_err(|e| e.to_string());
+        result.and(restored)
     }
     pub fn meta(&self, key: &str) -> Option<Value> {
         let text: String = self

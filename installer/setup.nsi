@@ -2,7 +2,8 @@
 Unicode true
 RequestExecutionLevel user
 ManifestDPIAware true
-SetCompressor /SOLID lzma
+; Streamed zlib keeps the all-hull database build/install memory bounded.
+SetCompressor zlib
 
 !include MUI2.nsh
 !include LogicLib.nsh
@@ -26,7 +27,7 @@ SetCompressor /SOLID lzma
 !ifndef PRODUCT_NAME
   !define PRODUCT_NAME "EVE Combat Assistant"
 !endif
-!define PRODUCT_VERSION "0.3.3"
+!define PRODUCT_VERSION "0.3.4"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_ID}"
 !define BACKGROUND "09131D"
 !define FOREGROUND "D7E5ED"
@@ -40,7 +41,7 @@ BrandingText " "
 ShowInstDetails hide
 ShowUninstDetails hide
 InstallColors ${FOREGROUND} ${BACKGROUND}
-VIProductVersion "0.3.3.0"
+VIProductVersion "0.3.4.0"
 VIAddVersionKey ProductName "${PRODUCT_NAME}"
 VIAddVersionKey FileDescription "Tactical overlay installer"
 VIAddVersionKey FileVersion "${PRODUCT_VERSION}"
@@ -185,6 +186,10 @@ Section "Бортовые системы"
   File "${PAYLOAD}/THIRD_PARTY_NOTICES.md"
   File /r "${PAYLOAD}/licenses"
   SetDetailsPrint both
+  DetailPrint "Установка локальной базы всех кораблей..."
+  SetDetailsPrint none
+  File /r "${PAYLOAD}/seed"
+  SetDetailsPrint both
   DetailPrint "Настройка навигационных меток..."
   SetDetailsPrint none
   CreateDirectory "$SMPROGRAMS\${PRODUCT_ID}"
@@ -271,6 +276,9 @@ Section "Uninstall"
   Delete "$INSTDIR\README.txt"
   Delete "$INSTDIR\THIRD_PARTY_NOTICES.md"
   RMDir /r "$INSTDIR\licenses"
+  Delete "$INSTDIR\seed\seed.sqlite3"
+  Delete "$INSTDIR\seed\seed-manifest.json"
+  RMDir "$INSTDIR\seed"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
   Delete "$SMPROGRAMS\${PRODUCT_ID}\EVE Combat Assistant.lnk"

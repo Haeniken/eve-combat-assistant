@@ -10,6 +10,7 @@ mod fits;
 mod model;
 mod ocr;
 mod platform;
+mod seed;
 mod settings_ui;
 mod sources;
 mod store;
@@ -36,6 +37,12 @@ pub struct Args {
     screenshot: Option<PathBuf>,
     #[arg(long)]
     settings_screenshot: Option<PathBuf>,
+    #[arg(long, hide = true)]
+    prepare_seed: Option<PathBuf>,
+    #[arg(long, hide = true)]
+    fit_diagnostic: bool,
+    #[arg(long, hide = true)]
+    seed_database: Option<PathBuf>,
     #[arg(long)]
     analyze: bool,
     #[arg(long)]
@@ -74,6 +81,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     std::fs::create_dir_all(&directory)?;
+    if let Some(path) = &args.prepare_seed {
+        seed::prepare(path, &directory)?;
+        return Ok(());
+    }
+    if args.fit_diagnostic {
+        let mut settings = model::Settings::load(&directory);
+        settings.days = args.days;
+        settings.ocr_debug = true;
+        if let Some(path) = &args.fit {
+            settings.own_fit = std::fs::read_to_string(path)?;
+        }
+        let result = worker::diagnose(
+            &directory,
+            &args.ship,
+            args.seed_database.as_deref(),
+            settings,
+        )?;
+        std::fs::write(
+            directory.join("fit-diagnostic.json"),
+            serde_json::to_vec_pretty(&result)?,
+        )?;
+        println!("{result}");
+        return Ok(());
+    }
     if args.target_test.len() == 2 {
         let selected_image = image::open(&args.target_test[0])?.to_rgba8();
         let selected = platform::ocr_document(&selected_image, &args.ocr_language)?;

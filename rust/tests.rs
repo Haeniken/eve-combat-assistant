@@ -963,3 +963,143 @@ fn inline_corporation_tag_does_not_hide_ship_name_selection() {
         "Velator"
     );
 }
+
+#[test]
+fn bundled_database_is_read_only_deduplicated_and_separate_from_user_records() {
+    let temp = Temp::new();
+    let path = temp.0.join("starter # database.sqlite3");
+    let c = catalog();
+    let first = mail(&c, 1, "200mm AutoCannon II");
+    let second = mail(&c, 2, "280mm Howitzer Artillery II");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT); CREATE TABLE killmails(id INTEGER PRIMARY KEY,ship,pilot,happened,raw TEXT); CREATE TABLE days(day TEXT PRIMARY KEY,source_count,index_total); INSERT INTO days VALUES('20261027',2,2);").unwrap();
+    let upstream: Value = serde_json::from_str(include_str!("../native/upstream.json")).unwrap();
+    for (key, value) in [
+        ("schema_version", json!(1)),
+        ("sde_build", upstream["sde_build"].clone()),
+        ("complete_days", json!(90)),
+        ("period_start", json!("2026-07-30")),
+        ("period_end", json!("2026-10-27")),
+        ("built_at", json!("fixture")),
+        ("records", json!(2)),
+        ("known_hulls", json!(423)),
+        ("hulls_with_records", json!(1)),
+    ] {
+        db.execute(
+            "INSERT INTO meta VALUES(?,?)",
+            rusqlite::params![key, value.to_string()],
+        )
+        .unwrap();
+    }
+    for m in [&first, &second] {
+        db.execute(
+            "INSERT INTO killmails VALUES(?,?,?,?,?)",
+            rusqlite::params![
+                m["killmail_id"].as_i64(),
+                587,
+                m["victim"]["character_id"].as_i64(),
+                m["killmail_time"].as_str(),
+                m.to_string()
+            ],
+        )
+        .unwrap();
+    }
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    crate::seed::attach(&connection, &path).unwrap();
+    assert!(
+        connection
+            .execute("DELETE FROM bundled.killmails", [])
+            .is_err()
+    );
+    drop(connection);
+    drop(db);
+    let before = std::fs::read(&path).unwrap();
+    let mut store = Store::open_with_seed(&temp.0.join("user"), Some(&path)).unwrap();
+    assert!(store.seed_error.is_none(), "{:?}", store.seed_error);
+    assert_eq!(store.global_ships().unwrap(), vec![587]);
+    assert_eq!(store.archive_count("20261027"), 2);
+    store.ingest(std::slice::from_ref(&first)).unwrap(); // personal-only duplicate must not mask seed global data
+    assert_eq!(store.global_mails(587).unwrap().len(), 2);
+    store.ingest_global(&[first]).unwrap();
+    assert_eq!(store.global_mails(587).unwrap().len(), 2);
+    assert_eq!(store.pilot_mails(587, 90000001).unwrap().len(), 1);
+    store
+        .ingest(&[mail(&c, 3, "Light Neutron Blaster II")])
+        .unwrap();
+    assert_eq!(store.global_mails(587).unwrap().len(), 2);
+    assert_eq!(store.pilot_mails(587, 90000003).unwrap().len(), 1);
+    drop(store);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn filter_report_and_personal_loss_are_independent_of_solo_filter() {
+    let c = catalog();
+    let mut fleet = mail(&c, 1, "200mm AutoCannon II");
+    fleet["attackers"] = json!([{"character_id":1},{"character_id":2},{"character_id":3}]);
+    let settings = Settings::default();
+    let popular = fits::population(std::slice::from_ref(&fleet), &c, &settings);
+    assert_eq!(popular.report.input, 1);
+    assert_eq!(popular.report.reasons["too_many_attackers"], 1);
+    assert_eq!(popular.total, 0);
+    let personal =
+        fits::pilot_selection(std::slice::from_ref(&fleet), 90000001, 587, &c, &settings);
+    assert!(personal.variant.unwrap().personal);
+    assert_eq!(personal.report.eligible, 1);
+    fleet["zkb"]["npc"] = json!(true);
+    assert!(
+        fits::pilot_selection(&[fleet], 90000001, 587, &c, &settings)
+            .variant
+            .is_none()
+    );
+}
+
+#[test]
+fn compact_public_mail_preserves_fit_and_attacker_filtering() {
+    let c = catalog();
+    let mut original = mail(&c, 1, "200mm AutoCannon II");
+    original["attackers"] = json!(
+        (1..=20)
+            .map(|i| json!({"character_id":i,"damage_done":123}))
+            .collect::<Vec<_>>()
+    );
+    original["victim"]["items"].as_array_mut().unwrap().extend([
+        json!({"flag":27,"item_type_id":tid(&c,"Fusion S"),"quantity_destroyed":100}),
+        json!({"flag":87,"item_type_id":tid(&c,"Warrior II"),"quantity_destroyed":2}),
+        json!({"flag":5,"item_type_id":tid(&c,"Warp Scrambler II"),"quantity_destroyed":100}),
+    ]);
+    let compact = crate::sources::compact_mail(&original, &c);
+    assert_eq!(compact["attackers"].as_array().unwrap().len(), 6);
+    assert_eq!(
+        fits::normalize(&original, &c),
+        fits::normalize(&compact, &c)
+    );
+    for max_attackers in 1..=5 {
+        let settings = Settings {
+            max_attackers,
+            ..Default::default()
+        };
+        assert_eq!(
+            fits::population(std::slice::from_ref(&original), &c, &settings).total,
+            fits::population(std::slice::from_ref(&compact), &c, &settings).total
+        );
+    }
+    assert!(!compact.to_string().contains("damage_done"));
+}
+
+#[test]
+fn legacy_statistics_settings_migrate_to_incremental_all_hull_updates() {
+    let temp = Temp::new();
+    let mut raw = serde_json::to_value(Settings::default()).unwrap();
+    raw.as_object_mut().unwrap().remove("statistics_version");
+    raw["sync_scope"] = json!(0);
+    raw["force_refresh"] = json!(true);
+    raw["pilot"] = json!("Preserved pilot");
+    let bytes = serde_json::to_vec(&raw).unwrap();
+    std::fs::write(temp.0.join("settings.json"), &bytes).unwrap();
+    let settings = Settings::load(&temp.0);
+    assert_eq!(settings.sync_scope, 2);
+    assert!(!settings.force_refresh);
+    assert_eq!(settings.pilot, "Preserved pilot");
+    assert_eq!(std::fs::read(temp.0.join("settings.json")).unwrap(), bytes);
+}

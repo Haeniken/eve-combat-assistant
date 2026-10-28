@@ -14,20 +14,25 @@ pub struct DebugLog {
     directory: PathBuf,
     error: Option<String>,
     sequence: u64,
+    stem: &'static str,
 }
 impl DebugLog {
     pub fn new(directory: PathBuf) -> Self {
+        Self::named(directory, "ocr")
+    }
+    fn named(directory: PathBuf, stem: &'static str) -> Self {
         Self {
             directory,
             error: None,
             sequence: 0,
+            stem,
         }
     }
     fn remember<T>(&mut self, result: Result<T, String>) -> Option<T> {
         match result {
             Ok(value) => Some(value),
             Err(error) => {
-                self.error = Some(format!("Не удалось записать диагностику OCR: {error}"));
+                self.error = Some(format!("Не удалось записать диагностику: {error}"));
                 None
             }
         }
@@ -41,23 +46,25 @@ impl DebugLog {
     }
     fn write_event(&self, event: Value) -> Result<(), String> {
         fs::create_dir_all(&self.directory).map_err(|e| e.to_string())?;
-        let path = self.directory.join("ocr.jsonl");
+        let path = self.directory.join(format!("{}.jsonl", self.stem));
         if fs::metadata(&path).is_ok_and(|m| m.len() >= LOG_LIMIT) {
-            let oldest = self.directory.join("ocr.3.jsonl");
+            let oldest = self.directory.join(format!("{}.3.jsonl", self.stem));
             if oldest.exists() {
                 fs::remove_file(oldest).map_err(|e| e.to_string())?;
             }
             for index in (1..3).rev() {
-                let from = self.directory.join(format!("ocr.{index}.jsonl"));
+                let from = self.directory.join(format!("{}.{index}.jsonl", self.stem));
                 if from.exists() {
                     fs::rename(
                         from,
-                        self.directory.join(format!("ocr.{}.jsonl", index + 1)),
+                        self.directory
+                            .join(format!("{}.{}.jsonl", self.stem, index + 1)),
                     )
                     .map_err(|e| e.to_string())?;
                 }
             }
-            fs::rename(&path, self.directory.join("ocr.1.jsonl")).map_err(|e| e.to_string())?;
+            fs::rename(&path, self.directory.join(format!("{}.1.jsonl", self.stem)))
+                .map_err(|e| e.to_string())?;
         }
         let record = json!({"time": chrono::Utc::now().to_rfc3339(), "version": env!("CARGO_PKG_VERSION"), "event": event});
         let mut file = fs::OpenOptions::new()
@@ -165,4 +172,81 @@ mod tests {
         assert!(log.take_error().is_none());
         fs::remove_dir_all(dir).unwrap();
     }
+}
+
+#[derive(Clone)]
+pub struct Trace {
+    log: std::sync::Arc<std::sync::Mutex<DebugLog>>,
+    enabled: bool,
+    context: Value,
+}
+pub fn trace_id(prefix: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    format!(
+        "{prefix}-{}-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_micros(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+impl Trace {
+    pub fn new(directory: PathBuf) -> Self {
+        Self {
+            log: std::sync::Arc::new(std::sync::Mutex::new(DebugLog::named(directory, "fits"))),
+            enabled: false,
+            context: Value::Null,
+        }
+    }
+    pub fn job(&self, enabled: bool, context: Value) -> Self {
+        Self {
+            log: self.log.clone(),
+            enabled,
+            context,
+        }
+    }
+    pub fn event(&self, kind: &str, fields: Value) {
+        if !self.enabled {
+            return;
+        }
+        let mut event = self.context.as_object().cloned().unwrap_or_default();
+        if let Some(fields) = fields.as_object() {
+            event.extend(fields.clone());
+        }
+        event.insert("kind".into(), Value::String(kind.into()));
+        let mut log = self.log.lock().unwrap_or_else(|p| p.into_inner());
+        log.event(true, Value::Object(event));
+    }
+    pub fn take_error(&self) -> Option<String> {
+        self.log
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take_error()
+    }
+}
+pub fn trace_url(input: &str) -> String {
+    let Ok(mut url) = url::Url::parse(input) else {
+        return "[invalid URL]".into();
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    let pairs: Vec<_> = url
+        .query_pairs()
+        .map(|(key, value)| {
+            let safe = ["page", "year", "month", "language", "datasource"].contains(&key.as_ref());
+            (
+                key.to_string(),
+                if safe {
+                    value.to_string()
+                } else {
+                    "[redacted]".into()
+                },
+            )
+        })
+        .collect();
+    url.set_query(None);
+    if !pairs.is_empty() {
+        url.query_pairs_mut().extend_pairs(pairs);
+    }
+    url.set_fragment(None);
+    url.to_string()
 }

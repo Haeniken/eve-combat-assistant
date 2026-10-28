@@ -21,6 +21,8 @@ pub struct Settings {
     pub sso_client_id: String,
     pub sync_scope: u8,
     pub force_refresh: bool,
+    #[serde(default)]
+    pub statistics_version: u8,
     pub ship: String,
     pub pilot: String,
     pub days: u32,
@@ -57,8 +59,9 @@ impl Default for Settings {
             booster_effects: Vec::new(),
             // Client ID публичен; Client Secret для desktop PKCE не используется.
             sso_client_id: "fdfad289b04d473195edc49717e9fc10".into(),
-            sync_scope: 0,
-            force_refresh: true,
+            sync_scope: 2,
+            force_refresh: false,
+            statistics_version: 2,
             ship: "Rifter".into(),
             pilot: String::new(),
             days: 90,
@@ -102,6 +105,11 @@ impl Settings {
         s.max_variants = s.max_variants.clamp(1, 12);
         s.max_attackers = s.max_attackers.clamp(1, 5);
         s.skill_level = s.skill_level.min(5);
+        if s.statistics_version < 2 {
+            s.sync_scope = 2;
+            s.force_refresh = false;
+            s.statistics_version = 2;
+        }
         s.sync_scope = s.sync_scope.min(2);
         s
     }

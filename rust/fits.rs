@@ -244,28 +244,68 @@ pub fn fleet_ids(mails: &[Value]) -> HashSet<i64> {
     }
     out
 }
-pub fn eligible(
+fn rejection(
     mail: &Value,
     fit: &Value,
     catalog: &Catalog,
     settings: &Settings,
     fleet: &HashSet<i64>,
-) -> bool {
-    if mail["zkb"]["npc"] == true
-        || mail["zkb"]["awox"] == true
-        || fleet.contains(&id(mail, "killmail_id"))
-    {
-        return false;
+) -> Option<&'static str> {
+    if mail["zkb"]["npc"] == true {
+        return Some("npc");
+    }
+    if mail["zkb"]["awox"] == true {
+        return Some("awox");
+    }
+    if fleet.contains(&id(mail, "killmail_id")) {
+        return Some("fleet_event");
     }
     let attackers: HashSet<_> = array(&mail["attackers"])
         .iter()
         .map(|a| id(a, "character_id"))
         .filter(|id| *id > 0)
         .collect();
-    !attackers.is_empty()
-        && attackers.len() <= settings.max_attackers
-        && !fleet_module(fit, catalog)
-        && !settings.excluded.contains(&fingerprint(fit))
+    if attackers.is_empty() {
+        return Some("no_player_attackers");
+    }
+    if attackers.len() > settings.max_attackers {
+        return Some("too_many_attackers");
+    }
+    if fleet_module(fit, catalog) {
+        return Some("fleet_module");
+    }
+    if settings.excluded.contains(&fingerprint(fit)) {
+        return Some("user_excluded");
+    }
+    None
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FilterReport {
+    pub input: usize,
+    pub examined: usize,
+    pub eligible: usize,
+    pub reasons: BTreeMap<String, usize>,
+}
+impl FilterReport {
+    fn reject(&mut self, reason: &str) {
+        *self.reasons.entry(reason.into()).or_default() += 1;
+    }
+}
+pub fn seed_population_key(ship: i32, settings: &Settings) -> String {
+    hash(
+        &json!([
+            "seed-population-v3-sde3503375",
+            ship,
+            settings.days,
+            settings.max_attackers,
+            settings.max_variants,
+            settings.coverage,
+            settings.min_percent,
+            settings.excluded,
+            Utc::now().date_naive()
+        ])
+        .to_string(),
+    )
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Variant {
@@ -284,28 +324,40 @@ pub struct Population {
     pub excluded: usize,
     pub unknown: usize,
     pub other: f64,
+    #[serde(default)]
+    pub report: FilterReport,
 }
 pub fn population(mails: &[Value], catalog: &Catalog, settings: &Settings) -> Population {
     let mut out = Population::default();
+    out.report.input = mails.len();
     let mut grouped: HashMap<String, Variant> = HashMap::new();
     let fleet = fleet_ids(mails);
     let cutoff = if settings.days > 0 {
-        (Utc::now() - TimeDelta::days(settings.days as i64)).timestamp()
+        (Utc::now().date_naive() - TimeDelta::days(settings.days as i64))
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp()
     } else {
         0
     };
     for mail in mails {
+        out.report.examined += 1;
         if time(mail) < cutoff {
+            out.report.reject("outside_period");
             continue;
         }
         let Some(fit) = normalize(mail, catalog) else {
             out.unknown += 1;
+            out.report.reject("unrecognized_fit");
             continue;
         };
-        if !eligible(mail, &fit, catalog, settings, &fleet) {
+        if let Some(reason) = rejection(mail, &fit, catalog, settings, &fleet) {
             out.excluded += 1;
+            out.report.reject(reason);
             continue;
         }
+        out.report.eligible += 1;
         let (title, key) = describe(&fit, catalog);
         let v = grouped.entry(key.clone()).or_insert_with(|| Variant {
             title,
@@ -359,6 +411,71 @@ pub fn population(mails: &[Value], catalog: &Catalog, settings: &Settings) -> Po
     };
     out
 }
+pub struct PilotSelection {
+    pub variant: Option<Variant>,
+    pub report: FilterReport,
+}
+pub fn pilot_selection(
+    mails: &[Value],
+    pilot: i64,
+    ship: i32,
+    catalog: &Catalog,
+    settings: &Settings,
+) -> PilotSelection {
+    let cutoff = (Utc::now() - TimeDelta::days(settings.pilot_days as i64)).timestamp();
+    let mut selection = PilotSelection {
+        variant: None,
+        report: FilterReport {
+            input: mails.len(),
+            ..Default::default()
+        },
+    };
+    for m in mails {
+        selection.report.examined += 1;
+        let reason = if id(&m["victim"], "character_id") != pilot {
+            Some("different_pilot")
+        } else if id(&m["victim"], "ship_type_id") != ship as i64 {
+            Some("different_hull")
+        } else if time(m) < cutoff {
+            Some("outside_period")
+        } else if m["zkb"]["npc"] == true
+            || !array(&m["attackers"])
+                .iter()
+                .any(|a| id(a, "character_id") > 0)
+        {
+            Some("not_pvp")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            selection.report.reject(reason);
+            continue;
+        }
+        let Some(fit) = normalize(m, catalog) else {
+            selection.report.reject("unrecognized_fit");
+            continue;
+        };
+        if settings.excluded.contains(&fingerprint(&fit)) {
+            selection.report.reject("user_excluded");
+            continue;
+        }
+        // Actual player losses are independent of the global solo/fleet sample.
+        selection.report.eligible += 1;
+        let (title, key) = describe(&fit, catalog);
+        selection.variant = Some(Variant {
+            title,
+            key,
+            fit,
+            count: 0,
+            percent: None,
+            personal: true,
+            examples: Vec::new(),
+        });
+        break;
+    }
+    selection
+}
+#[cfg(test)]
 pub fn pilot_variant(
     mails: &[Value],
     pilot: i64,
@@ -366,31 +483,7 @@ pub fn pilot_variant(
     catalog: &Catalog,
     settings: &Settings,
 ) -> Option<Variant> {
-    let cutoff = (Utc::now() - TimeDelta::days(settings.pilot_days as i64)).timestamp();
-    let fleet = fleet_ids(mails);
-    for m in mails {
-        if id(&m["victim"], "character_id") != pilot
-            || id(&m["victim"], "ship_type_id") != ship as i64
-            || time(m) < cutoff
-        {
-            continue;
-        }
-        if let Some(fit) = normalize(m, catalog)
-            && eligible(m, &fit, catalog, settings, &fleet)
-        {
-            let (title, key) = describe(&fit, catalog);
-            return Some(Variant {
-                title,
-                key,
-                fit,
-                count: 0,
-                percent: None,
-                personal: true,
-                examples: Vec::new(),
-            });
-        }
-    }
-    None
+    pilot_selection(mails, pilot, ship, catalog, settings).variant
 }
 pub fn eft(fit: &Value, catalog: &Catalog) -> String {
     let mut lines = vec![

@@ -16,59 +16,86 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct UpdateProgress {
+    pub total_days: usize,
+    pub completed_days: usize,
+    pub current_day: Option<String>,
+    pub phase: String,
+    pub downloaded_bytes: u64,
+    pub inserted: usize,
+    pub finished: bool,
+    pub error: Option<String>,
+}
+impl UpdateProgress {
+    pub fn fraction(&self) -> Option<f32> {
+        (self.total_days > 0)
+            .then(|| (self.completed_days as f32 / self.total_days as f32).clamp(0., 1.))
+    }
+    pub fn caption(&self) -> String {
+        let mut text = self.phase.clone();
+        if self.total_days > 0 {
+            text += &format!(" · {} / {} дней", self.completed_days, self.total_days);
+        }
+        if let Some(day) = &self.current_day {
+            text += &format!(" · {day}");
+        }
+        if self.downloaded_bytes > 0 && !self.finished {
+            text += &format!(" · {:.1} МиБ", self.downloaded_bytes as f64 / 1048576.);
+        }
+        text += &format!(" · добавлено {}", self.inserted);
+        text
+    }
+}
+
 pub struct Sources {
     pub store: Store,
     cancel: Arc<AtomicBool>,
     agent: ureq::Agent,
     last: Instant,
+    trace: Option<crate::diagnostics::Trace>,
+    catalog: crate::engine::Catalog,
+    archive_base: String,
+    update_progress: UpdateProgress,
+    on_update: Option<Box<dyn Fn(UpdateProgress) + Send>>,
 }
 impl Sources {
     pub fn refresh_statistics(
         &mut self,
-        ship: i32,
         settings: &crate::model::Settings,
         progress: &dyn Fn(String),
     ) -> Result<usize, String> {
         if settings.force_refresh {
             self.store.invalidate_statistics_cache()?;
         }
-        if settings.sync_scope == 2 {
-            let end = Utc::now().date_naive() - TimeDelta::days(1);
-            let start = if settings.days == 0 {
-                NaiveDate::from_ymd_opt(2003, 5, 1).unwrap()
-            } else {
-                end - TimeDelta::days(settings.days.saturating_sub(1) as i64)
-            };
-            if settings.force_refresh {
-                self.store.prepare_archive_refresh(
-                    &start.format("%Y%m%d").to_string(),
-                    &end.format("%Y%m%d").to_string(),
-                )?;
-            }
-            let count = self.archive(start, end, progress)?;
+        let end = Utc::now().date_naive();
+        let start = if settings.days == 0 {
+            NaiveDate::from_ymd_opt(2003, 5, 1).unwrap()
+        } else {
+            end - TimeDelta::days(settings.days as i64)
+        };
+        self.record("statistics_update_start",json!({"scope":"all_catalog_hulls","period_start":start,"period_end":end,"force":settings.force_refresh,"catalog_hulls":self.catalog.ships.len(),"bundled":self.store.seed}));
+        if settings.force_refresh {
+            self.store.prepare_archive_refresh(
+                &start.format("%Y%m%d").to_string(),
+                &end.format("%Y%m%d").to_string(),
+            )?;
+        }
+        let result = self.archive_update(start, end, settings.force_refresh, progress);
+        self.record(
+            "statistics_update_end",
+            json!({"inserted":result.as_ref().ok(),"error":result.as_ref().err()}),
+        );
+        if result.is_ok() {
             self.store
                 .set_meta("archive_refresh_pending", &Value::Null)?;
-            return Ok(count);
         }
-        let mut ships = if settings.sync_scope == 1 {
-            self.store.global_ships()?
-        } else {
-            Vec::new()
-        };
-        if !ships.contains(&ship) {
-            ships.push(ship);
-        }
-        let mut count = 0;
-        for (index, hull) in ships.iter().enumerate() {
-            self.check()?;
-            let report = |text| progress(format!("Корпус {}/{} · {text}", index + 1, ships.len()));
-            count += self.sync_ship(*hull, settings.days, &report)?;
-        }
-        Ok(count)
+        result
     }
-    pub fn new(store: Store, cancel: Arc<AtomicBool>) -> Self {
+    pub fn new(store: Store, cancel: Arc<AtomicBool>, catalog: crate::engine::Catalog) -> Self {
         let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(25)))
+            .http_status_as_error(false)
+            .timeout_global(Some(Duration::from_secs(60)))
             .build()
             .into();
         Self {
@@ -76,6 +103,44 @@ impl Sources {
             cancel,
             agent,
             last: Instant::now() - Duration::from_secs(2),
+            trace: None,
+            catalog,
+            archive_base: "https://r2z2.zkillboard.com/history".into(),
+            update_progress: UpdateProgress::default(),
+            on_update: None,
+        }
+    }
+    pub fn set_trace(&mut self, trace: crate::diagnostics::Trace) {
+        self.store.set_trace(trace.clone());
+        self.trace = Some(trace);
+    }
+    pub fn set_update_progress(&mut self, callback: impl Fn(UpdateProgress) + Send + 'static) {
+        self.on_update = Some(Box::new(callback));
+    }
+    fn publish_update(&self) {
+        if let Some(callback) = &self.on_update {
+            callback(self.update_progress.clone());
+        }
+    }
+    fn finish_day(&mut self) {
+        self.update_progress.completed_days += 1;
+        self.publish_update();
+    }
+    pub fn finish_update(&mut self, error: Option<String>) {
+        self.update_progress.finished = true;
+        self.update_progress.phase = if error.is_some() {
+            "Обновление не завершено"
+        } else {
+            "База актуализирована"
+        }
+        .into();
+        self.update_progress.error = error;
+        self.update_progress.current_day = None;
+        self.publish_update();
+    }
+    fn record(&self, kind: &str, fields: Value) {
+        if let Some(trace) = &self.trace {
+            trace.event(kind, fields);
         }
     }
     fn check(&self) -> Result<(), String> {
@@ -95,73 +160,190 @@ impl Sources {
     }
     pub fn request(&mut self, url: &str, body: Option<&Value>, ttl: i64) -> Result<Value, String> {
         self.check()?;
+        let request_id = crate::diagnostics::trace_id("http");
+        let safe_url = crate::diagnostics::trace_url(url);
+        let method = if body.is_some() { "POST" } else { "GET" };
+        let shape = |value: &Value| -> Value {
+            match value {
+                Value::Array(rows) => json!({"type":"array","records":rows.len()}),
+                Value::Object(map) => {
+                    json!({"type":"object","keys":map.keys().take(20).collect::<Vec<_>>()})
+                }
+                _ => json!({"type":"scalar"}),
+            }
+        };
+        self.record("http_request",json!({"request_id":request_id,"url":safe_url,"method":method,"cache_ttl_seconds":ttl,"body":body.map(shape)}));
         let key = format!("{url}{}", body.map(Value::to_string).unwrap_or_default());
         if ttl > 0
-            && let Some(v) = self.store.cached(&key)
+            && let Some(value) = self.store.cached(&key)
         {
-            return Ok(v);
+            self.record(
+                "http_cache_hit",
+                json!({"request_id":request_id,"response":shape(&value)}),
+            );
+            return Ok(value);
         }
+        self.record(
+            "http_cache_miss",
+            json!({"request_id":request_id,"cache_enabled":ttl>0}),
+        );
         if url.contains("zkillboard.com/api/") {
-            self.wait((1.1 - self.last.elapsed().as_secs_f64()).max(0.))?;
+            let wait = (1.1 - self.last.elapsed().as_secs_f64()).max(0.);
+            self.record(
+                "http_wait",
+                json!({"request_id":request_id,"reason":"rate_limit","seconds":wait}),
+            );
+            self.wait(wait)?;
             self.last = Instant::now();
         }
-        for attempt in 0..3 {
+        for attempt in 1..=3_u32 {
             self.check()?;
-            let result = if let Some(b) = body {
+            let started = Instant::now();
+            self.record(
+                "http_attempt",
+                json!({"request_id":request_id,"attempt":attempt}),
+            );
+            let agent = concat!(
+                "EVECombatAssistant/",
+                env!("CARGO_PKG_VERSION"),
+                " (https://github.com/Haeniken/eve-combat-assistant)"
+            );
+            let result = if let Some(body) = body {
                 self.agent
                     .post(url)
-                    .header(
-                        "User-Agent",
-                        "EVECombatAssistant/0.2 (haeniken; local desktop)",
-                    )
+                    .header("User-Agent", agent)
                     .header("X-Compatibility-Date", "2026-10-27")
-                    .send_json(b)
+                    .send_json(body)
             } else {
                 self.agent
                     .get(url)
-                    .header(
-                        "User-Agent",
-                        "EVECombatAssistant/0.2 (haeniken; local desktop)",
-                    )
+                    .header("User-Agent", agent)
                     .header("Accept-Language", "en")
                     .header("X-Compatibility-Date", "2026-10-27")
                     .call()
             };
-            match result {
-                Ok(mut response) => {
-                    let mut raw = Vec::new();
-                    response
-                        .body_mut()
-                        .as_reader()
-                        .take(100 * 1024 * 1024 + 1)
-                        .read_to_end(&mut raw)
-                        .map_err(|e| e.to_string())?;
-                    if raw.len() > 100 * 1024 * 1024 {
-                        return Err("Слишком большой ответ источника".into());
+            let mut response = match result {
+                Ok(response) => response,
+                Err(error) => {
+                    let category = match &error {
+                        ureq::Error::Timeout(_) => "timeout",
+                        ureq::Error::HostNotFound => "dns",
+                        ureq::Error::ConnectionFailed => "connection",
+                        ureq::Error::Io(_) => "io",
+                        ureq::Error::Tls(_) => "tls",
+                        ureq::Error::RedirectFailed => "redirect",
+                        _ => "transport",
+                    };
+                    self.record("http_error",json!({"request_id":request_id,"attempt":attempt,"category":category,"elapsed_ms":started.elapsed().as_millis()}));
+                    if attempt < 3 {
+                        self.record("http_retry",json!({"request_id":request_id,"attempt":attempt,"seconds":2_u32.pow(attempt)}));
+                        self.wait(2_u32.pow(attempt) as f64)?;
+                        continue;
                     }
-                    let value: Value = serde_json::from_slice(&raw)
-                        .map_err(|_| "Источник вернул некорректные данные")?;
-                    if let Some(error) = value.get("error").and_then(Value::as_str) {
-                        return Err(error.chars().take(200).collect());
-                    }
-                    if ttl > 0 {
-                        self.store.cache(&key, &value, ttl)?;
-                    }
-                    return Ok(value);
+                    return Err(format!("Не удалось получить данные: {error}"));
                 }
-                Err(ureq::Error::StatusCode(code))
-                    if [420, 429, 502, 503, 504].contains(&code) && attempt < 2 =>
-                {
-                    self.wait((2_u32.pow(attempt + 1)) as f64)?
+            };
+            let status = response.status().as_u16();
+            let mut headers = serde_json::Map::new();
+            for name in [
+                "content-type",
+                "content-length",
+                "retry-after",
+                "cache-control",
+                "etag",
+                "x-esi-error-limit-remain",
+                "x-esi-error-limit-reset",
+            ] {
+                if let Some(value) = response.headers().get(name).and_then(|v| v.to_str().ok()) {
+                    headers.insert(name.into(), json!(value));
                 }
-                Err(e) => return Err(format!("Не удалось получить данные: {e}")),
             }
+            self.record("http_headers",json!({"request_id":request_id,"attempt":attempt,"status":status,"headers":headers,"elapsed_ms":started.elapsed().as_millis()}));
+            if !(200..300).contains(&status) {
+                if [420, 429, 502, 503, 504].contains(&status) && attempt < 3 {
+                    let seconds = response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(2_u32.pow(attempt) as f64)
+                        .clamp(1., 120.);
+                    self.record("http_retry",json!({"request_id":request_id,"attempt":attempt,"status":status,"seconds":seconds}));
+                    drop(response);
+                    self.wait(seconds)?;
+                    continue;
+                }
+                self.record("http_error",json!({"request_id":request_id,"attempt":attempt,"status":status,"category":"status","elapsed_ms":started.elapsed().as_millis()}));
+                return Err(format!("Источник вернул HTTP {status}"));
+            }
+            let limit = if url.contains("/history/raw/") {
+                512 * 1024 * 1024
+            } else {
+                100 * 1024 * 1024
+            };
+            let mut raw = Vec::new();
+            let track_download = url.contains("/raw/") && self.on_update.is_some();
+            let reading = (|| -> std::io::Result<()> {
+                let mut reader = response.body_mut().as_reader().take(limit + 1);
+                let mut chunk = [0; 65536];
+                let mut last_progress = Instant::now() - Duration::from_secs(1);
+                loop {
+                    self.check().map_err(std::io::Error::other)?;
+                    let read = reader.read(&mut chunk)?;
+                    if read == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&chunk[..read]);
+                    if track_download && last_progress.elapsed() >= Duration::from_millis(200) {
+                        self.update_progress.downloaded_bytes = raw.len() as u64;
+                        self.publish_update();
+                        last_progress = Instant::now();
+                    }
+                }
+                if track_download {
+                    self.update_progress.downloaded_bytes = raw.len() as u64;
+                    self.publish_update();
+                }
+                Ok(())
+            })();
+            if let Err(error) = reading {
+                self.record("http_error",json!({"request_id":request_id,"attempt":attempt,"status":status,"category":"body_read","bytes":raw.len(),"elapsed_ms":started.elapsed().as_millis()}));
+                return Err(error.to_string());
+            }
+            if raw.len() as u64 > limit {
+                self.record("http_error",json!({"request_id":request_id,"category":"body_limit","bytes":raw.len(),"limit":limit}));
+                return Err("Слишком большой ответ источника".into());
+            }
+            let value: Value = match serde_json::from_slice(&raw) {
+                Ok(value) => value,
+                Err(_) => {
+                    self.record("http_error",json!({"request_id":request_id,"category":"invalid_json","bytes":raw.len()}));
+                    return Err("Источник вернул некорректные данные".into());
+                }
+            };
+            if let Some(error) = value.get("error").and_then(Value::as_str) {
+                self.record(
+                    "http_error",
+                    json!({"request_id":request_id,"category":"api_error","status":status}),
+                );
+                return Err(error.chars().take(200).collect());
+            }
+            if ttl > 0
+                && let Err(error) = self.store.cache(&key, &value, ttl)
+            {
+                self.record(
+                    "http_cache_write_error",
+                    json!({"request_id":request_id,"error":error}),
+                );
+            }
+            self.record("http_complete",json!({"request_id":request_id,"attempt":attempt,"status":status,"bytes":raw.len(),"response":shape(&value),"elapsed_ms":started.elapsed().as_millis(),"cached":ttl>0}));
+            return Ok(value);
         }
         Err("Источник временно недоступен".into())
     }
     fn complete(&mut self, row: &Value) -> Result<Value, String> {
         if row.get("victim").is_some() {
-            return Ok(row.clone());
+            return Ok(compact_mail(row, &self.catalog));
         }
         let hash = s(&row["zkb"], "hash");
         let km = id(row, "killmail_id");
@@ -169,12 +351,12 @@ impl Sources {
             return Err("Killmail без ID или hash".into());
         }
         let mut mail = self.request(
-            &format!("https://esi.evetech.net/killmails/{km}/{hash}"),
+            &format!("https://esi.evetech.net/killmails/{km}/{hash}/"),
             None,
             2592000,
         )?;
         mail["zkb"] = row["zkb"].clone();
-        Ok(mail)
+        Ok(compact_mail(&mail, &self.catalog))
     }
     pub fn sync_ship(
         &mut self,
@@ -249,7 +431,7 @@ impl Sources {
         }
         progress("Поиск фита пилота…".into());
         let resolved = self.request(
-            "https://esi.evetech.net/universe/ids",
+            "https://esi.evetech.net/universe/ids/",
             Some(&json!([name])),
             86400,
         )?;
@@ -258,8 +440,13 @@ impl Sources {
             .find(|r| s(r, "name").to_lowercase() == name.to_lowercase())
             .map(|r| id(r, "id"));
         let Some(character) = character else {
+            self.record("pilot_not_found", json!({"pilot":name}));
             return Ok(());
         };
+        self.record(
+            "pilot_resolved",
+            json!({"pilot":name,"character_id":character,"ship_id":ship}),
+        );
         self.store.set_meta(
             &format!("character:{}", name.to_lowercase()),
             &json!(character),
@@ -280,7 +467,8 @@ impl Sources {
                 mails.push(m);
             }
         }
-        self.store.ingest(&mails)?;
+        let inserted = self.store.ingest(&mails)?;
+        self.record("pilot_ingested",json!({"pilot":name,"character_id":character,"ship_id":ship,"matching_losses":mails.len(),"inserted":inserted}));
         Ok(())
     }
     pub fn archive(
@@ -289,37 +477,62 @@ impl Sources {
         end: NaiveDate,
         progress: &dyn Fn(String),
     ) -> Result<usize, String> {
+        self.archive_update(start, end, false, progress)
+    }
+    fn archive_update(
+        &mut self,
+        start: NaiveDate,
+        end: NaiveDate,
+        force: bool,
+        progress: &dyn Fn(String),
+    ) -> Result<usize, String> {
         if start > end {
             return Err("Неверный период архива".into());
         }
-        let mut date = start;
-        let mut count = 0;
-        let totals = self.request("https://r2z2.zkillboard.com/history/totals.json", None, 0)?;
+        self.update_progress = UpdateProgress {
+            total_days: (end - start).num_days() as usize + 1,
+            phase: "Проверка архива".into(),
+            ..Default::default()
+        };
+        self.publish_update();
+        let totals = self.request(&format!("{}/totals.json", self.archive_base), None, 0)?;
         let totals = totals
             .as_object()
             .ok_or("Некорректный указатель дневного архива")?;
+        let (mut date, mut count, mut failed) = (start, 0, Vec::new());
         while date <= end {
-            let stamp = date.format("%Y%m%d");
             self.check()?;
-            if totals
-                .get(&stamp.to_string())
-                .and_then(Value::as_i64)
-                .unwrap_or(0)
-                == 0
-            {
+            let stamp = date.format("%Y%m%d").to_string();
+            self.update_progress.current_day = Some(date.format("%d.%m.%Y").to_string());
+            self.update_progress.downloaded_bytes = 0;
+            self.update_progress.phase = "Проверка локальной базы".into();
+            self.publish_update();
+            let expected = totals.get(&stamp).and_then(Value::as_u64).unwrap_or(0) as usize;
+            let covered = self.store.archive_count(&stamp);
+            self.record("archive_day",json!({"day":stamp,"expected":expected,"local_or_bundled":covered,"download":expected>0 && (force || covered!=expected)}));
+            if expected == 0 || !force && covered == expected {
+                self.finish_day();
                 date += TimeDelta::days(1);
                 continue;
             }
-            if self.store.meta(&format!("archive:{stamp}")) == Some(json!(true)) {
-                date += TimeDelta::days(1);
-                continue;
-            }
-            progress(format!("Дневной архив · {stamp}"));
-            let rows = self.request(
-                &format!("https://r2z2.zkillboard.com/history/raw/{stamp}.json"),
-                None,
-                0,
-            )?;
+            progress(format!(
+                "База всех кораблей · {} · добавлено {count}",
+                date.format("%d.%m.%Y")
+            ));
+            self.update_progress.phase = "Загрузка данных".into();
+            self.publish_update();
+            let result = self.request(&format!("{}/raw/{stamp}.json", self.archive_base), None, 0);
+            let rows = match result {
+                Ok(rows) => rows,
+                Err(error) => {
+                    self.check()?;
+                    self.record("archive_day_error", json!({"day":stamp,"error":error}));
+                    failed.push(stamp);
+                    self.finish_day();
+                    date += TimeDelta::days(1);
+                    continue;
+                }
+            };
             let rows: Vec<Value> = if rows.is_array() {
                 array(&rows).to_vec()
             } else {
@@ -329,15 +542,317 @@ impl Sources {
                     .cloned()
                     .collect()
             };
+            let source_count = rows.len();
+            let mut verified = source_count == expected;
+            if !verified {
+                let ids: std::collections::HashSet<_> = rows
+                    .iter()
+                    .map(|r| id(r, "killmail_id").to_string())
+                    .collect();
+                let index = self.request(&format!("{}/{stamp}.json", self.archive_base), None, 0);
+                verified = index
+                    .as_ref()
+                    .ok()
+                    .and_then(Value::as_object)
+                    .is_some_and(|index| {
+                        index.len() == ids.len() && index.keys().all(|key| ids.contains(key))
+                    });
+                self.record("archive_index_verification",json!({"day":stamp,"published_total":expected,"available_records":source_count,"verified":verified,"error":index.as_ref().err()}));
+            }
+
             let mut mails = Vec::new();
             for row in rows {
-                mails.push(self.complete(&row)?);
+                let row = self.complete(&row)?;
+                if self.catalog.get(id(&row["victim"], "ship_type_id") as i32)["category"] == 6 {
+                    mails.push(row);
+                }
             }
-            count += self.store.ingest_global(&mails)?;
-            self.store
-                .set_meta(&format!("archive:{stamp}"), &json!(true))?;
+            self.update_progress.phase = "Сохранение данных".into();
+            self.publish_update();
+            let inserted = self.store.ingest_global(&mails)?;
+            count += inserted;
+            self.update_progress.inserted = count;
+            self.store.set_meta(
+                &format!("archive_count:{stamp}"),
+                &json!(if verified { expected } else { source_count }),
+            )?;
+            self.record("archive_day_ingested",json!({"day":stamp,"source_count":source_count,"ship_records":mails.len(),"inserted":inserted,"complete":verified}));
+            if !verified {
+                failed.push(stamp);
+            }
+            self.finish_day();
             date += TimeDelta::days(1);
         }
-        Ok(count)
+        self.record(
+            "archive_complete",
+            json!({"inserted":count,"failed_days":failed}),
+        );
+        if failed.is_empty() {
+            Ok(count)
+        } else {
+            Err(format!(
+                "База обновлена частично: добавлено {count}, не завершено дней: {}. Повторите обновление",
+                failed.len()
+            ))
+        }
+    }
+}
+/// Same public fitting subset as the installer builder. No response auth data.
+pub fn compact_mail(mail: &Value, catalog: &crate::engine::Catalog) -> Value {
+    let victim = &mail["victim"];
+    let mut seen = std::collections::HashSet::new();
+    let attackers: Vec<_> = array(&mail["attackers"])
+        .iter()
+        .filter_map(|a| {
+            let character = id(a, "character_id");
+            (character > 0 && seen.insert(character)).then(|| json!({"character_id":character}))
+        })
+        .take(6)
+        .collect();
+    let items: Vec<_> = array(&victim["items"])
+        .iter()
+        .filter(|item| {
+            let flag = id(item, "flag");
+            let category = id(catalog.get(id(item, "item_type_id") as i32), "category");
+            ([7, 8, 32, 66].contains(&category)
+                && ((11..=34).contains(&flag)
+                    || (92..=99).contains(&flag)
+                    || (125..=132).contains(&flag)))
+                || category == 18 && flag == 87
+        })
+        .map(|item| {
+            let mut row = serde_json::Map::new();
+            for key in [
+                "item_type_id",
+                "flag",
+                "quantity_destroyed",
+                "quantity_dropped",
+            ] {
+                if let Some(value) = item.get(key) {
+                    row.insert(key.into(), value.clone());
+                }
+            }
+            Value::Object(row)
+        })
+        .collect();
+    let mut result = json!({"killmail_id":mail["killmail_id"],"killmail_time":mail["killmail_time"],"solar_system_id":mail["solar_system_id"],"victim":{"ship_type_id":victim["ship_type_id"],"character_id":victim["character_id"],"corporation_id":victim["corporation_id"],"items":items},"attackers":attackers});
+    if let Some(zkb) = mail.get("zkb") {
+        let mut flags = serde_json::Map::new();
+        for key in ["npc", "awox"] {
+            if let Some(value) = zkb.get(key) {
+                flags.insert(key.into(), value.clone());
+            }
+        }
+        result["zkb"] = Value::Object(flags);
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{io::Write, net::TcpListener};
+    fn mock(responses: Vec<(u16, Value)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let thread = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, body) in responses {
+                let deadline = Instant::now() + Duration::from_secs(15);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(e)
+                            if e.kind() == std::io::ErrorKind::WouldBlock
+                                && Instant::now() < deadline =>
+                        {
+                            thread::sleep(Duration::from_millis(10))
+                        }
+                        Err(e) => panic!("mock HTTP accept: {e}"),
+                    }
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = [0; 8192];
+                let n = stream.read(&mut bytes).unwrap();
+                requests.push(
+                    String::from_utf8_lossy(&bytes[..n])
+                        .lines()
+                        .next()
+                        .unwrap()
+                        .to_string(),
+                );
+                let body = body.to_string();
+                write!(stream,"HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nRetry-After: 1\r\nSet-Cookie: MUST_NOT_APPEAR\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            }
+            requests
+        });
+        (address, thread)
+    }
+    fn temp() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(crate::diagnostics::trace_id("eve-source-test"));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+    #[test]
+    fn http_retry_cache_and_trace_redact_secrets_and_response_body() {
+        let directory = temp();
+        let (base, server) = mock(vec![
+            (429, json!({"ignored":"PRIVATE_RESPONSE"})),
+            (200, json!([{"secret":"PRIVATE_RESPONSE"}])),
+        ]);
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        source.set_trace(
+            crate::diagnostics::Trace::new(directory.join("debug"))
+                .job(true, json!({"job_id":"test"})),
+        );
+        let url = format!("{base}/test?token=PRIVATE_TOKEN&page=2");
+        let expected = json!([{"secret":"PRIVATE_RESPONSE"}]);
+        assert_eq!(source.request(&url, None, 3600).unwrap(), expected);
+        assert_eq!(source.request(&url, None, 3600).unwrap(), expected);
+        assert_eq!(server.join().unwrap().len(), 2);
+        let log = std::fs::read_to_string(directory.join("debug/fits.jsonl")).unwrap();
+        for absent in [
+            "PRIVATE_TOKEN",
+            "PRIVATE_RESPONSE",
+            "MUST_NOT_APPEAR",
+            "Set-Cookie",
+        ] {
+            assert!(!log.contains(absent), "trace leaked {absent}");
+        }
+        for event in [
+            "http_retry",
+            "http_cache_hit",
+            "http_complete",
+            "http_headers",
+            "429",
+            "page=2",
+        ] {
+            assert!(log.contains(event), "trace missing {event}");
+        }
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn archive_update_covers_all_hulls_and_only_downloads_new_or_changed_days() {
+        let directory = temp();
+        let record = |id, ship| json!({"killmail_id":id,"killmail_time":"2026-10-27T12:00:00Z","solar_system_id":30000142,"victim":{"ship_type_id":ship,"character_id":90000000+id,"corporation_id":98000000+id,"items":[]},"attackers":[{"character_id":80000000+id}]});
+        let two = json!({"1":record(1,587),"2":record(2,47466)});
+        let three = json!({"1":record(1,587),"2":record(2,47466),"3":record(3,593)});
+        let totals = json!({"20261026":1,"20261027":2});
+        let (base, server) = mock(vec![
+            (200, totals.clone()),
+            (200, two),
+            (200, totals),
+            (200, json!({"20261026":1,"20261027":3})),
+            (200, three),
+        ]);
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        source.archive_base = format!("{base}/history");
+        let updates = Arc::new(std::sync::Mutex::new(Vec::<UpdateProgress>::new()));
+        let observer = updates.clone();
+        source.set_update_progress(move |progress| observer.lock().unwrap().push(progress));
+        source
+            .store
+            .set_meta("archive_count:20261026", &json!(1))
+            .unwrap();
+        let start = NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        let end = start + TimeDelta::days(1);
+        assert_eq!(source.archive(start, end, &|_| {}).unwrap(), 2);
+        source.finish_update(None);
+        {
+            let updates = updates.lock().unwrap();
+            assert_eq!(updates.first().unwrap().fraction(), Some(0.));
+            assert_eq!(updates.last().unwrap().fraction(), Some(1.));
+            assert!(updates.last().unwrap().finished);
+            assert_eq!(updates.last().unwrap().inserted, 2);
+            assert!(
+                updates
+                    .iter()
+                    .any(|p| p.phase == "Загрузка данных" && p.downloaded_bytes > 0)
+            );
+            assert!(
+                updates
+                    .windows(2)
+                    .all(|w| w[0].completed_days <= w[1].completed_days)
+            );
+        }
+        assert_eq!(source.store.global_ships().unwrap(), vec![587, 47466]);
+        assert_eq!(source.archive(start, end, &|_| {}).unwrap(), 0);
+        assert_eq!(source.archive(start, end, &|_| {}).unwrap(), 1);
+        assert_eq!(source.store.global_ships().unwrap(), vec![587, 593, 47466]);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.iter().filter(|s| s.contains("/raw/")).count(), 2);
+        assert!(requests.iter().all(|s| !s.contains("raw/20261026")));
+        source.cancel.store(true, Ordering::Relaxed);
+        let result = source.archive(start, end, &|_| {});
+        assert!(result.is_err());
+        source.finish_update(result.err());
+        let last = updates.lock().unwrap().last().unwrap().clone();
+        assert!(last.finished && last.error.is_some());
+        assert_eq!(last.fraction(), Some(0.));
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod archive_index_tests {
+    use super::*;
+    #[test]
+    fn discrepant_totals_require_matching_daily_ids_before_checkpointing() {
+        use std::{io::Write, net::TcpListener};
+        let directory = std::env::temp_dir().join(crate::diagnostics::trace_id("eve-index-test"));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let row = json!({"killmail_id":1,"killmail_time":"2026-10-27T12:00:00Z","victim":{"ship_type_id":587,"items":[]},"attackers":[]});
+            let responses = [
+                json!({"20261027":2}),
+                json!({"1":row}),
+                json!({"1":"public_hash"}),
+                json!({"20261027":2}),
+                json!({"20261028":2}),
+                json!({"1":{"killmail_id":1,"killmail_time":"2026-10-28T12:00:00Z","victim":{"ship_type_id":587,"items":[]},"attackers":[]}}),
+                json!({"1":"hash_one","2":"hash_two"}),
+            ];
+            for body in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut raw = [0; 8192];
+                assert!(stream.read(&mut raw).unwrap() > 0);
+                let body = body.to_string();
+                write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            }
+        });
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        source.archive_base = base;
+        let date = NaiveDate::from_ymd_opt(2026, 10, 27).unwrap();
+        assert_eq!(source.archive(date, date, &|_| {}).unwrap(), 1);
+        assert_eq!(source.store.archive_count("20261027"), 2);
+        assert_eq!(source.archive(date, date, &|_| {}).unwrap(), 0);
+        let next = date + TimeDelta::days(1);
+        assert!(source.archive(next, next, &|_| {}).is_err());
+        assert_ne!(source.store.archive_count("20261028"), 2);
+        server.join().unwrap();
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

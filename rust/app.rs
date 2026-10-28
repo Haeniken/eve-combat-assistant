@@ -11,7 +11,10 @@ use crate::{
     store::Store,
     style::{self, CYAN, MUTED, TEXT},
     tactics,
-    worker::{AnalysisRequest, Matchup, Message, NetworkRequest, OcrConfig, OcrRequest, Workers},
+    worker::{
+        AnalysisPhase, AnalysisRequest, Matchup, Message, NetworkRequest, OcrConfig, OcrRequest,
+        Workers,
+    },
 };
 use eframe::egui::{self, Color32, RichText, Vec2, ViewportCommand, ViewportId};
 use serde_json::json;
@@ -59,8 +62,12 @@ pub struct CombatApp {
     fit_busy: bool,
     account_cancel: Arc<std::sync::atomic::AtomicBool>,
     status: String,
+    pilot_status: String,
+    pilot_error: Option<String>,
+    pilot_generation: u64,
     tab: usize,
     syncing: bool,
+    sync_progress: Option<crate::sources::UpdateProgress>,
     ocr_epoch: u64,
     ocr_status: String,
     screen_state: crate::settings_ui::ScreenState,
@@ -189,7 +196,11 @@ impl CombatApp {
             workers,
             rx,
             status: "Локальный анализ · zKillboard".into(),
+            pilot_status: String::new(),
+            pilot_error: None,
+            pilot_generation: 0,
             syncing: false,
+            sync_progress: None,
             ocr_epoch: 0,
             ocr_status: "OCR: ожидание".into(),
             screen_state: Default::default(),
@@ -217,25 +228,43 @@ impl CombatApp {
         }
     }
     fn recalculate(&mut self) {
+        self.request_analysis(AnalysisPhase::Local, None);
+    }
+    fn request_analysis(&mut self, phase: AnalysisPhase, parent_generation: Option<u64>) {
         if let Some(target) = &self.target {
             self.generation += 1;
+            if phase == AnalysisPhase::Local {
+                self.pilot_status.clear();
+                self.pilot_error = None;
+                self.pilot_generation = 0;
+            }
+            self.workers.trace.job(self.settings.ocr_debug,json!({"generation":self.generation,"parent_generation":parent_generation,"job":"ui","target_ship":target.ship,"pilot":target.pilot})).event("analysis_enqueued",json!({"phase":phase}));
             let _ = self.workers.compute.send(AnalysisRequest {
                 generation: self.generation,
+                phase,
+                parent_generation,
+                queued_at: Instant::now(),
                 settings: self.settings.clone(),
                 target: target.clone(),
             });
         }
     }
-    fn request_pilot(&self) {
+    fn request_pilot(&mut self) {
         if !self.settings.auto_pilot_lookup || self.args.demo {
             return;
         }
-        if let Some(target) = &self.target
+        if let Some(target) = self.target.clone()
             && !target.pilot.trim().is_empty()
         {
+            self.pilot_generation = self.generation;
+            self.pilot_error = None;
+            self.pilot_status = "Поиск фита пилота в фоне…".into();
+            self.workers.trace.job(self.settings.ocr_debug,json!({"generation":self.generation,"job":"ui","target_ship":target.ship,"pilot":target.pilot})).event("pilot_enqueued",json!({"after":"local_analysis_displayed"}));
             let _ = self.workers.network.send(NetworkRequest {
+                generation: self.generation,
+                queued_at: Instant::now(),
                 settings: self.settings.clone(),
-                target: target.clone(),
+                target,
                 global: false,
             });
         }
@@ -269,6 +298,10 @@ impl CombatApp {
             return;
         }
         self.syncing = true;
+        self.sync_progress = Some(crate::sources::UpdateProgress {
+            phase: "Ожидание обновления".into(),
+            ..Default::default()
+        });
         self.workers.cancel.store(false, Ordering::Relaxed);
         let target = Target {
             ship: settings.ship.clone(),
@@ -277,6 +310,8 @@ impl CombatApp {
             angular: 0.,
         };
         let _ = self.workers.network.send(NetworkRequest {
+            generation: self.generation,
+            queued_at: Instant::now(),
             settings,
             target,
             global: true,
@@ -306,7 +341,6 @@ impl CombatApp {
         self.matchup = None;
         self.configure_ocr();
         self.recalculate();
-        self.request_pilot();
         Ok(())
     }
     fn messages(&mut self, ctx: &egui::Context) {
@@ -348,38 +382,72 @@ impl CombatApp {
                         Err(error) => self.status = error,
                     }
                 }
-                Message::Analyzed(generation, result) => {
+                Message::Analyzed(generation, phase, result) => {
                     if generation == self.generation {
                         match result {
                             Ok(m) => {
                                 self.status = if self.args.demo {
                                     format!("Демонстрация · {} подходящих фитов", m.pop.total)
                                 } else {
-                                    format!("В выборке: {} соло-фитов", m.pop.total)
+                                    format!(
+                                        "{}: {} подходящих потерь из {} локальных",
+                                        m.target.ship, m.pop.total, m.pop.report.input
+                                    )
                                 };
                                 if !m.failures.is_empty() {
                                     self.status += " · часть расчётов недоступна";
                                 }
-                                self.matchup = Some(m);
+                                let personal = m.variants.iter().any(|v| v.personal);
+                                self.workers.trace.job(self.settings.ocr_debug,json!({"generation":generation,"job":"ui","target_ship":m.target.ship,"pilot":m.target.pilot})).event("analysis_displayed",json!({"phase":phase,"popular_variants":m.pop.variants.len(),"personal":personal}));
+                                self.matchup = Some(*m);
                                 self.selected = 0;
+                                if phase == AnalysisPhase::Local {
+                                    self.request_pilot();
+                                } else if personal {
+                                    self.pilot_status = if self.pilot_error.is_some() {
+                                        "Фит пилота из кеша; обновление недоступно"
+                                    } else {
+                                        "Фит пилота найден"
+                                    }
+                                    .into();
+                                } else if phase == AnalysisPhase::NetworkPilot
+                                    && self.pilot_error.is_none()
+                                {
+                                    self.pilot_status =
+                                        "Подходящая PvP-потеря пилота на этом корпусе не найдена"
+                                            .into();
+                                }
                             }
                             Err(e) => self.status = e,
                         }
                     }
                 }
                 Message::Status(text) => self.status = text,
-                Message::PilotReady(ship, pilot, result) => {
-                    if self
-                        .target
-                        .as_ref()
-                        .is_some_and(|t| t.ship == ship && t.pilot == pilot)
+                Message::PilotStatus(generation, ship, pilot, text) => {
+                    if generation == self.pilot_generation
+                        && self
+                            .target
+                            .as_ref()
+                            .is_some_and(|t| t.ship == ship && t.pilot == pilot)
                     {
-                        match result {
-                            Ok(()) => self.recalculate(),
-                            Err(e) => self.status = e,
-                        }
+                        self.pilot_status = text;
                     }
                 }
+                Message::PilotReady(generation, ship, pilot, result) => {
+                    if generation == self.pilot_generation
+                        && self
+                            .target
+                            .as_ref()
+                            .is_some_and(|t| t.ship == ship && t.pilot == pilot)
+                    {
+                        if let Err(error) = result {
+                            self.pilot_status = format!("Фит пилота: {error}");
+                            self.pilot_error = Some(error);
+                        }
+                        self.request_analysis(AnalysisPhase::NetworkPilot, Some(generation));
+                    }
+                }
+                Message::SyncProgress(progress) => self.sync_progress = Some(progress),
                 Message::SyncDone(result) => {
                     self.syncing = false;
                     self.status = match result {
@@ -456,7 +524,6 @@ impl CombatApp {
                                         self.generation += 1;
                                         if self.target.is_some() {
                                             self.recalculate();
-                                            self.request_pilot();
                                         }
                                     }
                                 }
@@ -594,19 +661,44 @@ impl CombatApp {
         } else {
             let own = !self.settings.own_fit.is_empty();
             ui.label(
-                RichText::new(if own {
-                    "ОЖИДАНИЕ ДАННЫХ"
-                } else {
-                    "ВЫБЕРИ СВОЙ ФИТ"
-                })
+                RichText::new(
+                    if own
+                        && self
+                            .matchup
+                            .as_ref()
+                            .is_some_and(|m| m.own.is_none() && !m.failures.is_empty())
+                    {
+                        "ПРОВЕРЬ СВОЙ ФИТ"
+                    } else if own && self.matchup.as_ref().is_some_and(|m| m.variants.is_empty()) {
+                        "НЕТ ПОДХОДЯЩИХ ФИТОВ"
+                    } else if own {
+                        "ОЖИДАНИЕ РАСЧЁТА"
+                    } else {
+                        "ВЫБЕРИ СВОЙ ФИТ"
+                    },
+                )
                 .size(17.)
                 .color(CYAN),
             );
             ui.label(RichText::new("—").size(37.).color(CYAN));
             style::caption(
                 ui,
-                if own {
-                    "Настройки → Данные → обновить статистику"
+                if own
+                    && self
+                        .matchup
+                        .as_ref()
+                        .is_some_and(|m| m.pop.report.input == 0 && m.seed.is_some())
+                {
+                    "В доступном периоде нет потерь этого корпуса. Проверьте период в настройках."
+                } else if own
+                    && self
+                        .matchup
+                        .as_ref()
+                        .is_some_and(|m| m.pop.report.input > 0 && m.variants.is_empty())
+                {
+                    "Потери есть в кеше, но не прошли выбранные фильтры. Подробности — в диагностике."
+                } else if own {
+                    "Настройки → Данные → обновить базу всех кораблей"
                 } else {
                     "Настройки → Мой корабль → вставить фит из игры"
                 },
@@ -656,7 +748,14 @@ impl CombatApp {
                 );
             }
             if m.variants.is_empty() {
-                style::caption(ui, "Нет подходящих фитов в локальной базе");
+                style::caption(
+                    ui,
+                    if m.pop.report.input == 0 {
+                        "В локальной базе нет потерь этого корпуса за доступный период"
+                    } else {
+                        "Записи есть; подходящих фитов после фильтрации нет"
+                    },
+                );
             }
         } else {
             style::caption(ui, "Варианты появятся из локальной базы");
@@ -733,6 +832,9 @@ impl CombatApp {
             .unwrap_or("НЕ ВЫБРАН");
         style::caption(ui, &format!("МОЙ ФИТ / {own}"));
         style::caption(ui, &self.status);
+        if !self.pilot_status.is_empty() {
+            style::caption(ui, &self.pilot_status);
+        }
         style::caption(ui, &self.ocr_status);
     }
     fn settings_view(&mut self, ctx: &egui::Context) {
@@ -742,6 +844,26 @@ impl CombatApp {
         // Изменения вида видны сразу, но Отмена должна вернуть сохранённые настройки.
         let mut draft = self.draft.take().unwrap();
         let mut response = crate::settings_ui::Response::default();
+        let cache_status = self
+            .matchup
+            .as_ref()
+            .map(|m| {
+                let mut text = format!(
+                    "{}: {} потерь в кеше, {} прошло фильтры",
+                    m.target.ship, m.pop.report.input, m.pop.total
+                );
+                if let Some(seed) = &m.seed {
+                    text += &format!(
+                        "\nСтартовая база: {} корпусов, {}–{}",
+                        seed.known_hulls, seed.period_start, seed.period_end
+                    );
+                }
+                if let Some(error) = &m.seed_error {
+                    text += &format!("\nСтартовая база: {error}");
+                }
+                text
+            })
+            .unwrap_or_else(|| "Локальная база ещё не прочитана".into());
         let available = (self.monitor_bounds)()
             .map(|rect| rect.size() / ctx.pixels_per_point())
             .unwrap_or(Vec2::new(1920., 1080.));
@@ -759,6 +881,8 @@ impl CombatApp {
                 catalog: &self.catalog,
                 tab: &mut self.tab,
                 status: &self.status,
+                cache_status: &cache_status,
+                sync_progress: self.sync_progress.as_ref(),
                 syncing: self.syncing,
                 cancel_sync: &self.workers.cancel,
                 profile: &self.profile,
@@ -876,11 +1000,7 @@ impl CombatApp {
                 self.draft = Some(draft);
             }
             Some(Action::Sync) => {
-                if self.catalog.ship_id(&draft.ship).is_some() {
-                    self.sync(draft.clone());
-                } else {
-                    self.status = "Выберите корпус цели".into();
-                }
+                self.sync(draft.clone());
                 self.draft = Some(draft);
             }
             Some(Action::Save) => {
@@ -1014,7 +1134,6 @@ impl eframe::App for CombatApp {
             self.initialized = true;
             self.configure_ocr();
             self.recalculate();
-            self.request_pilot();
         }
         self.messages(ctx);
         if let Some((start, kind)) = self.capture_pending {
@@ -1231,6 +1350,7 @@ pub fn cli(args: &Args, dir: &Path) -> Result<(), String> {
         let mut source = Sources::new(
             Store::open(dir)?,
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            catalog.clone(),
         );
         let count = source.archive(start, end, &|s| println!("{s}"))?;
         println!("Добавлено: {count}");
@@ -1240,6 +1360,7 @@ pub fn cli(args: &Args, dir: &Path) -> Result<(), String> {
         let mut source = Sources::new(
             Store::open(dir)?,
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            catalog.clone(),
         );
         let count = source.sync_ship(ship, args.days, &|s| println!("{s}"))?;
         println!("Добавлено: {count}");

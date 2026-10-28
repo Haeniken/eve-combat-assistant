@@ -1,6 +1,7 @@
 ﻿param(
     [string]$Executable,
-    [string]$LicenseDirectory
+    [string]$LicenseDirectory,
+    [string]$SeedDirectory
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -8,10 +9,21 @@ if (-not $Executable) { $Executable = Join-Path $root 'target\release\eve-combat
 if (-not $LicenseDirectory) { $LicenseDirectory = Join-Path $root 'third_party\licenses' }
 if (-not (Test-Path $Executable)) { throw "Executable not found: $Executable" }
 if (-not (Test-Path (Join-Path $LicenseDirectory 'DEPENDENCIES.json'))) { throw 'Prepare dependency licenses before packaging' }
+if (-not $SeedDirectory) { $SeedDirectory = Join-Path $root 'build\bootstrap-v0.3.4' }
+$seedDatabase = Join-Path $SeedDirectory 'seed.sqlite3'
+$seedManifest = Join-Path $SeedDirectory 'seed-manifest.json'
+if (-not (Test-Path $seedDatabase) -or -not (Test-Path $seedManifest)) { throw 'Prepare the starter database with scripts/build_bootstrap.py first' }
+$manifest = Get-Content $seedManifest -Raw | ConvertFrom-Json
+$upstream = Get-Content (Join-Path $root 'native\upstream.json') -Raw | ConvertFrom-Json
+if ($manifest.schema_version -ne 1 -or $manifest.sde_build -ne $upstream.sde_build -or $manifest.complete_days -lt 90 -or $manifest.prepared_populations -ne $manifest.known_hulls) { throw 'Incomplete or incompatible starter database' }
+if ((Get-FileHash $seedDatabase -Algorithm SHA256).Hash -ne $manifest.sha256) { throw 'Starter database hash mismatch' }
 $dist = Join-Path $root 'dist'
 $destination = Join-Path $dist 'EVECombatAssistant'
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
 Copy-Item $Executable (Join-Path $destination 'eve-combat-assistant.exe') -Force
+$seedDestination = Join-Path $destination 'seed'
+New-Item -ItemType Directory -Path $seedDestination -Force | Out-Null
+Copy-Item $seedDatabase, $seedManifest $seedDestination -Force
 foreach ($name in @('THIRD_PARTY_NOTICES.md', 'Запустить.cmd', 'Демонстрация.cmd')) {
     Copy-Item (Join-Path $root $name) $destination -Force
 }

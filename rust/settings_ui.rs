@@ -38,6 +38,8 @@ pub struct Window<'a> {
     pub catalog: &'a Catalog,
     pub tab: &'a mut usize,
     pub status: &'a str,
+    pub cache_status: &'a str,
+    pub sync_progress: Option<&'a crate::sources::UpdateProgress>,
     pub syncing: bool,
     pub cancel_sync: &'a AtomicBool,
     pub profile: &'a crate::account::Profile,
@@ -105,7 +107,16 @@ impl Window<'_> {
                         3 => {
                             response.action = screen(ui, draft, self.screen_state, self.ocr_status)
                         }
-                        4 => response.action = data(ui, draft, self.syncing, self.cancel_sync),
+                        4 => {
+                            response.action = data(
+                                ui,
+                                draft,
+                                self.syncing,
+                                self.cancel_sync,
+                                self.cache_status,
+                                self.sync_progress,
+                            )
+                        }
                         5 => {
                             response.action =
                                 fit_plan(ui, draft, self.catalog, self.fit_state, self.fit_busy)
@@ -320,11 +331,11 @@ fn screen(
     style::separator(ui);
     ui.checkbox(
         &mut draft.ocr_debug,
-        "Расширенное логирование OCR (текст и снимки областей)",
+        "Подробная диагностика: OCR, фиты, кеш и HTTP-запросы",
     );
     style::caption(
         ui,
-        "Журнал включает координаты, язык, паузы, время обработки, текст, позиции слов и результат выбора корпуса. До 80 снимков / 64 МиБ и 4 журналов по 4 МиБ. Настройка применяется после сохранения; ручная проверка использует галочку сразу.",
+        "Журнал включает координаты, язык, паузы, время обработки, текст, позиции слов и результат выбора корпуса. До 80 снимков / 64 МиБ; OCR и фиты имеют отдельные наборы из 4 журналов по 4 МиБ. Настройка применяется после сохранения; ручная проверка использует галочку сразу.",
     );
     if ui.button("Открыть папку диагностики").clicked() {
         action = Some(Action::OpenDebugFolder);
@@ -476,6 +487,8 @@ fn data(
     draft: &mut Settings,
     syncing: bool,
     cancel_sync: &AtomicBool,
+    cache_status: &str,
+    progress: Option<&crate::sources::UpdateProgress>,
 ) -> Option<Action> {
     let mut action = None;
     egui::ComboBox::from_id_salt("period")
@@ -509,30 +522,47 @@ fn data(
         ui,
         "Общая статистика обновляется только вручную. Во время игры используется локальная база.",
     );
-    egui::ComboBox::from_id_salt("sync_scope")
-        .selected_text(match draft.sync_scope {
-            1 => "Все загруженные корпуса",
-            2 => "Все корпуса — дневной архив",
-            _ => "Выбранный корпус цели",
-        })
-        .show_ui(ui, |ui| {
-            ui.selectable_value(&mut draft.sync_scope, 0, "Выбранный корпус цели");
-            ui.selectable_value(&mut draft.sync_scope, 1, "Все загруженные корпуса");
-            ui.selectable_value(&mut draft.sync_scope, 2, "Все корпуса — дневной архив");
-        });
+    ui.label("Обновление базы всех известных кораблей");
+    style::caption(ui, cache_status);
     ui.checkbox(
         &mut draft.force_refresh,
-        "Принудительно обновить, обходя локальный кеш статистики",
+        "Повторно скачать весь выбранный период (обычно не требуется)",
     );
-    if draft.sync_scope == 2 {
-        style::caption(
-            ui,
-            "Дневной архив загружает все корпуса за выбранный период, до вчерашнего дня. Большой период может занять много времени. Загрузку можно остановить и продолжить.",
-        );
+    style::caption(
+        ui,
+        "Обновление сверяет дневной архив с кешем и скачивает только новые или изменившиеся дни. Во время боя используются локальные данные.",
+    );
+    if let Some(progress) = progress {
+        let mut bar = egui::ProgressBar::new(progress.fraction().unwrap_or(0.))
+            .text(
+                progress
+                    .fraction()
+                    .map(|fraction| {
+                        format!(
+                            "{} / {} дней · {:.0}%",
+                            progress.completed_days,
+                            progress.total_days,
+                            fraction * 100.
+                        )
+                    })
+                    .unwrap_or_else(|| progress.phase.clone()),
+            )
+            .desired_width(ui.available_width());
+        if syncing && !progress.finished {
+            bar = bar.animate(true);
+        }
+        ui.add(bar);
+        style::caption(ui, &progress.caption());
+        if syncing && cancel_sync.load(Ordering::Relaxed) {
+            style::caption(ui, "Остановка обновления…");
+        }
+        if let Some(error) = &progress.error {
+            ui.colored_label(egui::Color32::from_rgb(255, 195, 105), error);
+        }
     }
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(!syncing, egui::Button::new("Обновить статистику сейчас"))
+            .add_enabled(!syncing, egui::Button::new("Обновить базу всех кораблей"))
             .clicked()
         {
             action = Some(Action::Sync);

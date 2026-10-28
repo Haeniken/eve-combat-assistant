@@ -34,14 +34,18 @@ pub struct Matchup {
     pub results: Vec<Option<Value>>,
     pub own: Option<Value>,
     pub failures: Vec<String>,
+    pub seed: Option<crate::seed::SeedInfo>,
+    pub seed_error: Option<String>,
 }
 pub enum Message {
     CharacterReady(Result<crate::account::Profile, String>),
     FitReady(String, Result<crate::fit_plan::Plan, String>),
-    Analyzed(u64, Result<Matchup, String>),
+    Analyzed(u64, AnalysisPhase, Result<Box<Matchup>, String>),
     Status(String),
-    PilotReady(String, String, Result<(), String>),
+    PilotReady(u64, String, String, Result<(), String>),
+    PilotStatus(u64, String, String, String),
     SyncDone(Result<usize, String>),
+    SyncProgress(crate::sources::UpdateProgress),
     Ocr(u64, Result<Option<Target>, String>),
     OcrState(u64, String),
     ScreenCaptured,
@@ -50,13 +54,24 @@ pub enum Message {
     #[cfg(windows)]
     Tray(String),
 }
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+pub enum AnalysisPhase {
+    Local,
+    CachedPilot,
+    NetworkPilot,
+}
 #[derive(Clone)]
 pub struct AnalysisRequest {
     pub generation: u64,
+    pub phase: AnalysisPhase,
+    pub parent_generation: Option<u64>,
+    pub queued_at: std::time::Instant,
     pub settings: Settings,
     pub target: Target,
 }
 pub struct NetworkRequest {
+    pub generation: u64,
+    pub queued_at: std::time::Instant,
     pub settings: Settings,
     pub target: Target,
     pub global: bool,
@@ -74,6 +89,7 @@ pub enum OcrRequest {
 }
 #[derive(Clone)]
 pub struct Workers {
+    pub trace: crate::diagnostics::Trace,
     pub compute: mpsc::Sender<AnalysisRequest>,
     pub network: mpsc::Sender<NetworkRequest>,
     pub ocr: mpsc::Sender<OcrRequest>,
@@ -91,9 +107,23 @@ struct AnalysisCore {
     catalog: Catalog,
     // Ключ включает свой фит/навыки и полный фит противника, но не текущую дистанцию.
     cache: HashMap<String, CachedComparison>,
+    trace: crate::diagnostics::Trace,
 }
 impl AnalysisCore {
     fn analyze(&mut self, request: &AnalysisRequest) -> Result<Matchup, String> {
+        let trace=self.trace.job(request.settings.ocr_debug,json!({"correlation":format!("{}-{}",std::process::id(),request.generation),"generation":request.generation,"parent_generation":request.parent_generation,"job":"analysis","phase":request.phase,"target_ship":request.target.ship,"pilot":request.target.pilot}));
+        self.store.set_trace(trace.clone());
+        let started = std::time::Instant::now();
+        trace.event("analysis_start",json!({"queue_ms":request.queued_at.elapsed().as_millis(),"filters":{"days":request.settings.days,"max_attackers":request.settings.max_attackers,"max_variants":request.settings.max_variants,"coverage":request.settings.coverage,"min_percent":request.settings.min_percent,"excluded":request.settings.excluded.len()},"bundled":self.store.seed,"seed_error":self.store.seed_error}));
+        let result = self.analyze_inner(request, &trace);
+        trace.event("analysis_end",json!({"elapsed_ms":started.elapsed().as_millis(),"error":result.as_ref().err(),"variants":result.as_ref().ok().map(|m|m.variants.len()),"failures":result.as_ref().ok().map(|m|&m.failures)}));
+        result
+    }
+    fn analyze_inner(
+        &mut self,
+        request: &AnalysisRequest,
+        trace: &crate::diagnostics::Trace,
+    ) -> Result<Matchup, String> {
         let target = &request.target;
         let settings = &request.settings;
         let ship = self
@@ -105,11 +135,12 @@ impl AnalysisCore {
             .meta(&format!("global_revision:{ship}"))
             .unwrap_or(json!(0));
         let key = format!(
-            "population:v2-sde3503375:{}",
+            "population:v3-sde3503375:{}",
             fits::hash(
                 &json!([
                     ship,
                     revision,
+                    self.store.seed.as_ref().map(|s| &s.id),
                     settings.days,
                     settings.max_attackers,
                     settings.max_variants,
@@ -121,38 +152,73 @@ impl AnalysisCore {
                 .to_string()
             )
         );
+        let mut cache_source = "user_cache";
         let pop: Population = if let Some(value) = self.store.cached(&key) {
             serde_json::from_value(value).map_err(|e| e.to_string())?
         } else {
-            let p = fits::population(&self.store.global_mails(ship)?, &self.catalog, settings);
-            self.store.cache(
+            let seed_key = fits::seed_population_key(ship, settings);
+            let prepared = if self.store.local_global_count(ship)? == 0 {
+                self.store.seed_population(&seed_key)
+            } else {
+                None
+            };
+            let p = if let Some(value) = prepared {
+                cache_source = "bundled_prepared";
+                serde_json::from_value(value).map_err(|e| e.to_string())?
+            } else {
+                cache_source = "scanned_local";
+                fits::population(&self.store.global_mails(ship)?, &self.catalog, settings)
+            };
+            if let Err(error) = self.store.cache_nonblocking(
                 &key,
                 &serde_json::to_value(&p).map_err(|e| e.to_string())?,
                 86400,
-            )?;
+            ) {
+                trace.event("population_cache_write_failed", json!({"error":error}));
+            }
             p
         };
+        trace.event("popular_ready",json!({"ship_id":ship,"cache":cache_source,"report":pop.report,"variants":pop.variants.iter().map(|v|json!({"key":v.key,"count":v.count,"percent":v.percent})).collect::<Vec<_>>() }));
         let mut variants = pop.variants.clone();
-        if !target.pilot.is_empty()
-            && let Some(character) = self
+        if request.phase != AnalysisPhase::Local && !target.pilot.is_empty() {
+            let character = self
                 .store
                 .meta(&format!("character:{}", target.pilot.to_lowercase()))
-                .and_then(|v| v.as_i64())
-            && let Some(personal) = fits::pilot_variant(
-                &self.store.pilot_mails(ship, character)?,
-                character,
-                ship,
-                &self.catalog,
-                settings,
-            )
-        {
-            variants.insert(0, personal);
+                .and_then(|v| v.as_i64());
+            if let Some(character) = character {
+                let selection = fits::pilot_selection(
+                    &self.store.pilot_mails(ship, character)?,
+                    character,
+                    ship,
+                    &self.catalog,
+                    settings,
+                );
+                trace.event("personal_cache_ready",json!({"character_id":character,"report":selection.report,"found":selection.variant.is_some(),"period_days":settings.pilot_days,"policy":"latest_pvp_loss_independent_of_global_fleet_filters"}));
+                if let Some(personal) = selection.variant {
+                    variants.insert(0, personal);
+                }
+            } else {
+                trace.event(
+                    "personal_cache_unresolved",
+                    json!({"reason":"no_character_id_for_name"}),
+                );
+            }
         }
+        let mut failures = Vec::new();
         let own = if settings.own_fit.trim().is_empty() {
             None
         } else {
-            let req = settings.own_request(json!(settings.own_fit), true);
-            Some(self.engine.evaluate(req)?)
+            match self
+                .engine
+                .evaluate(settings.own_request(json!(settings.own_fit), true))
+            {
+                Ok(own) => Some(own),
+                Err(error) => {
+                    trace.event("own_fit_error", json!({"error":error}));
+                    failures.push(format!("Мой фит: {error}"));
+                    None
+                }
+            }
         };
         let mut out = Matchup {
             target: target.clone(),
@@ -161,7 +227,9 @@ impl AnalysisCore {
             advice: Vec::new(),
             results: Vec::new(),
             own,
-            failures: Vec::new(),
+            failures,
+            seed: self.store.seed.clone(),
+            seed_error: self.store.seed_error.clone(),
         };
         let revision = fits::hash(
             &json!([
@@ -178,6 +246,10 @@ impl AnalysisCore {
         for variant in &out.variants {
             let key = format!("{revision}:{}", fits::hash(&variant.fit.to_string()));
             if let Some((advice, result, error)) = self.cache.get(&key) {
+                trace.event(
+                    "comparison_cache_hit",
+                    json!({"variant_key":variant.key,"personal":variant.personal}),
+                );
                 out.advice.push(advice.clone());
                 out.results.push(result.clone());
                 if let Some(e) = error {
@@ -185,6 +257,7 @@ impl AnalysisCore {
                 }
                 continue;
             }
+            let comparison_started = std::time::Instant::now();
             let result = self
                 .engine
                 .evaluate(json!({"fit":tactics::fill_charges(&variant.fit,&self.catalog)}));
@@ -209,6 +282,7 @@ impl AnalysisCore {
                 }
                 Err(error) => (None, None, Some(error)),
             };
+            trace.event("comparison_ready",json!({"variant_key":variant.key,"personal":variant.personal,"error":error,"elapsed_ms":comparison_started.elapsed().as_millis()}));
             if self.cache.len() >= 64 {
                 self.cache.clear();
             }
@@ -231,6 +305,7 @@ impl Workers {
         ctx: egui::Context,
     ) -> Self {
         let debug_directory = directory.join("debug");
+        let fit_trace = crate::diagnostics::Trace::new(debug_directory.clone());
         let (compute, compute_rx) = mpsc::channel::<AnalysisRequest>();
         let (network, network_rx) = mpsc::channel::<NetworkRequest>();
         let (ocr, ocr_rx) = mpsc::channel::<OcrRequest>();
@@ -239,6 +314,7 @@ impl Workers {
             let event_tx = event_tx.clone();
             let ctx = ctx.clone();
             let dir = directory.clone();
+            let fit_trace = fit_trace.clone();
             let catalog = catalog.clone();
             thread::spawn(move || {
                 platform::low_priority();
@@ -254,6 +330,7 @@ impl Workers {
                     engine: Engine::default(),
                     catalog,
                     cache: HashMap::new(),
+                    trace: fit_trace,
                 };
                 while let Ok(mut request) = compute_rx.recv() {
                     // Если игрок быстро меняет цели, считаем только последнюю ожидающую.
@@ -264,8 +341,39 @@ impl Workers {
                     emit(
                         &event_tx,
                         &ctx,
-                        Message::Analyzed(request.generation, result),
+                        Message::Analyzed(request.generation, request.phase, result.map(Box::new)),
                     );
+                    if request.phase == AnalysisPhase::Local
+                        && !request.target.pilot.is_empty()
+                        && core
+                            .store
+                            .meta(&format!(
+                                "character:{}",
+                                request.target.pilot.to_lowercase()
+                            ))
+                            .is_some()
+                    {
+                        let mut cached = request.clone();
+                        cached.phase = AnalysisPhase::CachedPilot;
+                        let result = core.analyze(&cached);
+                        if result
+                            .as_ref()
+                            .is_ok_and(|m| m.variants.iter().any(|v| v.personal))
+                        {
+                            emit(
+                                &event_tx,
+                                &ctx,
+                                Message::Analyzed(
+                                    cached.generation,
+                                    cached.phase,
+                                    result.map(Box::new),
+                                ),
+                            );
+                        }
+                    }
+                    if let Some(error) = core.trace.take_error() {
+                        emit(&event_tx, &ctx, Message::Status(error));
+                    }
                 }
             });
         }
@@ -273,6 +381,7 @@ impl Workers {
             let event_tx = event_tx.clone();
             let ctx = ctx.clone();
             let cancel = cancel.clone();
+            let fit_trace = fit_trace.clone();
             let catalog = catalog.clone();
             thread::spawn(move || {
                 platform::low_priority();
@@ -286,9 +395,15 @@ impl Workers {
                             }
                         }
                     }
-                    let Some(ship) = catalog.ship_id(&request.target.ship) else {
+                    let ship = catalog.ship_id(&request.target.ship);
+                    if !request.global && ship.is_none() {
                         continue;
-                    };
+                    }
+                    let trace=fit_trace.job(request.settings.ocr_debug,json!({"correlation":format!("{}-{}",std::process::id(),request.generation),"generation":request.generation,"job":if request.global{"all_hull_update"}else{"pilot_lookup"},"job_id":crate::diagnostics::trace_id("network"),"target_ship":request.target.ship,"pilot":request.target.pilot}));
+                    trace.event(
+                        "network_start",
+                        json!({"queue_ms":request.queued_at.elapsed().as_millis()}),
+                    );
                     let store = match Store::open(&directory) {
                         Ok(s) => s,
                         Err(e) => {
@@ -299,18 +414,60 @@ impl Workers {
                     if !request.global {
                         cancel.store(false, Ordering::Relaxed);
                     }
-                    let mut source = Sources::new(store, cancel.clone());
-                    let progress = |text| emit(&event_tx, &ctx, Message::Status(text));
+                    let job_cancel = if request.global {
+                        cancel.clone()
+                    } else {
+                        Arc::new(AtomicBool::new(false))
+                    };
+                    let mut source = Sources::new(store, job_cancel, catalog.clone());
+                    source.set_trace(trace.clone());
+                    let progress = |text| {
+                        if request.global {
+                            emit(&event_tx, &ctx, Message::Status(text))
+                        } else {
+                            emit(
+                                &event_tx,
+                                &ctx,
+                                Message::PilotStatus(
+                                    request.generation,
+                                    request.target.ship.clone(),
+                                    request.target.pilot.clone(),
+                                    text,
+                                ),
+                            )
+                        }
+                    };
                     if request.global {
-                        let result = source.refresh_statistics(ship, &request.settings, &progress);
+                        let update_tx = event_tx.clone();
+                        let update_ctx = ctx.clone();
+                        source.set_update_progress(move |progress| {
+                            emit(&update_tx, &update_ctx, Message::SyncProgress(progress))
+                        });
+                        let result = source.refresh_statistics(&request.settings, &progress);
+                        source.finish_update(result.as_ref().err().cloned());
+                        trace.event(
+                            "network_end",
+                            json!({"result":result.as_ref().ok(),"error":result.as_ref().err()}),
+                        );
                         emit(&event_tx, &ctx, Message::SyncDone(result));
                     } else {
-                        let result = source.sync_pilot(&request.target.pilot, ship, &progress);
+                        let started = std::time::Instant::now();
+                        let result =
+                            source.sync_pilot(&request.target.pilot, ship.unwrap(), &progress);
+                        trace.event("network_end",json!({"error":result.as_ref().err(),"elapsed_ms":started.elapsed().as_millis()}));
                         emit(
                             &event_tx,
                             &ctx,
-                            Message::PilotReady(request.target.ship, request.target.pilot, result),
+                            Message::PilotReady(
+                                request.generation,
+                                request.target.ship,
+                                request.target.pilot,
+                                result,
+                            ),
                         );
+                    }
+                    if let Some(error) = trace.take_error() {
+                        emit(&event_tx, &ctx, Message::Status(error));
                     }
                 }
             });
@@ -523,6 +680,7 @@ impl Workers {
             });
         }
         Self {
+            trace: fit_trace,
             compute,
             network,
             ocr,
@@ -554,9 +712,13 @@ mod tests {
             engine: Engine::default(),
             catalog: Catalog::load().unwrap(),
             cache: HashMap::new(),
+            trace: crate::diagnostics::Trace::new(dir.join("debug")),
         };
         let mut request = AnalysisRequest {
             generation: 1,
+            phase: AnalysisPhase::Local,
+            parent_generation: None,
+            queued_at: std::time::Instant::now(),
             settings,
             target: Target {
                 ship: "Rifter".into(),
@@ -663,4 +825,115 @@ mod ocr_tests {
         drop(workers);
         // Compute owns SQLite briefly during shutdown; a later run may reuse it.
     }
+}
+
+#[cfg(test)]
+mod local_first_tests {
+    use super::*;
+    #[test]
+    fn local_variants_are_emitted_before_cached_personal_fit_without_network() {
+        let directory = std::env::temp_dir().join(crate::diagnostics::trace_id("eve-local-first"));
+        let sample =
+            crate::store::decompress(include_bytes!("../resources/sample-rifter.json.gz")).unwrap();
+        let mut mail = crate::model::array(&sample)[0].clone();
+        mail["killmail_time"] = json!(Utc::now().to_rfc3339());
+        let pilot = crate::model::id(&mail["victim"], "character_id");
+        assert!(pilot > 0);
+        let mut store = Store::open_with_seed(&directory, None).unwrap();
+        store.ingest_global(&[mail]).unwrap();
+        store
+            .set_meta("character:test pilot", &json!(pilot))
+            .unwrap();
+        drop(store);
+        let (tx, rx) = mpsc::channel();
+        let workers = Workers::start(
+            directory.clone(),
+            Catalog::load().unwrap(),
+            tx,
+            egui::Context::default(),
+        );
+        workers
+            .compute
+            .send(AnalysisRequest {
+                generation: 1,
+                phase: AnalysisPhase::Local,
+                parent_generation: None,
+                queued_at: std::time::Instant::now(),
+                target: Target {
+                    ship: "Rifter".into(),
+                    pilot: "Test Pilot".into(),
+                    distance: None,
+                    angular: 0.,
+                },
+                settings: Settings {
+                    max_attackers: 5,
+                    ocr_debug: true,
+                    own_fit: "invalid EFT".into(),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        let mut phases = Vec::new();
+        while phases.len() < 2 {
+            if let Message::Analyzed(1, phase, result) =
+                rx.recv_timeout(Duration::from_secs(30)).unwrap()
+            {
+                let result = result.unwrap();
+                assert!(!result.pop.variants.is_empty());
+                assert!(!result.failures.is_empty());
+                assert_eq!(
+                    result.variants.iter().any(|v| v.personal),
+                    phase == AnalysisPhase::CachedPilot
+                );
+                phases.push(phase);
+            }
+        }
+        assert_eq!(
+            phases,
+            vec![AnalysisPhase::Local, AnalysisPhase::CachedPilot]
+        );
+        let log = std::fs::read_to_string(directory.join("debug/fits.jsonl")).unwrap();
+        assert!(!log.contains("http_request"));
+        assert!(log.contains("popular_ready"));
+        drop(workers);
+    }
+}
+
+/// Headless release verification: same local pipeline as the overlay, no network worker.
+pub fn diagnose(
+    directory: &std::path::Path,
+    ship: &str,
+    seed: Option<&std::path::Path>,
+    settings: Settings,
+) -> Result<Value, String> {
+    let store = if let Some(seed) = seed {
+        Store::open_with_seed(directory, Some(seed))?
+    } else {
+        Store::open(directory)?
+    };
+    let mut core = AnalysisCore {
+        store,
+        engine: Engine::default(),
+        catalog: Catalog::load()?,
+        cache: HashMap::new(),
+        trace: crate::diagnostics::Trace::new(directory.join("debug")),
+    };
+    let request = AnalysisRequest {
+        generation: 1,
+        phase: AnalysisPhase::Local,
+        parent_generation: None,
+        queued_at: std::time::Instant::now(),
+        target: Target {
+            ship: ship.into(),
+            pilot: settings.pilot.clone(),
+            distance: None,
+            angular: 0.,
+        },
+        settings,
+    };
+    let started = std::time::Instant::now();
+    let m = core.analyze(&request)?;
+    Ok(
+        json!({"version":env!("CARGO_PKG_VERSION"),"ship":ship,"seed":m.seed,"seed_error":m.seed_error,"report":m.pop.report,"variants":m.variants.iter().map(|v|json!({"title":v.title,"percent":v.percent,"personal":v.personal})).collect::<Vec<_>>(),"failures":m.failures,"own_evaluated":m.own.is_some(),"advice_count":m.advice.iter().filter(|v|v.is_some()).count(),"elapsed_ms":started.elapsed().as_millis()}),
+    )
 }
