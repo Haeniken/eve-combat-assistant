@@ -149,6 +149,16 @@ fn static_data() -> Result<&'static StaticData, String> {
     .map_err(Clone::clone)
 }
 
+/// Tactical destroyer modes are SDE dogma items, not a fixed speed multiplier.
+pub fn propulsion_mode(ship: i32) -> Result<Option<Value>, String> {
+    let data = static_data()?;
+    let hull = data.sde.get_type(ship).ok_or("Неизвестный корпус")?;
+    data.sde
+        .type_name_to_id(&format!("{} Propulsion Mode", hull.name()))
+        .map(|mode| type_json(&data.sde, mode))
+        .transpose()
+}
+
 fn run(req: Request) -> Result<Value, String> {
     let data = static_data()?;
     let sde = &data.sde;
@@ -258,6 +268,15 @@ fn run(req: Request) -> Result<Value, String> {
     {
         return Err("unknown hull".into());
     }
+    if let Some(mode_id) = fit.ship_mode {
+        let hull = sde.get_type(fit.ship_type_id).unwrap();
+        let valid = ["Defense Mode", "Propulsion Mode", "Sharpshooter Mode"]
+            .iter()
+            .any(|mode| sde.type_name_to_id(&format!("{} {mode}", hull.name())) == Some(mode_id));
+        if !valid {
+            return Err("Режим не соответствует корпусу".into());
+        }
+    }
     let mut slots = BTreeSet::new();
     for m in &fit.modules {
         if !slots.insert((format!("{:?}", m.slot.r#type), m.slot.index))
@@ -309,7 +328,7 @@ fn run(req: Request) -> Result<Value, String> {
             skills.insert(id, level);
         }
     }
-    let mut fit_json = json!({"ship_type_id": fit.ship_type_id,
+    let mut fit_json = json!({"ship_type_id": fit.ship_type_id,"ship_mode":fit.ship_mode,
         "modules": fit.modules.iter().map(|m| json!({"type_id":m.type_id,
             "slot":{"type":format!("{:?}",m.slot.r#type),"index":m.slot.index},
             "state":format!("{:?}",m.state), "charge":m.charge.as_ref().map(|c|json!({"type_id":c.type_id}))})).collect::<Vec<_>>(),

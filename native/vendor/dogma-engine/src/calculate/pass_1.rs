@@ -69,6 +69,16 @@ impl Pass for PassOne {
             ship.skills.push(skill);
         }
 
+        if let Some(mode_id) = info.fit().ship_mode {
+            let mut mode = Item::new_fake(mode_id);
+            mode.slot.r#type = SlotType::ShipMode;
+            // A mode contributes passive modifiers, not fitting-slot activation.
+            mode.state = EffectCategory::Passive;
+            mode.max_state = EffectCategory::Passive;
+            mode.set_attributes(info);
+            ship.items.push(mode);
+        }
+
         for module in &info.fit().modules {
             let state = match module.state {
                 EsfState::Passive => EffectCategory::Passive,

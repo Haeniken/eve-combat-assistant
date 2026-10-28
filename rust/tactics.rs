@@ -523,64 +523,6 @@ pub struct Advice {
 pub fn range_text(low: f64, high: f64) -> String {
     format!("{:.1}–{:.1} км", low / 1000., high / 1000.).replace('.', ",")
 }
-/// Maximum fitted speeds without external webs/scrams or propulsion overheat.
-/// Dual propulsion is evaluated one engine at a time, never both together.
-pub fn fitted_speed(
-    result: &Value,
-    engine: &mut Engine,
-    catalog: &Catalog,
-) -> Result<Value, String> {
-    let mut fit = result["fit"].clone();
-    let mut engines = Vec::new();
-    for (i, module) in fit["modules"]
-        .as_array_mut()
-        .ok_or("В фите нет списка модулей")?
-        .iter_mut()
-        .enumerate()
-    {
-        let name = catalog.name(id(module, "type_id") as i32).to_lowercase();
-        let kind = if name.contains("microwarpdrive") {
-            "mwd_mps"
-        } else if name.contains("afterburner") {
-            "ab_mps"
-        } else {
-            continue;
-        };
-        engines.push((i, kind));
-        module["state"] = json!("Online");
-    }
-    let base = if engines.is_empty() {
-        n(&result["hull"]["attributes"], "maxVelocity")
-    } else {
-        let base = engine.evaluate(json!({"fit":fit,"skill_level":5}))?;
-        n(&base["hull"]["attributes"], "maxVelocity")
-    };
-    let mut speeds = json!({"base_mps":base});
-    for (i, kind) in engines {
-        let mut active = fit.clone();
-        active["modules"][i]["state"] = json!("Active");
-        let active = engine.evaluate(json!({"fit":active,"skill_level":5}))?;
-        let velocity = n(&active["hull"]["attributes"], "maxVelocity");
-        let previous = n(&speeds, kind);
-        speeds[kind] = json!(velocity.max(previous));
-    }
-    Ok(speeds)
-}
-pub fn fitted_speed_text(speed: &Value) -> String {
-    let Some(base) = speed["base_mps"]
-        .as_f64()
-        .filter(|v| v.is_finite() && *v > 0.)
-    else {
-        return "—".into();
-    };
-    let mut lines = vec![format!("База {base:.0} м/с")];
-    for (key, label) in [("ab_mps", "AB"), ("mwd_mps", "MWD")] {
-        if let Some(v) = speed[key].as_f64().filter(|v| v.is_finite() && *v > 0.) {
-            lines.push(format!("{label} {v:.0} м/с"));
-        }
-    }
-    lines.join("\n")
-}
 pub fn advise(
     own: &Value,
     enemy: &Value,

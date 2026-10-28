@@ -416,7 +416,7 @@ fn enemy_fitted_speed_separates_base_afterburner_and_mwd() {
         ("10MN Afterburner II\n50MN Microwarpdrive II", true, true),
     ] {
         let result = engine.evaluate(json!({"raw_fit":format!("[Gnosis, Speed]\nNanofiber Internal Structure II\n{propulsion}")})).unwrap();
-        let speed = tactics::fitted_speed(&result, &mut engine, &c).unwrap();
+        let speed = crate::fit_metrics::fitted_speed(&result, &mut engine, &c, None).unwrap();
         let base = crate::model::n(&speed, "base_mps");
         assert!(
             base > bare["hull"]["attributes"]["maxVelocity"].as_f64().unwrap(),
@@ -448,11 +448,236 @@ fn enemy_fitted_speed_separates_base_afterburner_and_mwd() {
                     < 0.01
             );
         }
-        let label = tactics::fitted_speed_text(&speed);
-        assert!(label.contains("База ") && label.contains("м/с"));
-        assert_eq!(label.contains("AB "), ab);
-        assert_eq!(label.contains("MWD "), mwd);
+        assert!(speed.get("ab_heat_mps").is_none());
+        assert!(speed.get("mwd_heat_mps").is_none());
     }
+}
+
+#[test]
+fn own_speed_uses_real_skill_map_instead_of_enemy_v() {
+    let c = catalog();
+    let mut engine = Engine::default();
+    let raw = "[Gnosis, Dual]\nNanofiber Internal Structure II\n10MN Afterburner II\n50MN Microwarpdrive II";
+    let settings = Settings {
+        skills: Some(json!({(tid(&c,"Navigation").to_string()):2})),
+        ..Settings::default()
+    };
+    // Unspecified skills are zero; the actual Navigation II map must survive propulsion trials.
+    let own = engine
+        .evaluate(settings.own_request(json!(raw), true))
+        .unwrap();
+    let own_speed =
+        crate::fit_metrics::fitted_speed(&own, &mut engine, &c, Some(&settings)).unwrap();
+    let enemy = engine
+        .evaluate(json!({"raw_fit":raw,"skill_level":5}))
+        .unwrap();
+    let enemy_speed = crate::fit_metrics::fitted_speed(&enemy, &mut engine, &c, None).unwrap();
+    for key in ["base_mps", "ab_mps", "mwd_mps"] {
+        assert!(
+            crate::model::n(&enemy_speed, key) > crate::model::n(&own_speed, key),
+            "skills must affect {key}"
+        );
+    }
+    let mut fit = own["fit"].clone();
+    for m in fit["modules"].as_array_mut().unwrap() {
+        let name = c.name(crate::model::id(m, "type_id") as i32);
+        if name.contains("Afterburner") {
+            m["state"] = json!("Online");
+        }
+        if name.contains("Microwarpdrive") {
+            m["state"] = json!("Active");
+        }
+    }
+    let active = engine.evaluate(settings.own_request(fit, false)).unwrap();
+    assert!(
+        (crate::model::n(&own_speed, "mwd_mps")
+            - crate::model::n(&active["hull"]["attributes"], "maxVelocity"))
+        .abs()
+            < 0.001
+    );
+    let mixed = crate::fit_metrics::speed_rows(
+        &json!({"base_mps":175,"ab_mps":700}),
+        &json!({"base_mps":250,"mwd_mps":1700}),
+    );
+    assert_eq!(mixed.len(), 2);
+    assert_eq!(mixed[1].label, "AB/MWD");
+    assert_eq!(mixed[1].own, Some(1700.));
+    assert!(
+        crate::fit_metrics::speed_rows(&enemy_speed, &Value::Null)
+            .iter()
+            .all(|r| r.own.is_none())
+    );
+}
+
+#[test]
+fn weapon_reach_selects_legal_long_ammo_and_keeps_fit_bonuses() {
+    let c = catalog();
+    let mut engine = Engine::default();
+    for (gun, charge) in [
+        ("125mm Railgun I", "Iron Charge S"),
+        ("125mm Railgun II", "Spike S"),
+        ("200mm AutoCannon II", "Barrage S"),
+    ] {
+        let r=engine.evaluate(json!({"raw_fit":format!("[Rifter, Range]\n{gun}\nTracking Computer II, Optimal Range Script")})).unwrap();
+        let range = crate::fit_metrics::weapon_range(&r, &mut engine, &c);
+        assert!(range["errors"].as_array().unwrap().is_empty(), "{range}");
+        let source = &range["sources"][0];
+        assert!(
+            source["charge"].as_str().unwrap().ends_with(charge),
+            "{source}"
+        );
+        assert_eq!(source["method"], "optimal_plus_2_falloff");
+        assert!(
+            (crate::model::n(source, "max_range_m")
+                - crate::model::n(source, "optimal_m")
+                - 2. * crate::model::n(source, "falloff_m"))
+            .abs()
+                < 0.001
+        );
+        let plain = engine
+            .evaluate(json!({"raw_fit":format!("[Rifter, Range]\n{gun}, {charge}")}))
+            .unwrap();
+        let actual = plain["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["slot"] == "high")
+            .unwrap();
+        let plain_reach = crate::model::n(&actual["attributes"], "maxRange")
+            + 2. * crate::model::n(&actual["attributes"], "falloff");
+        assert!(
+            crate::model::n(&range, "max_range_m") > plain_reach,
+            "range modules must count"
+        );
+    }
+    let kiki = engine
+        .evaluate(json!({"raw_fit":include_str!("../tests/fixtures/kikimora-ammo.eft")}))
+        .unwrap();
+    let reach = crate::fit_metrics::weapon_range(&kiki, &mut engine, &c);
+    assert_eq!(reach["sources"][0]["charge"], "Meson Exotic Plasma S");
+    assert_eq!(reach["approximate"], false);
+    assert_eq!(reach["sources"][0]["falloff_m"], 0.);
+    assert_eq!(
+        reach["sources"].as_array().unwrap().len(),
+        1,
+        "utility modules must not become weapons"
+    );
+    let utility=engine.evaluate(json!({"raw_fit":"[Tristan, Utility]\nAuto Targeting System I\nTracking Computer II, Tracking Speed Script\n\nHobgoblin II x5"})).unwrap();
+    let reach = crate::fit_metrics::weapon_range(&utility, &mut engine, &c);
+    assert!(
+        reach["max_range_m"].is_null() && reach["sources"].as_array().unwrap().is_empty(),
+        "no drone or utility reach"
+    );
+}
+
+#[test]
+fn speed_is_not_zeroed_by_automatically_active_cyno_and_jump_portal() {
+    let c = catalog();
+    let mut engine = Engine::default();
+    let req: Value =
+        serde_json::from_str(include_str!("../resources/fixtures/marshal-0.json")).unwrap();
+    let result = engine.evaluate(req).unwrap();
+    let original = result["fit"].clone();
+    assert_eq!(
+        crate::model::n(&result["hull"]["attributes"], "maxVelocity"),
+        0.
+    );
+    let speed = crate::fit_metrics::fitted_speed(&result, &mut engine, &c, None).unwrap();
+    assert!(crate::model::n(&speed, "base_mps") > 100.);
+    assert!(crate::model::n(&speed, "ab_mps") > crate::model::n(&speed, "base_mps"));
+    assert!(crate::model::n(&speed, "mwd_mps") > crate::model::n(&speed, "ab_mps"));
+    assert!(speed["inactive_movement_modules"].as_array().unwrap().len() >= 2);
+    assert_eq!(
+        original, result["fit"],
+        "movement scenario must not change imported fitting"
+    );
+}
+
+#[test]
+fn tactical_destroyer_speed_defaults_to_sde_propulsion_mode_on_both_sides() {
+    let c = catalog();
+    let mut engine = Engine::default();
+    let own_settings = Settings {
+        skills: Some(json!({(tid(&c,"Navigation").to_string()):2})),
+        ..Settings::default()
+    };
+    for ship in ["Confessor", "Svipul", "Jackdaw", "Hecate"] {
+        let raw = format!(
+            "[{ship}, Mode]\nNanofiber Internal Structure II\n1MN Afterburner II\n5MN Microwarpdrive II"
+        );
+        let result = engine.evaluate(json!({"raw_fit":raw})).unwrap();
+        let original = result["fit"].clone();
+        let mode = crate::engine::propulsion_mode(tid(&c, ship))
+            .unwrap()
+            .unwrap();
+        let mut explicit = original.clone();
+        explicit["ship_mode"] = mode["id"].clone();
+        for m in explicit["modules"].as_array_mut().unwrap() {
+            let name = c.name(crate::model::id(m, "type_id") as i32);
+            if name.contains("Afterburner") || name.contains("Microwarpdrive") {
+                m["state"] = json!("Online");
+            }
+        }
+        let expected = engine.evaluate(json!({"fit":explicit})).unwrap();
+        let speed = crate::fit_metrics::fitted_speed(&result, &mut engine, &c, None).unwrap();
+        assert_eq!(speed["ship_mode"]["id"], mode["id"]);
+        assert!(
+            (crate::model::n(&speed, "base_mps")
+                - crate::model::n(&expected["hull"]["attributes"], "maxVelocity"))
+            .abs()
+                < 0.001
+        );
+        let mut neutral = explicit.clone();
+        neutral["ship_mode"] = Value::Null;
+        let neutral = engine.evaluate(json!({"fit":neutral})).unwrap();
+        assert!(
+            crate::model::n(&speed, "base_mps")
+                >= crate::model::n(&neutral["hull"]["attributes"], "maxVelocity")
+        );
+        let mut no_mode = explicit.clone();
+        no_mode["ship_mode"] = Value::Null;
+        for m in no_mode["modules"].as_array_mut().unwrap() {
+            if c.name(crate::model::id(m, "type_id") as i32)
+                .contains("Microwarpdrive")
+            {
+                m["state"] = json!("Active");
+            }
+        }
+        let ordinary = engine.evaluate(json!({"fit":no_mode})).unwrap();
+        assert!(
+            crate::model::n(&speed, "mwd_mps")
+                > crate::model::n(&ordinary["hull"]["attributes"], "maxVelocity"),
+            "{ship} must receive the real propulsion-mode bonus"
+        );
+
+        let own = engine
+            .evaluate(own_settings.own_request(json!(raw), true))
+            .unwrap();
+        let own_speed =
+            crate::fit_metrics::fitted_speed(&own, &mut engine, &c, Some(&own_settings)).unwrap();
+        assert_eq!(own_speed["ship_mode"]["id"], mode["id"]);
+        assert!(crate::model::n(&speed, "base_mps") > crate::model::n(&own_speed, "base_mps"));
+        assert_eq!(result["fit"], original);
+        let invalid = engine.evaluate(
+            json!({"fit":{"ship_type_id":587,"ship_mode":mode["id"],"modules":[],"drones":[]}}),
+        );
+        assert!(invalid.is_err(), "cannot apply another hull's mode");
+    }
+}
+
+#[test]
+fn neutralizer_count_and_size_do_not_assign_long_reach_to_short_modules() {
+    let mut engine = Engine::default();
+    let fit=engine.evaluate(json!({"raw_fit":"[Armageddon, Neuts]\nSmall Energy Neutralizer II\nSmall Energy Neutralizer II\nMedium Energy Neutralizer II\nHeavy Energy Neutralizer II"})).unwrap();
+    let neuts = crate::fit_metrics::neutralizers(&fit);
+    let groups = neuts["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 3);
+    let light = groups.iter().find(|g| g["size"] == "Light").unwrap();
+    assert_eq!(light["count"], 2);
+    assert_eq!(groups[0]["size"], "Heavy");
+    assert!(crate::model::n(&groups[0], "range_m") > crate::model::n(light, "range_m"));
+    assert!(neuts["label"].as_str().unwrap().contains("2× Light"));
+    assert!(neuts["label"].as_str().unwrap().contains("1× Medium"));
 }
 
 #[test]

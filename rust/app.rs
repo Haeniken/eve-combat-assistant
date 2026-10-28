@@ -17,7 +17,7 @@ use crate::{
     },
 };
 use eframe::egui::{self, Color32, RichText, Vec2, ViewportCommand, ViewportId};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -767,10 +767,19 @@ impl CombatApp {
             .and_then(|r| r["incoming"]["hint"].as_str())
             .unwrap_or("Выберите вариант фита")
             .to_string();
+        let weapon_range = diagnostic
+            .map(|r| r["weapon_range"].clone())
+            .unwrap_or(Value::Null);
         let fitted_speed = diagnostic
-            .map(|r| tactics::fitted_speed_text(&r["fitted_speed"]))
-            .unwrap_or_else(|| "—".into());
+            .map(|r| r["fitted_speed"].clone())
+            .unwrap_or(Value::Null);
+        let neutralizers = diagnostic
+            .map(|r| r["neutralizers"].clone())
+            .unwrap_or(Value::Null);
         let own_result = self.matchup.as_ref().and_then(|m| m.own.as_ref());
+        let own_speed = own_result
+            .map(|r| r["fitted_speed"].clone())
+            .unwrap_or(Value::Null);
         let mut approximation_hint = String::new();
         for (label, result) in [("Противник", diagnostic), ("Свой фит", own_result)]
         {
@@ -920,26 +929,51 @@ impl CombatApp {
         }
         ui.add_space(8.);
         ui.columns(2, |cols| {
-            cols[0]
-                .scope(|ui| style::metric(ui, "ЕГО УРОН", &incoming_label, false))
-                .response
-                .on_hover_text(&incoming_hint);
-            style::metric(
+            let damage_card = cols[0]
+                .scope(|ui| {
+                    style::incoming(
+                        ui,
+                        &incoming_label,
+                        weapon_range["label"].as_str().unwrap_or("—"),
+                    )
+                })
+                .response;
+            let card_height = damage_card.rect.height() - 20.;
+            damage_card.on_hover_text(format!(
+                "{incoming_hint}\n\n{}",
+                weapon_range["hint"]
+                    .as_str()
+                    .unwrap_or("Дальность недоступна")
+            ));
+            style::metric_height(
                 &mut cols[1],
                 "ТВОИ БОЕПРИПАСЫ",
                 advice.as_ref().map(|a| a.ammo.as_str()).unwrap_or("—"),
                 false,
+                card_height.max(86.),
             );
         });
         ui.columns(2, |cols| {
-            let neut = advice.as_ref().map(|a| a.neut.as_str()).unwrap_or("—");
-            style::metric(
-                &mut cols[0],
-                "НЕЙТРИКИ",
-                neut,
-                neut != "НЕТ В ФИТЕ" && neut != "—",
-            );
-            style::metric(&mut cols[1], "ЕГО СКОРОСТЬ", &fitted_speed, false);
+            let neut = neutralizers["label"].as_str().unwrap_or("—");
+            let speed_height =
+                crate::fit_metrics::speed_rows(&fitted_speed, &own_speed).len() as f32 * 28. + 28.;
+            cols[0]
+                .scope(|ui| {
+                    style::metric_height(
+                        ui,
+                        "НЕЙТРИКИ",
+                        neut,
+                        neut != "НЕТ В ФИТЕ" && neut != "—",
+                        speed_height,
+                    )
+                })
+                .response
+                .on_hover_text(
+                    neutralizers["hint"]
+                        .as_str()
+                        .unwrap_or("Выберите вариант фита"),
+                );
+            style::speed_comparison(&mut cols[1], &fitted_speed, &own_speed);
         });
         if !approximation_hint.is_empty() {
             style::abyssal_alert(ui, &approximation_hint);

@@ -5,6 +5,7 @@ mod account;
 mod app;
 mod diagnostics;
 mod engine;
+mod fit_metrics;
 mod fit_plan;
 mod fits;
 mod model;

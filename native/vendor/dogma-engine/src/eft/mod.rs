@@ -101,6 +101,7 @@ pub fn load_eft(info: &impl InfoName, eft: &str) -> Result<EftFit, String> {
         name: name.trim().into(),
         esf_fit: data_types::EsfFit {
             ship_type_id,
+            ship_mode: None,
             modules: Vec::new(),
             drones: Vec::new(),
             implants: Vec::new(),

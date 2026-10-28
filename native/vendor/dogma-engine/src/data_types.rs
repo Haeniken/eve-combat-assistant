@@ -46,6 +46,8 @@ pub struct EsfDrone {
 #[derive(Deserialize, Debug)]
 pub struct EsfFit {
     pub ship_type_id: i32,
+    #[serde(default)]
+    pub ship_mode: Option<i32>,
     pub modules: Vec<EsfModule>,
     pub drones: Vec<EsfDrone>,
     #[serde(default)]

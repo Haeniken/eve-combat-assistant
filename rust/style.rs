@@ -136,12 +136,12 @@ pub fn border(ui: &mut Ui, rect: Rect) {
         );
     }
 }
-pub fn metric(ui: &mut Ui, name: &str, value: &str, danger: bool) {
+pub fn metric_height(ui: &mut Ui, name: &str, value: &str, danger: bool, height: f32) {
     egui::Frame::new()
         .stroke(Stroke::new(1., LINE))
         .inner_margin(10.)
         .show(ui, |ui| {
-            ui.set_min_height(52.);
+            ui.set_min_height(height);
             ui.set_min_width(ui.available_width());
             caption(ui, name);
             ui.add_space(5.);
@@ -151,6 +151,57 @@ pub fn metric(ui: &mut Ui, name: &str, value: &str, danger: bool) {
                     .color(if danger { AMBER } else { CYAN }),
             );
         });
+}
+pub fn incoming(ui: &mut Ui, damage: &str, range: &str) {
+    egui::Frame::new()
+        .stroke(Stroke::new(1., LINE))
+        .inner_margin(10.)
+        .show(ui, |ui| {
+            ui.set_min_height(86.);
+            ui.set_min_width(ui.available_width());
+            caption(ui, "ЕГО УРОН");
+            ui.add_space(3.);
+            ui.label(RichText::new(damage).size(13.).color(CYAN));
+            ui.add_space(1.);
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.), Sense::hover());
+            ui.painter()
+                .line_segment([rect.left_top(), rect.right_top()], Stroke::new(1., LINE));
+            ui.label(RichText::new("ДАЛЬНОСТЬ ОРУЖИЯ").size(8.).color(MUTED));
+            ui.label(RichText::new(range).size(21.).color(CYAN));
+        });
+}
+pub fn speed_comparison(ui: &mut Ui, enemy: &serde_json::Value, own: &serde_json::Value) {
+    let rows = crate::fit_metrics::speed_rows(enemy, own);
+    let faster =
+        |a: Option<f64>, b: Option<f64>| a.zip(b).is_some_and(|(a, b)| a.round() > b.round());
+    let threat = rows.iter().any(|r| faster(r.enemy, r.own));
+    egui::Frame::new().stroke(Stroke::new(1.,if threat {AMBER.gamma_multiply(0.65)}else{LINE})).inner_margin(10.).show(ui, |ui| {
+        let (rect,response) = ui.allocate_exact_size(Vec2::new(ui.available_width(),rows.len() as f32*28.+28.),Sense::hover());
+        let p=ui.painter();
+        let origin=rect.left_top();
+        let w=rect.width();
+        let er=50.+(w-50.)/2.;
+        p.text(origin,Align2::LEFT_TOP,"СКОРОСТЬ · М/С",FontId::proportional(10.),MUTED);
+        for (x,name) in [(er,"ЕГО"),(w,"ТВОЯ")] {
+            p.text(origin+Vec2::new(x,19.),Align2::RIGHT_TOP,name,FontId::proportional(8.),MUTED);
+        }
+        for (i,row) in rows.iter().enumerate() {
+            let y=33.+i as f32*28.;
+            p.text(origin+Vec2::new(0.,y+3.),Align2::LEFT_TOP,&row.label,FontId::proportional(if row.label.len()>5 {8.}else{10.}),MUTED);
+            for (x,value,highlight,color,width) in [(er,row.enemy,faster(row.enemy,row.own),AMBER,(er-48.).clamp(32.,52.)),(w,row.own,faster(row.own,row.enemy),CYAN,(w-er-4.).min(62.))] {
+                if highlight {
+                    let cell=Rect::from_min_size(origin+Vec2::new(x-width,y-2.),Vec2::new(width+4.,23.));
+                    p.rect_filled(cell,3.,color.gamma_multiply(0.12));
+                    if color==AMBER {p.rect_stroke(cell,3.,Stroke::new(1.,AMBER.gamma_multiply(0.6)),StrokeKind::Inside);}
+                }
+                let label=value.map(|v|format!("{v:.0}")).unwrap_or_else(||"—".into());
+                p.text(origin+Vec2::new(x,y),Align2::RIGHT_TOP,label,FontId::proportional(14.),if highlight{color}else{TEXT});
+            }
+            if i+1<rows.len() {p.line_segment([origin+Vec2::new(0.,y+24.),origin+Vec2::new(w,y+24.)],Stroke::new(1.,LINE));}
+        }
+        response.on_hover_text("База — двигатели выключены, пассивные бонусы и штрафы фита сохранены. AB/MWD — каждый двигатель отдельно, без внешних сеток и скрамблеров. Его навыки V, твои — загруженные навыки персонажа с выбранными имплантами и бустерами. Если режимы отличаются, подпись слева: его / твой. Янтарный — он быстрее, бирюзовый — ты быстрее.\nЕсли твои навыки не загружены, сравнение недоступно: в колонке «ТВОЯ» стоит прочерк.");
+    });
 }
 pub fn variant(
     ui: &mut Ui,

@@ -64,6 +64,7 @@ pub enum SlotType {
     Rig,
     SubSystem,
     Service,
+    ShipMode,
     DroneBay,
     Implant,
     Booster,

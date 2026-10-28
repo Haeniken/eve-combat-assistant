@@ -215,7 +215,28 @@ impl AnalysisCore {
                 .engine
                 .evaluate(settings.own_request(json!(settings.own_fit), true))
             {
-                Ok(own) => Some(own),
+                Ok(mut own) => {
+                    // Never present the default all-V profile as the player's skills.
+                    if settings
+                        .skills
+                        .as_ref()
+                        .and_then(Value::as_object)
+                        .is_some_and(|s| !s.is_empty())
+                    {
+                        match crate::fit_metrics::fitted_speed(
+                            &own,
+                            &mut self.engine,
+                            &self.catalog,
+                            Some(settings),
+                        ) {
+                            Ok(speed) => own["fitted_speed"] = speed,
+                            Err(error) => {
+                                trace.event("own_fitted_speed_error", json!({"error":error}))
+                            }
+                        }
+                    }
+                    Some(own)
+                }
                 Err(error) => {
                     trace.event("own_fit_error", json!({"error":error}));
                     failures.push(format!("Мой фит: {error}"));
@@ -278,7 +299,15 @@ impl AnalysisCore {
                     }
                     result["incoming"] =
                         tactics::incoming_summary(&result, &variant.fit, &self.catalog);
-                    match tactics::fitted_speed(&result, &mut self.engine, &self.catalog) {
+                    result["weapon_range"] =
+                        crate::fit_metrics::weapon_range(&result, &mut self.engine, &self.catalog);
+                    result["neutralizers"] = crate::fit_metrics::neutralizers(&result);
+                    match crate::fit_metrics::fitted_speed(
+                        &result,
+                        &mut self.engine,
+                        &self.catalog,
+                        None,
+                    ) {
                         Ok(speed) => result["fitted_speed"] = speed,
                         Err(error) => {
                             trace.event(
@@ -309,7 +338,7 @@ impl AnalysisCore {
                 }
                 Err(error) => (None, None, Some(error)),
             };
-            trace.event("comparison_ready",json!({"variant_key":variant.key,"personal":variant.personal,"error":error,"elapsed_ms":comparison_started.elapsed().as_millis(),"hull_id":result.as_ref().map(|r|&r["hull"]["id"]),"defense":result.as_ref().map(|r|&r["summary"]["defense"]),"base_defense":result.as_ref().map(|r|&r["base_defense"]),"incoming":result.as_ref().map(|r|&r["incoming"]),"fitted_speed":result.as_ref().map(|r|&r["fitted_speed"]),"warnings":result.as_ref().map(|r|&r["warnings"]),"approximations":result.as_ref().map(|r|&r["approximations"]),"own_approximations":out.own.as_ref().map(|r|&r["approximations"]),"advice":advice}));
+            trace.event("comparison_ready",json!({"variant_key":variant.key,"personal":variant.personal,"error":error,"elapsed_ms":comparison_started.elapsed().as_millis(),"hull_id":result.as_ref().map(|r|&r["hull"]["id"]),"defense":result.as_ref().map(|r|&r["summary"]["defense"]),"base_defense":result.as_ref().map(|r|&r["base_defense"]),"incoming":result.as_ref().map(|r|&r["incoming"]),"fitted_speed":result.as_ref().map(|r|&r["fitted_speed"]),"own_fitted_speed":out.own.as_ref().map(|r|&r["fitted_speed"]),"weapon_range":result.as_ref().map(|r|&r["weapon_range"]),"neutralizers":result.as_ref().map(|r|&r["neutralizers"]),"warnings":result.as_ref().map(|r|&r["warnings"]),"approximations":result.as_ref().map(|r|&r["approximations"]),"own_approximations":out.own.as_ref().map(|r|&r["approximations"]),"advice":advice}));
             if self.cache.len() >= 64 {
                 self.cache.clear();
             }
@@ -1005,6 +1034,6 @@ pub fn diagnose(
     let started = std::time::Instant::now();
     let m = core.analyze(&request)?;
     Ok(
-        json!({"version":env!("CARGO_PKG_VERSION"),"ship":ship,"seed":m.seed,"seed_error":m.seed_error,"report":m.pop.report,"variants":m.variants.iter().enumerate().map(|(i,v)|{let r=m.results.get(i).and_then(Option::as_ref);json!({"title":v.title,"percent":v.percent,"personal":v.personal,"defense":r.map(|r|&r["summary"]["defense"]),"base_defense":r.map(|r|&r["base_defense"]),"incoming":r.map(|r|&r["incoming"]),"fitted_speed":r.map(|r|&r["fitted_speed"]),"advice":m.advice.get(i).and_then(Option::as_ref),"comparison_error":r.map(|r|&r["comparison_error"]),"warnings":r.map(|r|&r["warnings"]),"approximations":r.map(|r|&r["approximations"])})}).collect::<Vec<_>>(),"failures":m.failures,"own_evaluated":m.own.is_some(),"advice_count":m.advice.iter().filter(|v|v.is_some()).count(),"elapsed_ms":started.elapsed().as_millis()}),
+        json!({"version":env!("CARGO_PKG_VERSION"),"ship":ship,"seed":m.seed,"seed_error":m.seed_error,"report":m.pop.report,"variants":m.variants.iter().enumerate().map(|(i,v)|{let r=m.results.get(i).and_then(Option::as_ref);json!({"title":v.title,"percent":v.percent,"personal":v.personal,"defense":r.map(|r|&r["summary"]["defense"]),"base_defense":r.map(|r|&r["base_defense"]),"incoming":r.map(|r|&r["incoming"]),"fitted_speed":r.map(|r|&r["fitted_speed"]),"weapon_range":r.map(|r|&r["weapon_range"]),"neutralizers":r.map(|r|&r["neutralizers"]),"advice":m.advice.get(i).and_then(Option::as_ref),"comparison_error":r.map(|r|&r["comparison_error"]),"warnings":r.map(|r|&r["warnings"]),"approximations":r.map(|r|&r["approximations"])})}).collect::<Vec<_>>(),"failures":m.failures,"own_evaluated":m.own.is_some(),"own_fitted_speed":m.own.as_ref().map(|r|&r["fitted_speed"]),"advice_count":m.advice.iter().filter(|v|v.is_some()).count(),"elapsed_ms":started.elapsed().as_millis()}),
     )
 }
