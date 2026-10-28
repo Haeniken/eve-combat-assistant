@@ -12,6 +12,25 @@ using System.Runtime.InteropServices;
 public static class FitSmokeWindow {
     [DllImport("user32.dll")]
     public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+    [DllImport("gdi32.dll")]
+    private static extern uint GetPixel(IntPtr dc, int x, int y);
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr window, out Rect rect);
+    public static Rect WindowBounds(IntPtr window) { Rect rect; GetWindowRect(window,out rect); return rect; }
+    public static uint SampleScreen(int x, int y) {
+        IntPtr dc=GetDC(IntPtr.Zero);
+        try { return GetPixel(dc,x,y); } finally { ReleaseDC(IntPtr.Zero,dc); }
+    }
+    public static IntPtr FindByTitle(int process, string prefix) {
+        IntPtr result=IntPtr.Zero;
+        EnumWindows((window,parameter)=>{
+            uint owner; GetWindowThreadProcessId(window,out owner);
+            var title=new System.Text.StringBuilder(256); GetWindowText(window,title,title.Capacity);
+            if(owner==process && title.ToString().StartsWith(prefix)){result=window;return false;}
+            return true;
+        },IntPtr.Zero);
+        return result;
+    }
     public delegate bool WindowCallback(IntPtr window, IntPtr parameter);
     [StructLayout(LayoutKind.Sequential)]
     public struct Point { public int X, Y; }
@@ -189,6 +208,11 @@ $selectedBox.Location = New-Object System.Drawing.Point 1080, 0
 $selectedBox.Size = New-Object System.Drawing.Size 260, 110
 $selectedBox.Image = $selected
 $form.Controls.Add($selectedBox)
+$marker=New-Object System.Windows.Forms.Panel
+$marker.Location=New-Object System.Drawing.Point 100,300
+$marker.Size=New-Object System.Drawing.Size 600,130
+$marker.BackColor=[System.Drawing.Color]::FromArgb(40,180,220)
+$form.Controls.Add($marker)
 $results = @()
 try {
     $form.Show()
@@ -196,15 +220,18 @@ try {
     $origin = New-Object FitSmokeWindow+Point
     $origin.X = 0; $origin.Y = 0
     $null = [FitSmokeWindow]::ClientToScreen($form.Handle, [ref]$origin)
-    foreach ($mode in @('draft-debug', 'capture-failure', 'debug-off')) {
+    foreach ($mode in @('selector-175', 'selector-75-cancel', 'draft-debug', 'capture-failure', 'debug-off')) {
         $null = [FitSmokeWindow]::SetForegroundWindow($form.Handle)
         Wait-Smoke 250
         $directory = Join-Path $testRoot ($mode + '-' + [datetime]::UtcNow.ToString('yyyyMMddHHmmssfff'))
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
         $region = if ($mode -eq 'capture-failure') { @(0, 0, 0, 0) } else { @(($origin.X + 1080), $origin.Y, 260, 110) }
+        $selectorMode=$mode.StartsWith('selector')
+        $scale=if($mode -eq 'selector-175'){175}elseif($mode -eq 'selector-75-cancel'){75}else{100}
+        $ownFit=if($selectorMode){''}else{'INVALID FIT FOR MANUAL CHECK'}
         $config = @{
-            ocr = $false; ocr_debug = ($mode -eq 'capture-failure'); auto_pilot_lookup = $false; pause_outside_eve = $true
-            own_fit = 'INVALID FIT FOR MANUAL CHECK'; scale = 100; region = $region
+            ocr = $false; ocr_debug = ($mode -eq 'capture-failure' -or $selectorMode); auto_pilot_lookup = $false; pause_outside_eve = $true
+            own_fit = $ownFit; scale = $scale; region = $region
             targets_region = @($origin.X, $origin.Y, 1050, 250); language = 'eng'
         }
         # Settings loader expects UTF-8 without BOM.
@@ -221,6 +248,52 @@ try {
             if ($window -eq [IntPtr]::Zero) { throw 'Settings window missing' }
             $null = [FitSmokeWindow]::SetWindowPos($window, [IntPtr]::Zero, 250, 70, 900, 940, 0x0040)
             Wait-Smoke 600
+            if($selectorMode){
+                $rootWindow=[FitSmokeWindow]::FindByTitle($process.Id,'EVE Combat Assistant')
+                $beforeRoot=[FitSmokeWindow]::WindowBounds($rootWindow)
+                Invoke-SmokeTextClick $window 'панель.*текущ' ($mode+'-open')
+                $deadline=[datetime]::UtcNow.AddSeconds(15)
+                do { Wait-Smoke 150; $selector=[FitSmokeWindow]::FindByTitle($process.Id,'Выделение области') } while($selector -eq [IntPtr]::Zero -and [datetime]::UtcNow -lt $deadline -and -not $process.HasExited)
+                if($selector -eq [IntPtr]::Zero){throw 'Selector did not open'}
+                Wait-Smoke 350
+                $color=[FitSmokeWindow]::SampleScreen(($origin.X+250),($origin.Y+380))
+                $green=($color -shr 8) -band 255; $blue=($color -shr 16) -band 255
+                if($green -lt 100 -or $blue -lt 130){throw ('Selector background is black or misplaced: color='+$color)}
+                if($mode -eq 'selector-75-cancel'){
+                    $null=[FitSmokeWindow]::SetForegroundWindow($selector)
+                    Wait-Smoke 100
+                    [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+                    $expected=$region
+                }else{
+                    $expected=@(($origin.X+120),($origin.Y+330),250,80)
+                    $null=[FitSmokeWindow]::SetForegroundWindow($selector)
+                    $null=[FitSmokeWindow]::SetCursorPos($expected[0],$expected[1])
+                    Wait-Smoke 120
+                    [FitSmokeWindow]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
+                    Wait-Smoke 100
+                    for($step=1;$step -le 10;$step++){
+                        $null=[FitSmokeWindow]::SetCursorPos(($expected[0]+[int]($expected[2]*$step/10)),($expected[1]+[int]($expected[3]*$step/10)))
+                        Wait-Smoke 40
+                    }
+                    [FitSmokeWindow]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
+                }
+                Wait-Smoke 700
+                if([FitSmokeWindow]::FindByTitle($process.Id,'Выделение области') -ne [IntPtr]::Zero){throw 'Selector did not close'}
+                $afterRoot=[FitSmokeWindow]::WindowBounds($rootWindow)
+                foreach($edge in @('Left','Top','Right','Bottom')){if([math]::Abs($afterRoot.$edge-$beforeRoot.$edge) -gt 3){throw 'Overlay geometry did not restore'}}
+                $window=[FitSmokeWindow]::FindSettings($process.Id)
+                if($window -eq [IntPtr]::Zero){throw 'Settings did not return after region selection'}
+                $null=[FitSmokeWindow]::SetWindowPos($window,[IntPtr]::Zero,250,70,900,940,0x0040)
+                Wait-Smoke 300
+                Invoke-SmokeTextClick $window 'Сохран' ($mode+'-save')
+                Wait-Smoke 500
+                $saved=Get-Content (Join-Path $directory 'settings.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+                for($coordinate=0;$coordinate -lt 4;$coordinate++){
+                    if([math]::Abs($saved.region[$coordinate]-$expected[$coordinate]) -gt 2){throw ('Selected pixel rectangle differs: '+($saved.region -join ',')+' expected '+($expected -join ','))}
+                }
+                $results+=[pscustomobject]@{mode=$mode;background='visible';region=$saved.region;restored=$true}
+                continue
+            }
             if ($mode -eq 'draft-debug') { Invoke-SmokeTextClick $window 'Расширенное' ($mode + '-checkbox') }
             Invoke-SmokeTextClick $window 'Проверить области' ($mode + '-check')
             Wait-Smoke 2200
@@ -253,4 +326,4 @@ try {
     $form.Close(); $form.Dispose(); $cardsBox.Image.Dispose(); $selected.Dispose()
 }
 $results | ConvertTo-Json | Set-Content (Join-Path $evidence 'results.json') -Encoding UTF8
-Write-Output 'PASS: draft check, hidden windows, preview, debug PNG/JSONL, capture failure restore, logging disabled'
+Write-Output 'PASS: visible selection background, zoom 75/175, physical rectangle and Escape; draft check, preview, debug PNG/JSONL, failure restore, logging disabled'

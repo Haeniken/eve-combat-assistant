@@ -75,17 +75,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     std::fs::create_dir_all(&directory)?;
     if args.target_test.len() == 2 {
-        let selected = platform::ocr_image(
-            &image::open(&args.target_test[0])?.to_rgba8(),
-            &args.ocr_language,
-        )?;
+        let selected_image = image::open(&args.target_test[0])?.to_rgba8();
+        let selected = platform::ocr_document(&selected_image, &args.ocr_language)?;
         let cards = platform::ocr_document(
             &image::open(&args.target_test[1])?.to_rgba8(),
             &args.ocr_language,
         )?;
-        let target = ocr::selected_card(&selected, &cards, &engine::Catalog::load()?);
-        let value =
-            serde_json::json!({"target":target,"selected_text":selected,"cards_text":cards.text()});
+        let mut retries = Vec::new();
+        let result = ocr::identify_capture(
+            &selected_image,
+            &selected,
+            &cards,
+            &args.ocr_language,
+            &engine::Catalog::load()?,
+            &mut retries,
+        );
+        let value = serde_json::json!({"target":result.as_ref().ok(),"result":result,"selected_text":selected.text(),"selected_retries":retries,"pilot_match":result.as_ref().ok().map(|target|ocr::pilot_match(&selected.text(),&retries,target)),"cards_text":cards.text()});
         std::fs::write(
             directory.join("target-result.json"),
             serde_json::to_vec_pretty(&value)?,

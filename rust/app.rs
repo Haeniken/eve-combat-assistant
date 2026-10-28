@@ -25,6 +25,12 @@ use std::{
     time::Instant,
 };
 
+#[derive(Clone, Copy)]
+enum CaptureKind {
+    Check,
+    Region,
+}
+
 #[derive(PartialEq)]
 struct WindowLayout {
     on_top: bool,
@@ -58,7 +64,7 @@ pub struct CombatApp {
     ocr_epoch: u64,
     ocr_status: String,
     screen_state: crate::settings_ui::ScreenState,
-    capture_pending: Option<Instant>,
+    capture_pending: Option<(Instant, CaptureKind)>,
     capturing: bool,
     restore_pending: bool,
     gate: Gate,
@@ -66,6 +72,8 @@ pub struct CombatApp {
     selecting: bool,
     selecting_targets: bool,
     selection_start: Option<egui::Pos2>,
+    selection_background: Option<([i32; 4], egui::TextureHandle)>,
+    root_before_selection: Option<egui::Rect>,
     ship_texture: egui::TextureHandle,
     root_shot: bool,
     settings_frames: usize,
@@ -193,6 +201,8 @@ impl CombatApp {
             selecting: false,
             selecting_targets: false,
             selection_start: None,
+            selection_background: None,
+            root_before_selection: None,
             ship_texture: texture,
             root_shot: false,
             settings_frames: 0,
@@ -377,6 +387,34 @@ impl CombatApp {
                         Err(e) => e,
                     };
                     self.recalculate();
+                }
+                Message::DesktopCaptured(result) => {
+                    match result {
+                        Ok(capture) => {
+                            let image = &capture.image;
+                            let texture = ctx.load_texture(
+                                "region-background",
+                                egui::ColorImage::from_rgba_unmultiplied(
+                                    [image.width() as usize, image.height() as usize],
+                                    image.as_raw(),
+                                ),
+                                Default::default(),
+                            );
+                            self.selection_background = Some((capture.rect, texture));
+                            self.capturing = false;
+                            ctx.send_viewport_cmd_to(
+                                ViewportId::ROOT,
+                                ViewportCommand::Title("Выделение области".into()),
+                            );
+                            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Focus);
+                        }
+                        Err(error) => {
+                            self.status = format!("Не удалось показать фон выделения: {error}");
+                            self.selecting = false;
+                            self.restore_pending = true;
+                        }
+                    }
+                    ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(true));
                 }
                 Message::ScreenCaptured => {
                     self.restore_pending = true;
@@ -775,17 +813,8 @@ impl CombatApp {
                 };
                 self.draft = Some(draft);
                 self.capturing = true;
-                self.capture_pending = Some(Instant::now());
-                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(false));
-                ctx.send_viewport_cmd_to(
-                    ViewportId::from_hash_of("settings"),
-                    ViewportCommand::Visible(false),
-                );
-                ctx.send_viewport_cmd_to(
-                    ViewportId::from_hash_of("fit-detail"),
-                    ViewportCommand::Visible(false),
-                );
-                ctx.request_repaint_after(std::time::Duration::from_millis(450));
+                self.capture_pending = Some((Instant::now(), CaptureKind::Check));
+                hide_capture_windows(ctx);
             }
             Some(Action::Login) | Some(Action::RefreshCharacter) => {
                 if !self.account_busy {
@@ -867,76 +896,81 @@ impl CombatApp {
                 self.selecting = true;
                 self.selecting_targets = response.action == Some(Action::SelectTargetsRegion);
                 self.selection_start = None;
-                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(false));
+                self.selection_background = None;
+                let ppp = ctx.pixels_per_point();
+                self.root_before_selection = ctx
+                    .input(|input| input.viewport().outer_rect)
+                    .map(|rect| egui::Rect::from_min_max(rect.min * ppp, rect.max * ppp));
+                self.capturing = true;
+                self.capture_pending = Some((Instant::now(), CaptureKind::Region));
+                hide_capture_windows(ctx);
             }
             None => self.draft = Some(draft),
         }
     }
-    fn region_view(&mut self, ctx: &egui::Context) {
-        if !self.selecting {
+    fn region_ui(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let Some((bounds, background)) = &self.selection_background else {
             return;
-        }
+        };
+        let bounds = *bounds;
+        let background = background.clone();
+        let ppp = ctx.pixels_per_point();
+        ctx.send_viewport_cmd_to(
+            ViewportId::ROOT,
+            ViewportCommand::OuterPosition(egui::pos2(
+                bounds[0] as f32 / ppp,
+                bounds[1] as f32 / ppp,
+            )),
+        );
+        ctx.send_viewport_cmd_to(
+            ViewportId::ROOT,
+            ViewportCommand::InnerSize(egui::vec2(bounds[2] as f32 / ppp, bounds[3] as f32 / ppp)),
+        );
+        ctx.send_viewport_cmd_to(
+            ViewportId::ROOT,
+            ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop),
+        );
+        ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::MousePassthrough(false));
         let mut chosen = None;
         let mut cancel = false;
-        ctx.show_viewport_immediate(
-            ViewportId::from_hash_of("region"),
-            egui::ViewportBuilder::default()
-                .with_title("Выделение области")
-                .with_decorations(false)
-                .with_fullscreen(true)
-                .with_transparent(true)
-                .with_always_on_top(),
-            |ui, _| {
-                let rect = ui.max_rect();
-                ui.painter()
-                    .rect_filled(rect, 0., Color32::from_rgba_unmultiplied(5, 15, 25, 55));
-                ui.painter().text(
-                    rect.left_top() + Vec2::splat(30.),
-                    egui::Align2::LEFT_TOP,
-                    if self.selecting_targets {
-                        "Выделите ники и корпуса со звёздочкой на карточках целей · Esc — отмена"
-                    } else {
-                        "Выделите ник в правой панели текущего выбора · Esc — отмена"
-                    },
-                    egui::FontId::proportional(20.),
-                    CYAN,
-                );
-                let response =
-                    ui.interact(rect, ui.scope_id().with("drag-region"), egui::Sense::drag());
-                if response.drag_started() {
-                    self.selection_start = response.interact_pointer_pos();
-                }
-                if let (Some(start), Some(end)) =
-                    (self.selection_start, response.interact_pointer_pos())
-                {
-                    let selection = egui::Rect::from_two_pos(start, end);
-                    style::border(ui, selection);
-                    if response.drag_stopped()
-                        && selection.width() > 30.
-                        && selection.height() > 15.
-                    {
-                        let scale = ui.ctx().pixels_per_point();
-                        let origin = ui
-                            .ctx()
-                            .input(|i| i.viewport().outer_rect)
-                            .map(|r| r.min)
-                            .unwrap_or_default();
-                        chosen = Some([
-                            ((selection.left() + origin.x) * scale) as i32,
-                            ((selection.top() + origin.y) * scale) as i32,
-                            (selection.width() * scale) as i32,
-                            (selection.height() * scale) as i32,
-                        ]);
-                    }
-                }
-                if ui
-                    .ctx()
-                    .input(|i| i.key_pressed(egui::Key::Escape) || i.viewport().close_requested())
-                {
-                    cancel = true;
-                }
-            },
+        let rect = ui.max_rect();
+        ui.painter().image(
+            background.id(),
+            rect,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1., 1.)),
+            Color32::WHITE,
         );
+        ui.painter()
+            .rect_filled(rect, 0., Color32::from_black_alpha(20));
+        ui.painter().text(
+            rect.left_top() + Vec2::splat(30.),
+            egui::Align2::LEFT_TOP,
+            if self.selecting_targets {
+                "Выделите ники и корпуса со звёздочкой на карточках целей · Esc — отмена"
+            } else {
+                "Выделите ник в правой панели текущего выбора · Esc — отмена"
+            },
+            egui::FontId::proportional(20.),
+            CYAN,
+        );
+        let response = ui.interact(rect, ui.scope_id().with("drag-region"), egui::Sense::drag());
+        if response.drag_started() {
+            self.selection_start = ui.ctx().input(|input| input.pointer.press_origin());
+        }
+        if let (Some(start), Some(end)) = (self.selection_start, response.interact_pointer_pos()) {
+            let selection = egui::Rect::from_two_pos(start, end);
+            style::border(ui, selection);
+            if response.drag_stopped() && selection.width() > 30. && selection.height() > 15. {
+                chosen = selection_rectangle(selection, rect, bounds);
+            }
+        }
+        if ui
+            .ctx()
+            .input(|i| i.key_pressed(egui::Key::Escape) || i.viewport().close_requested())
+        {
+            cancel = true;
+        }
         if chosen.is_some() || cancel {
             if let Some(rect) = chosen
                 && let Some(draft) = &mut self.draft
@@ -948,7 +982,25 @@ impl CombatApp {
                 }
             }
             self.selecting = false;
-            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(true));
+            self.selection_start = None;
+            self.selection_background = None;
+            if let Some(rect) = self.root_before_selection.take() {
+                ctx.send_viewport_cmd_to(
+                    ViewportId::ROOT,
+                    ViewportCommand::OuterPosition(rect.min / ppp),
+                );
+                ctx.send_viewport_cmd_to(
+                    ViewportId::ROOT,
+                    ViewportCommand::InnerSize(rect.size() / ppp),
+                );
+            }
+            ctx.send_viewport_cmd_to(
+                ViewportId::ROOT,
+                ViewportCommand::Title("EVE Combat Assistant".into()),
+            );
+            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::CancelClose);
+            self.layout = None;
+            ctx.request_repaint();
         }
     }
 }
@@ -961,16 +1013,15 @@ impl eframe::App for CombatApp {
             self.request_pilot();
         }
         self.messages(ctx);
-        if let Some(start) = self.capture_pending {
+        if let Some((start, kind)) = self.capture_pending {
             if start.elapsed() >= std::time::Duration::from_millis(450) {
                 self.capture_pending = None;
-                if let Some(draft) = &self.draft
-                    && self
-                        .workers
-                        .ocr
-                        .send(OcrRequest::Check(draft.clone()))
-                        .is_err()
-                {
+                let request = match kind {
+                    CaptureKind::Check => self.draft.clone().map(OcrRequest::Check),
+                    CaptureKind::Region => Some(OcrRequest::CaptureDesktop),
+                };
+                if request.is_some_and(|request| self.workers.ocr.send(request).is_err()) {
+                    self.selecting = false;
                     self.restore_pending = true;
                     self.screen_state.busy = false;
                     self.status = "Поток OCR недоступен".into();
@@ -997,6 +1048,10 @@ impl eframe::App for CombatApp {
     }
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.selecting {
+            self.region_ui(ui);
+            return;
+        }
         let appearance = self.draft.as_ref().unwrap_or(&self.settings).clone();
         let zoom_ready = (ctx.zoom_factor() - appearance.scale / 100.).abs() <= 0.001;
         if !zoom_ready {
@@ -1077,8 +1132,11 @@ impl eframe::App for CombatApp {
             self.open_settings();
         }
         self.settings_view(&ctx);
-        self.region_view(&ctx);
-        if let Some(text) = self.details.clone().filter(|_| !self.capturing) {
+        if let Some(text) = self
+            .details
+            .clone()
+            .filter(|_| !self.capturing && !self.selecting)
+        {
             let mut open = true;
             ctx.show_viewport_immediate(
                 ViewportId::from_hash_of("fit-detail"),
@@ -1229,4 +1287,47 @@ pub(crate) fn window_geometry(
         .unwrap_or(work.min)
         .clamp(work.min, work.max - size);
     (size, position)
+}
+
+fn hide_capture_windows(ctx: &egui::Context) {
+    for id in [
+        ViewportId::ROOT,
+        ViewportId::from_hash_of("settings"),
+        ViewportId::from_hash_of("fit-detail"),
+    ] {
+        ctx.send_viewport_cmd_to(id, ViewportCommand::Visible(false));
+    }
+    ctx.request_repaint_after(std::time::Duration::from_millis(450));
+}
+
+/// Преобразование выделения на снимке в физические координаты рабочего стола.
+/// Не зависит от DPI/масштаба окна и поддерживает отрицательные координаты монитора.
+pub(crate) fn selection_rectangle(
+    selection: egui::Rect,
+    canvas: egui::Rect,
+    bounds: [i32; 4],
+) -> Option<[i32; 4]> {
+    if !selection.is_finite()
+        || !canvas.is_finite()
+        || !canvas.is_positive()
+        || bounds[2] <= 0
+        || bounds[3] <= 0
+    {
+        return None;
+    }
+    let selection = selection.intersect(canvas);
+    let x = |p: f32| ((p - canvas.left()) / canvas.width() * bounds[2] as f32).round() as i32;
+    let y = |p: f32| ((p - canvas.top()) / canvas.height() * bounds[3] as f32).round() as i32;
+    let (left, top, right, bottom) = (
+        x(selection.left()),
+        y(selection.top()),
+        x(selection.right()),
+        y(selection.bottom()),
+    );
+    (right - left >= 10 && bottom - top >= 10).then_some([
+        bounds[0] + left,
+        bounds[1] + top,
+        right - left,
+        bottom - top,
+    ])
 }

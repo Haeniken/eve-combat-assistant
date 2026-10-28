@@ -338,3 +338,134 @@ pub fn eve_active() -> bool {
         false
     }
 }
+
+pub struct DesktopCapture {
+    pub rect: [i32; 4],
+    pub image: image::RgbaImage,
+}
+/// Фон выбора области хранится только в памяти, без прозрачного fullscreen.
+pub fn capture_desktop() -> Result<DesktopCapture, String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+            SM_YVIRTUALSCREEN,
+        };
+        let rect = unsafe {
+            [
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+                GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                GetSystemMetrics(SM_CYVIRTUALSCREEN),
+            ]
+        };
+        Ok(DesktopCapture {
+            rect,
+            image: read_screen(rect)?,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Выделение области доступно в Windows-сборке".into())
+    }
+}
+
+/// Повторно читаем только строку ника. Более крупные пиксели помогают WinRT
+/// различать y/u и 8/B на маленьком игровом шрифте без угадывания имени.
+pub fn selected_retry_texts(
+    image: &image::RgbaImage,
+    document: &crate::ocr::Document,
+    language: &str,
+) -> Vec<crate::ocr::RetryRead> {
+    let Some(pilot) = crate::ocr::selected_pilot(&document.text()) else {
+        return Vec::new();
+    };
+    let Some(line) = document
+        .lines
+        .iter()
+        .find(|line| crate::ocr::selected_pilot(&line.text).as_deref() == Some(&pilot))
+    else {
+        return Vec::new();
+    };
+    let scale = if image.width() > 2000 {
+        2000. / image.width() as f32
+    } else {
+        2.
+    };
+    let height = line
+        .words
+        .iter()
+        .map(|w| w.height / scale)
+        .fold(0_f32, f32::max);
+    if height <= 0. || !height.is_finite() {
+        return Vec::new();
+    }
+    let left = line
+        .words
+        .iter()
+        .map(|w| w.x / scale)
+        .fold(f32::INFINITY, f32::min);
+    let right = line
+        .words
+        .iter()
+        .map(|w| (w.x + w.width) / scale)
+        .fold(0_f32, f32::max);
+    let top = line
+        .words
+        .iter()
+        .map(|w| w.y / scale)
+        .fold(f32::INFINITY, f32::min);
+    let bottom = line
+        .words
+        .iter()
+        .map(|w| (w.y + w.height) / scale)
+        .fold(0_f32, f32::max);
+    let x = (left - height).floor().clamp(0., image.width() as f32) as u32;
+    let y = (top - height * 0.6)
+        .floor()
+        .clamp(0., image.height() as f32) as u32;
+    let end_x = (right + height)
+        .ceil()
+        .clamp(x as f32, image.width() as f32) as u32;
+    let end_y = (bottom + height * 0.6)
+        .ceil()
+        .clamp(y as f32, image.height() as f32) as u32;
+    if end_x <= x || end_y <= y {
+        return Vec::new();
+    }
+    let rect = [x, y, end_x - x, end_y - y];
+    let crop = image::imageops::crop_imm(image, x, y, rect[2], rect[3]).to_image();
+    let enlarged = image::imageops::resize(
+        &crop,
+        crop.width() * 2,
+        crop.height() * 2,
+        image::imageops::FilterType::Nearest,
+    );
+    let mut contrast = crop;
+    for pixel in contrast.pixels_mut() {
+        let [r, g, b, _] = pixel.0;
+        let level = ((i32::from(r) + i32::from(g) + i32::from(b)) / 3 - 50) * 2;
+        let level = level.clamp(0, 255) as u8;
+        pixel.0 = [level, level, level, 255];
+    }
+    [
+        ("nickname_crop_4x", enlarged),
+        ("nickname_crop_contrast", contrast),
+    ]
+    .into_iter()
+    .map(|(method, image)| match ocr_document(&image, language) {
+        Ok(document) => crate::ocr::RetryRead {
+            method: method.into(),
+            rect,
+            text: document.text(),
+            error: None,
+        },
+        Err(error) => crate::ocr::RetryRead {
+            method: method.into(),
+            rect,
+            text: String::new(),
+            error: Some(error),
+        },
+    })
+    .collect()
+}

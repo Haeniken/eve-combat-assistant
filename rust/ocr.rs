@@ -30,7 +30,22 @@ impl Document {
 }
 
 /// Ник берётся только из Selected Item: список захваченных целей не выбирает активную.
+fn empty_selection(text: &str) -> bool {
+    let text = text.to_lowercase();
+    [
+        "объект не выбран",
+        "object not selected",
+        "no object selected",
+        "06bekt he bb16pah",
+        "o6bekt he bb16pah",
+    ]
+    .iter()
+    .any(|message| text.contains(message))
+}
 pub fn selected_pilot(text: &str) -> Option<String> {
+    if empty_selection(text) {
+        return None;
+    }
     for line in text.lines() {
         let candidate = line
             .trim()
@@ -66,6 +81,7 @@ pub fn selected_pilot(text: &str) -> Option<String> {
 
 /// В карточках OCR может объединить несколько колонок в одну строку.
 /// Ищем точный ник и корпус со звёздочкой ниже в той же колонке.
+#[cfg(test)]
 pub fn selected_card(selected: &str, cards: &Document, catalog: &Catalog) -> Option<Target> {
     identify_card(selected, cards, catalog).ok()
 }
@@ -75,6 +91,9 @@ pub fn identify_card(
     cards: &Document,
     catalog: &Catalog,
 ) -> Result<Target, String> {
+    if empty_selection(selected) {
+        return Err("В EVE не выбран объект. Выберите пилота в правой панели".into());
+    }
     let pilot = selected_pilot(selected).ok_or("В правой области не найден ник. Выделите строку ника вместе с расстоянием, без заголовков других окон")?;
     let normalized = pilot
         .split_whitespace()
@@ -424,6 +443,7 @@ pub struct RegionCheck {
     pub image: Option<image::RgbaImage>,
     pub text: String,
     pub document: Option<Document>,
+    pub retries: Vec<RetryRead>,
     pub error: Option<String>,
 }
 impl RegionCheck {
@@ -476,7 +496,14 @@ impl ScreenCheck {
         } else if let Some(error) = self.selected.error.as_ref().or(self.cards.error.as_ref()) {
             Err(error.clone())
         } else if let (Some(selected), Some(cards)) = (&selected, &cards) {
-            identify_card(&selected.text(), cards, catalog)
+            identify_capture(
+                self.selected.image.as_ref().unwrap(),
+                selected,
+                cards,
+                language,
+                catalog,
+                &mut self.selected.retries,
+            )
         } else if let Some(selected) = selected {
             parse(&selected.text(), catalog)
                 .ok_or("В правой области не найден корпус; выделите также карточки слева".into())
@@ -484,4 +511,172 @@ impl ScreenCheck {
             Err("Не удалось прочитать выбранную область".into())
         };
     }
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RetryRead {
+    pub method: String,
+    pub rect: [u32; 4],
+    pub text: String,
+    pub error: Option<String>,
+}
+fn normalized_pilot(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+fn nickname_distance(a: &str, b: &str) -> usize {
+    let b: Vec<_> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut previous = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let next = row[j + 1];
+            row[j + 1] = (row[j] + 1)
+                .min(next + 1)
+                .min(previous + usize::from(ca != *cb));
+            previous = next;
+        }
+    }
+    row[b.len()]
+}
+fn card_pilot_names(cards: &Document) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in &cards.lines {
+        for start in 0..line.words.len() {
+            for end in start + 1..=line.words.len().min(start + 8) {
+                let words = &line.words[start..end];
+                let height = words.iter().map(|w| w.height).fold(0_f32, f32::max);
+                if height <= 0. || words.iter().any(|w| !w.x.is_finite() || !w.y.is_finite()) {
+                    continue;
+                }
+                let left = words[0].x;
+                let right = words.iter().map(|w| w.x + w.width).fold(left, f32::max);
+                if start > 0
+                    && left - (line.words[start - 1].x + line.words[start - 1].width) < height * 1.5
+                {
+                    continue;
+                }
+                if end < line.words.len() && line.words[end].x - right < height * 1.5 {
+                    continue;
+                }
+                let text = words
+                    .iter()
+                    .map(|w| w.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if selected_pilot(&text).as_deref() == Some(text.as_str()) {
+                    names.push(text);
+                }
+            }
+        }
+    }
+    names.sort_by_key(|name| normalized_pilot(name));
+    names.dedup_by(|a, b| normalized_pilot(a) == normalized_pilot(b));
+    names
+}
+fn closest_pilot(selected: &str, names: Vec<String>) -> Result<Option<String>, String> {
+    let selected = normalized_pilot(selected);
+    let length = selected.chars().filter(|c| !c.is_whitespace()).count();
+    let budget = match length {
+        0..=2 => 0,
+        3..=9 => 1,
+        10..=17 => 2,
+        _ => 3,
+    };
+    let mut scores: Vec<_> = names
+        .into_iter()
+        .map(|name| (nickname_distance(&selected, &normalized_pilot(&name)), name))
+        .filter(|(distance, _)| *distance <= budget)
+        .collect();
+    scores.sort();
+    let Some((distance, _)) = scores.first() else {
+        return Ok(None);
+    };
+    if scores.get(1).is_some_and(|(next, _)| next == distance) {
+        return Err(
+            "Несколько карточек одинаково похожи на выбранный ник. Уточните область справа".into(),
+        );
+    }
+    Ok(Some(scores.remove(0).1))
+}
+/// Сначала точное совпадение и повторное чтение, затем уникальный ближайший
+/// ник с ограничением ошибок по длине. Корпус и его положение проверяются всегда.
+pub fn identify_with_retries(
+    selected: &str,
+    retries: &[RetryRead],
+    cards: &Document,
+    catalog: &Catalog,
+) -> Result<Target, String> {
+    let original = match identify_card(selected, cards, catalog) {
+        Ok(target) => return Ok(target),
+        Err(error) => error,
+    };
+    let Some(pilot) = selected_pilot(selected) else {
+        return Err(original);
+    };
+    let mut targets = Vec::new();
+    for retry in retries {
+        if retry.error.is_some() {
+            continue;
+        }
+        if let Some(name) = selected_pilot(&retry.text)
+            && let Ok(target) = identify_card(&format!("{name}\n{selected}"), cards, catalog)
+        {
+            targets.push(target);
+        }
+    }
+    targets.sort_by(|a, b| a.identity().cmp(&b.identity()));
+    targets.dedup_by(|a, b| a.identity() == b.identity());
+    if targets.len() == 1 && closest_pilot(&pilot, vec![targets[0].pilot.clone()])?.is_some() {
+        return Ok(targets.remove(0));
+    }
+    if let Some(name) = closest_pilot(&pilot, card_pilot_names(cards))? {
+        return identify_card(&format!("{name}\n{selected}"), cards, catalog);
+    }
+    Err(original)
+}
+#[derive(serde::Serialize)]
+pub struct PilotMatch {
+    pub method: &'static str,
+    pub edit_distance: usize,
+}
+pub fn pilot_match(selected: &str, retries: &[RetryRead], target: &Target) -> PilotMatch {
+    let original = selected_pilot(selected).unwrap_or_default();
+    let expected = normalized_pilot(&target.pilot);
+    let distance = nickname_distance(&normalized_pilot(&original), &expected);
+    let method = if distance == 0 {
+        "exact"
+    } else if retries.iter().any(|r| {
+        r.error.is_none()
+            && selected_pilot(&r.text).is_some_and(|p| normalized_pilot(&p) == expected)
+    }) {
+        "retry_exact"
+    } else {
+        "closest"
+    };
+    PilotMatch {
+        method,
+        edit_distance: distance,
+    }
+}
+pub fn identify_capture(
+    image: &image::RgbaImage,
+    selected: &Document,
+    cards: &Document,
+    language: &str,
+    catalog: &Catalog,
+    retries: &mut Vec<RetryRead>,
+) -> Result<Target, String> {
+    let text = selected.text();
+    let result = identify_card(&text, cards, catalog);
+    if result.is_ok() || selected_pilot(&text).is_none() {
+        return result;
+    }
+    if retries.is_empty() {
+        *retries = crate::platform::selected_retry_texts(image, selected, language);
+    }
+    identify_with_retries(&text, retries, cards, catalog)
 }

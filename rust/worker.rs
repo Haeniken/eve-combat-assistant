@@ -45,6 +45,7 @@ pub enum Message {
     Ocr(u64, Result<Option<Target>, String>),
     OcrState(u64, String),
     ScreenCaptured,
+    DesktopCaptured(Result<platform::DesktopCapture, String>),
     ScreenChecked(Box<ocr::ScreenCheck>),
     #[cfg(windows)]
     Tray(String),
@@ -69,6 +70,7 @@ pub struct OcrConfig {
 pub enum OcrRequest {
     Configure(OcrConfig),
     Check(Settings),
+    CaptureDesktop,
 }
 #[derive(Clone)]
 pub struct Workers {
@@ -324,6 +326,7 @@ impl Workers {
                 let mut card_frames = ocr::FrameCache::default();
                 let mut selected_document = ocr::Document::default();
                 let mut card_document = ocr::Document::default();
+                let mut selected_retries = Vec::new();
                 let mut cached = None;
                 let mut last_state = String::new();
                 loop {
@@ -332,6 +335,12 @@ impl Workers {
                         .map(|c| c.settings.ocr_interval.clamp(0.5, 10.))
                         .unwrap_or(10.);
                     match ocr_rx.recv_timeout(Duration::from_secs_f64(interval)) {
+                        Ok(OcrRequest::CaptureDesktop) => {
+                            let capture = platform::capture_desktop();
+                            debug.event(config.as_ref().is_some_and(|c|c.settings.ocr_debug), json!({"kind":"selector_capture", "rect":capture.as_ref().ok().map(|c|c.rect), "error":capture.as_ref().err(), "background":"in_memory_desktop_snapshot"}));
+                            emit(&event_tx, &ctx, Message::DesktopCaptured(capture));
+                            continue;
+                        }
                         Ok(OcrRequest::Check(settings)) => {
                             // UI уже скрыт. Оба снимка делаются до его восстановления.
                             let started = std::time::Instant::now();
@@ -346,7 +355,7 @@ impl Workers {
                             check.recognize(&settings.language, &catalog);
                             debug.event(settings.ocr_debug, json!({"kind":"manual_check", "region": settings.region, "targets_region": settings.targets_region, "language":settings.language,
                                 "elapsed_ms": started.elapsed().as_millis(), "selected_png": selected_png, "cards_png": cards_png,
-                                "selected_text":check.selected.text, "selected_words":check.selected.document, "selected_error":check.selected.error,
+                                "selected_text":check.selected.text, "selected_words":check.selected.document, "selected_retries":check.selected.retries, "pilot_match":check.result.as_ref().ok().map(|target|ocr::pilot_match(&check.selected.text,&check.selected.retries,target)), "selected_error":check.selected.error,
                                 "cards_text":check.cards.text, "cards_words":check.cards.document, "cards_error":check.cards.error, "result":check.result}));
                             if let Some(error) = debug.take_error() {
                                 emit(&event_tx, &ctx, Message::Status(error));
@@ -366,6 +375,7 @@ impl Workers {
                             frames = ocr::FrameCache::default();
                             card_frames = ocr::FrameCache::default();
                             selected_document = ocr::Document::default();
+                            selected_retries.clear();
                             card_document = ocr::Document::default();
                             last_state.clear();
                             continue;
@@ -422,6 +432,7 @@ impl Workers {
                                     "selected",
                                     &image
                                 ));
+                                selected_retries.clear();
                                 selected_document =
                                     platform::ocr_document(&image, &config.settings.language)?;
                             }
@@ -444,10 +455,13 @@ impl Workers {
                                 should_emit = false;
                                 return Ok(None);
                             }
-                            return ocr::identify_card(
-                                &selected_document.text(),
+                            return ocr::identify_capture(
+                                &image,
+                                &selected_document,
                                 &card_document,
+                                &config.settings.language,
                                 &catalog,
+                                &mut selected_retries,
                             )
                             .map(Some);
                         }
@@ -472,6 +486,15 @@ impl Workers {
                         frame_event["elapsed_ms"] = json!(started.elapsed().as_millis());
                         frame_event["selected_text"] = json!(selected_document.text());
                         frame_event["selected_words"] = json!(selected_document);
+                        frame_event["selected_retries"] = json!(selected_retries);
+                        frame_event["pilot_match"] =
+                            json!(result.as_ref().ok().and_then(|target| target.as_ref()).map(
+                                |target| ocr::pilot_match(
+                                    &selected_document.text(),
+                                    &selected_retries,
+                                    target
+                                )
+                            ));
                         frame_event["cards_text"] = json!(card_document.text());
                         frame_event["cards_words"] = json!(card_document);
                         frame_event["selected_pilot"] =

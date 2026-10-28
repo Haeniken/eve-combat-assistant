@@ -690,3 +690,120 @@ fn ocr_hull_correction_requires_a_unique_starred_match_and_reports_failures() {
             .contains("нескольких местах")
     );
 }
+
+#[test]
+fn screenshot_selection_maps_physical_pixels_across_monitors_and_zoom() {
+    use eframe::egui::{Rect, pos2};
+    for zoom in [0.75, 1., 1.25, 1.75] {
+        let canvas = Rect::from_min_max(pos2(0., 0.), pos2(3840. / zoom, 1080. / zoom));
+        let selection = Rect::from_min_max(
+            pos2(2100. / zoom, 20. / zoom),
+            pos2(2500. / zoom, 150. / zoom),
+        );
+        assert_eq!(
+            crate::app::selection_rectangle(selection, canvas, [-1920, 0, 3840, 1080]),
+            Some([180, 20, 400, 130])
+        );
+    }
+    let canvas = Rect::from_min_max(pos2(0., 0.), pos2(1920., 1080.));
+    assert_eq!(
+        crate::app::selection_rectangle(
+            Rect::from_min_max(pos2(-20., -10.), pos2(100., 80.)),
+            canvas,
+            [-1920, 0, 1920, 1080]
+        ),
+        Some([-1920, 0, 100, 80])
+    );
+    assert!(
+        crate::app::selection_rectangle(
+            Rect::from_min_max(pos2(2., 2.), pos2(8., 8.)),
+            canvas,
+            [0, 0, 1920, 1080]
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn nickname_matching_accepts_unique_closest_card_and_rejects_ties() {
+    use crate::ocr::{Document, RetryRead, TextLine, Word};
+    let c = catalog();
+    let cards = |names: &[&str]| {
+        let mut lines = Vec::new();
+        for (index, pilot) in names.iter().enumerate() {
+            let x = index as f32 * 200.;
+            for (y, text) in [(0., *pilot), (25., "Coercer*")] {
+                lines.push(TextLine {
+                    text: text.into(),
+                    words: vec![Word {
+                        text: text.into(),
+                        x,
+                        y,
+                        width: 100.,
+                        height: 10.,
+                    }],
+                });
+            }
+        }
+        Document { lines }
+    };
+    let selected = "Kennedu 518\n6 236 M";
+    let retry = |text: &str| RetryRead {
+        method: "nickname_crop_4x".into(),
+        rect: [120, 8, 110, 32],
+        text: text.into(),
+        error: None,
+    };
+    let single = cards(&["Kennedy 518"]);
+    let closest = ocr::identify_with_retries(selected, &[], &single, &c).unwrap();
+    assert_eq!(closest.pilot, "Kennedy 518");
+    assert_eq!(closest.ship, "Coercer");
+    assert_eq!(closest.distance, Some(6236.));
+    assert_eq!(ocr::pilot_match(selected, &[], &closest).method, "closest");
+    assert_eq!(ocr::pilot_match(selected, &[], &closest).edit_distance, 1);
+    let multiple = cards(&["Kennedy 518", "Kennedy 51B"]);
+    for retries in [
+        vec![],
+        vec![retry("Kennedy 519")],
+        vec![retry("Kennedy 518")],
+        vec![retry("Kennedy 518"), retry("Kennedy 51B")],
+    ] {
+        assert_eq!(
+            ocr::identify_with_retries(selected, &retries, &multiple, &c)
+                .unwrap()
+                .pilot,
+            "Kennedy 518"
+        );
+    }
+    let equal = cards(&["Kennedy 518", "Kennedv 518"]);
+    assert!(
+        ocr::identify_with_retries(selected, &[], &equal, &c)
+            .unwrap_err()
+            .contains("одинаково")
+    );
+    assert!(
+        ocr::identify_with_retries(
+            selected,
+            &[retry("Kennedy 518"), retry("Kennedv 518")],
+            &equal,
+            &c
+        )
+        .is_err()
+    );
+    assert!(ocr::identify_with_retries("Unrelated Pilot", &[], &single, &c).is_err());
+    let mut no_star = single.clone();
+    no_star.lines[1].words[0].text = "Coercer".into();
+    assert!(ocr::identify_with_retries(selected, &[], &no_star, &c).is_err());
+    for placeholder in [
+        "Объект не выбран",
+        "06beKT He Bb16paH",
+        "No object selected",
+    ] {
+        assert!(ocr::selected_pilot(placeholder).is_none());
+        assert!(
+            ocr::identify_with_retries(placeholder, &[retry("Kennedy 518")], &single, &c)
+                .unwrap_err()
+                .contains("не выбран объект")
+        );
+    }
+}

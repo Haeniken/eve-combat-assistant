@@ -356,6 +356,17 @@ fn screen(
         match &check.result {
             Ok(target) => {
                 ui.colored_label(CYAN, format!("Найдено: {} · {}", target.pilot, target.ship));
+                let matched =
+                    crate::ocr::pilot_match(&check.selected.text, &check.selected.retries, target);
+                if matched.method == "closest" {
+                    style::caption(
+                        ui,
+                        &format!(
+                            "Выбрана ближайшая карточка по нику; различий: {}",
+                            matched.edit_distance
+                        ),
+                    );
+                }
             }
             Err(error) => {
                 ui.colored_label(AMBER, error);
@@ -380,6 +391,16 @@ fn screen(
                         .max_width(ui.available_width())
                         .max_height(220.)
                         .shrink_to_fit(),
+                );
+            }
+            for retry in &region.retries {
+                style::caption(
+                    ui,
+                    &format!(
+                        "Повтор строки ника ({}): {}",
+                        retry.method,
+                        retry.error.as_ref().unwrap_or(&retry.text)
+                    ),
                 );
             }
             if let Some(error) = &region.error {
