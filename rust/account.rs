@@ -7,7 +7,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, jwk::JwkSet};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -41,6 +41,14 @@ impl Profile {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
+    }
+    pub fn apply_current_fit(&self, previous: &Profile, selected: &mut String) {
+        if previous.character_id != self.character_id
+            || ship_changed(id(&previous.ship, "ship_item_id"), &self.ship)
+            || selected.trim().is_empty()
+        {
+            *selected = self.current_fit.clone().unwrap_or_default();
+        }
     }
 }
 #[derive(Serialize, Deserialize)]
@@ -289,7 +297,7 @@ fn store_tokens(directory: &Path, tokens: &Tokens) -> Result<(), String> {
     std::fs::write(directory.join("sso.tmp"), encrypted).map_err(|e| e.to_string())?;
     crate::platform::replace_file(&directory.join("sso.tmp"), &directory.join("sso.dat"))
 }
-fn refresh(directory: &Path, client: &str) -> Result<Tokens, String> {
+fn load_tokens(directory: &Path, client: &str) -> Result<Tokens, String> {
     let encrypted =
         std::fs::read(directory.join("sso.dat")).map_err(|_| "Сначала войдите через EVE Online")?;
     let old: Tokens = serde_json::from_slice(&protect(&encrypted, false)?)
@@ -297,6 +305,10 @@ fn refresh(directory: &Path, client: &str) -> Result<Tokens, String> {
     if old.client_id != client {
         return Err("Client ID изменился: повторите вход".into());
     }
+    Ok(old)
+}
+fn refresh(directory: &Path, client: &str) -> Result<Tokens, String> {
+    let old = load_tokens(directory, client)?;
     let value = json_response(
         agent()
             .post("https://login.eveonline.com/v2/oauth/token")
@@ -310,6 +322,55 @@ fn refresh(directory: &Path, client: &str) -> Result<Tokens, String> {
         serde_json::from_value(value).map_err(|_| "Повторите вход через EVE Online")?;
     tokens.client_id = client.into();
     Ok(tokens)
+}
+
+/// Cheap authenticated ship check; reuse the regular import only on boarding.
+pub fn check_ship(
+    directory: &Path,
+    client: &str,
+    character_id: i64,
+    known_ship_id: i64,
+    catalog: &Catalog,
+    cancel: &AtomicBool,
+    changed: &dyn Fn(),
+) -> Result<Option<Profile>, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    let mut tokens = load_tokens(directory, client)?;
+    let http = agent();
+    let get = |token: &str| {
+        http.get(&format!(
+            "https://esi.evetech.net/characters/{character_id}/ship"
+        ))
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("X-Compatibility-Date", "2026-10-27")
+        .header(
+            "User-Agent",
+            "EVECombatAssistant/0.3 (haeniken; local desktop)",
+        )
+        .call()
+    };
+    let mut response = get(&tokens.access_token);
+    if matches!(response, Err(ureq::Error::StatusCode(401))) {
+        tokens = refresh(directory, client)?;
+        validate(&tokens.access_token, client)?;
+        store_tokens(directory, &tokens)?;
+        response = get(&tokens.access_token);
+    }
+    let ship = json_response(response)?;
+    crate::diagnostics::Trace::new(directory.join("debug"))
+        .job(crate::model::Settings::load(directory).ocr_debug,json!({"job":"own_ship"}))
+        .event("own_ship_checked",json!({"ship_item_id":id(&ship,"ship_item_id"),"ship_type_id":id(&ship,"ship_type_id"),"changed":ship_changed(known_ship_id,&ship)}));
+    if !ship_changed(known_ship_id, &ship) {
+        return Ok(None);
+    }
+    changed();
+    synchronize(directory, client, false, catalog, cancel, &|_| {}).map(Some)
+}
+pub fn ship_changed(known_ship_id: i64, ship: &Value) -> bool {
+    let current = id(ship, "ship_item_id");
+    current > 0 && current != known_ship_id
 }
 
 /// Общий преобразователь сохранённых фитов и снимка assets. Cargo никогда не становится модулем.
@@ -387,20 +448,43 @@ pub fn synchronize(
     // Сохраняем новый refresh token сразу: EVE может ротировать его при обновлении.
     store_tokens(directory, &tokens)?;
     let http = agent();
+    let trace = crate::diagnostics::Trace::new(directory.join("debug")).job(
+        crate::model::Settings::load(directory).ocr_debug,
+        json!({"job":"esi_profile"}),
+    );
+    let last_pages = std::cell::Cell::new(None);
     let get = |route: &str| {
         if cancel.load(Ordering::Relaxed) {
             return Err("Загрузка профиля остановлена".into());
         }
-        json_response(
-            http.get(format!("https://esi.evetech.net/characters/{character_id}/{route}").as_str())
-                .header("Authorization", &format!("Bearer {}", tokens.access_token))
-                .header("X-Compatibility-Date", "2026-10-27")
-                .header(
-                    "User-Agent",
-                    "EVECombatAssistant/0.3 (haeniken; local desktop)",
-                )
-                .call(),
-        )
+        let started = std::time::Instant::now();
+        let response = http
+            .get(format!("https://esi.evetech.net/characters/{character_id}/{route}").as_str())
+            .header("Authorization", &format!("Bearer {}", tokens.access_token))
+            .header("X-Compatibility-Date", "2026-10-27")
+            .header(
+                "User-Agent",
+                "EVECombatAssistant/0.3 (haeniken; local desktop)",
+            )
+            .call();
+        let header = |key| {
+            response
+                .as_ref()
+                .ok()
+                .and_then(|r| r.headers().get(key))
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
+        let pages = header("X-Pages")
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| (1..=1000).contains(v));
+        last_pages.set(pages);
+        let status = response.as_ref().ok().map(|r| r.status().as_u16());
+        let modified = header("Last-Modified");
+        let expires = header("Expires");
+        let value = json_response(response);
+        trace.event("esi_http_result", json!({"route":route,"status":status,"pages":pages,"last_modified":modified,"expires":expires,"elapsed_ms":started.elapsed().as_millis(),"records":value.as_ref().ok().and_then(Value::as_array).map(Vec::len),"error":value.as_ref().err()}));
+        value
     };
     progress("Загрузка навыков и имплантов…".into());
     let raw = get("skills")?;
@@ -460,7 +544,10 @@ pub fn synchronize(
                     row["flag"] = row["location_flag"].clone();
                     items.push(row);
                 }
-                if array(&assets).len() < 1000 {
+                if last_pages
+                    .get()
+                    .map_or(array(&assets).len() < 1000, |total| page >= total)
+                {
                     assets_complete = true;
                     break;
                 }
@@ -474,6 +561,17 @@ pub fn synchronize(
             }
         }
     }
+    let mut flags = std::collections::BTreeMap::<String, usize>::new();
+    let mut weapons = Vec::new();
+    for item in &items {
+        *flags.entry(s(item, "flag").to_string()).or_default() += 1;
+        let type_id = id(item, "type_id") as i32;
+        if !crate::fits::family(catalog.name(type_id), id(catalog.get(type_id), "group")).is_empty()
+        {
+            weapons.push(json!({"type_id":type_id,"flag":s(item,"flag")}));
+        }
+    }
+    trace.event("esi_current_ship_items",json!({"ship_type_id":id(&profile.ship,"ship_type_id"),"assets_complete":assets_complete,"items":items.len(),"flags":flags,"weapons":weapons}));
     if assets_complete
         && items.iter().any(|item| {
             s(item, "flag").starts_with("HiSlot") || s(item, "flag").starts_with("MedSlot")

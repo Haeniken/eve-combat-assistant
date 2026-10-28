@@ -236,6 +236,247 @@ fn integrated_dogma_and_matchup_use_available_ammunition() {
 }
 
 #[test]
+fn utility_scripts_are_not_ammunition_and_unloaded_guns_try_available_charges() {
+    let c = catalog();
+    let mut engine = Engine::default();
+    let enemy = engine
+        .evaluate(json!({"raw_fit":include_str!("../resources/example-rifter.eft")}))
+        .unwrap();
+    for (fit, drone_only) in [
+        (
+            "[Vedmak, ESI missing gun]\nTracking Computer II, Tracking Speed Script\nCaldari Navy Hornet x3\nMystic M x1500",
+            true,
+        ),
+        (
+            "[Vedmak, Unloaded gun]\nHeavy Entropic Disintegrator II\nTracking Computer II, Tracking Speed Script\nMeson Exotic Plasma M x1000\nMystic M x1500\nOccult M x1000",
+            false,
+        ),
+        (
+            "[Vedmak, Loaded gun]\nHeavy Entropic Disintegrator II, Mystic M\nTracking Computer II, Tracking Speed Script",
+            false,
+        ),
+    ] {
+        let mut own = engine.evaluate(json!({"raw_fit":fit})).unwrap();
+        if fit.contains("Unloaded gun") {
+            let cargo = own["cargo"].clone();
+            let mut unloaded = own["fit"].clone();
+            for module in unloaded["modules"].as_array_mut().unwrap() {
+                if c.name(crate::model::id(module, "type_id") as i32)
+                    .contains("Disintegrator")
+                {
+                    module["charge"] = serde_json::Value::Null;
+                }
+            }
+            own = engine.evaluate(json!({"fit":unloaded})).unwrap();
+            assert_eq!(own["summary"]["offense"]["dps"].as_f64(), Some(0.));
+            own["cargo"] = cargo;
+        }
+        let advice = tactics::advise(
+            &own,
+            &enemy,
+            &mut engine,
+            &c,
+            &Settings::default(),
+            None,
+            0.,
+        )
+        .unwrap();
+        assert!(!advice.ammo.contains("Script"));
+        if drone_only {
+            assert_eq!(advice.ammo, "Дроны");
+            assert!(
+                tactics::own_weapon_summary(&own, &c)["weapon_type_ids"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+        } else {
+            assert!(
+                ["Meson Exotic Plasma M", "Mystic M", "Occult M"].contains(&advice.ammo.as_str()),
+                "{}",
+                advice.ammo
+            );
+            assert!(advice.own_dps > 0.);
+        }
+    }
+}
+
+#[test]
+fn kikimora_from_supplied_fit_uses_small_plasma_and_keeps_every_module() {
+    let c = catalog();
+    let mut engine = Engine::default();
+    let own = engine
+        .evaluate(json!({"raw_fit":include_str!("../tests/fixtures/kikimora-ammo.eft")}))
+        .unwrap();
+    let modules = crate::model::array(&own["modules"]);
+    assert_eq!(modules.len(), 12);
+    assert!(
+        modules
+            .iter()
+            .any(|m| m["name"] == "Light Entropic Disintegrator II")
+    );
+    assert!(own["summary"]["offense"]["dps"].as_f64().unwrap() > 50.);
+    let enemy = engine
+        .evaluate(json!({"raw_fit":include_str!("../resources/example-rifter.eft")}))
+        .unwrap();
+    let advice = tactics::advise(
+        &own,
+        &enemy,
+        &mut engine,
+        &c,
+        &Settings::default(),
+        None,
+        0.,
+    )
+    .unwrap();
+    assert!(["Mystic S", "Occult S", "Meson Exotic Plasma S"].contains(&advice.ammo.as_str()));
+    let diagnostic = tactics::own_weapon_summary(&own, &c);
+    assert_eq!(diagnostic["weapon_type_ids"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        diagnostic["compatible_cargo_charge_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    let mut esi_items = Vec::new();
+    for module in crate::model::array(&own["fit"]["modules"]) {
+        let prefix = match crate::model::s(&module["slot"], "type") {
+            "High" => "HiSlot",
+            "Medium" => "MedSlot",
+            "Low" => "LoSlot",
+            "Rig" => "RigSlot",
+            other => panic!("unexpected slot {other}"),
+        };
+        esi_items.push(json!({"flag":format!("{prefix}{}",crate::model::id(&module["slot"],"index")),"type_id":module["type_id"],"quantity":1}));
+    }
+    for item in crate::model::array(&own["cargo"]) {
+        esi_items
+            .push(json!({"flag":"Cargo","type_id":item["type_id"],"quantity":item["quantity"]}));
+    }
+    let eft = crate::account::items_to_eft(
+        crate::model::id(&own["fit"], "ship_type_id") as i32,
+        "ESI roundtrip",
+        &esi_items,
+        &c,
+    )
+    .unwrap();
+    let imported = engine.evaluate(json!({"raw_fit":eft})).unwrap();
+    assert_eq!(crate::model::array(&imported["modules"]).len(), 12);
+    assert!(
+        crate::model::array(&imported["modules"])
+            .iter()
+            .any(|m| m["name"] == "Light Entropic Disintegrator II")
+    );
+}
+
+#[test]
+fn boarding_another_ship_replaces_or_clears_fit_but_same_ship_preserves_manual_eft() {
+    use crate::account::Profile;
+    let previous = Profile {
+        character_id: 7,
+        ship: json!({"ship_item_id":100,"ship_type_id":52265}),
+        ..Default::default()
+    };
+    let mut current = previous.clone();
+    current.current_fit = Some("ESI partial snapshot".into());
+    let mut selected = "Full manual Kikimora EFT".to_string();
+    current.apply_current_fit(&previous, &mut selected);
+    assert_eq!(selected, "Full manual Kikimora EFT");
+    // Two hulls of the same type can have different fits: identity is the item.
+    current.ship["ship_item_id"] = json!(101);
+    current.current_fit = Some("Other Kikimora EFT".into());
+    assert!(crate::account::ship_changed(100, &current.ship));
+    current.apply_current_fit(&previous, &mut selected);
+    assert_eq!(selected, "Other Kikimora EFT");
+    current.current_fit = None;
+    current.apply_current_fit(&previous, &mut selected);
+    assert!(
+        selected.is_empty(),
+        "never keep the previous ship's fitting"
+    );
+    assert!(!crate::account::ship_changed(
+        100,
+        &json!({"ship_item_id":100})
+    ));
+    assert!(!crate::account::ship_changed(100, &json!({})));
+}
+
+#[test]
+fn enemy_fitted_speed_separates_base_afterburner_and_mwd() {
+    let c = catalog();
+    let mut engine = Engine::default();
+    let bare = engine
+        .evaluate(json!({"raw_fit":"[Gnosis, Bare]"}))
+        .unwrap();
+    for (propulsion, ab, mwd) in [
+        ("", false, false),
+        ("10MN Afterburner II", true, false),
+        ("50MN Microwarpdrive II", false, true),
+        ("10MN Afterburner II\n50MN Microwarpdrive II", true, true),
+    ] {
+        let result = engine.evaluate(json!({"raw_fit":format!("[Gnosis, Speed]\nNanofiber Internal Structure II\n{propulsion}")})).unwrap();
+        let speed = tactics::fitted_speed(&result, &mut engine, &c).unwrap();
+        let base = crate::model::n(&speed, "base_mps");
+        assert!(
+            base > bare["hull"]["attributes"]["maxVelocity"].as_f64().unwrap(),
+            "base must retain fitted speed bonuses"
+        );
+        assert_eq!(speed.get("ab_mps").is_some(), ab);
+        assert_eq!(speed.get("mwd_mps").is_some(), mwd);
+        for key in ["ab_mps", "mwd_mps"] {
+            if let Some(v) = speed[key].as_f64() {
+                assert!(v > base);
+            }
+        }
+        if ab && mwd {
+            let mut off = result["fit"].clone();
+            for module in off["modules"].as_array_mut().unwrap() {
+                if c.name(crate::model::id(module, "type_id") as i32)
+                    .contains("Afterburner")
+                {
+                    module["state"] = json!("Online");
+                }
+            }
+            let only_mwd = engine.evaluate(json!({"fit":off})).unwrap();
+            assert!(
+                (crate::model::n(&speed, "mwd_mps")
+                    - only_mwd["hull"]["attributes"]["maxVelocity"]
+                        .as_f64()
+                        .unwrap())
+                .abs()
+                    < 0.01
+            );
+        }
+        let label = tactics::fitted_speed_text(&speed);
+        assert!(label.contains("База ") && label.contains("м/с"));
+        assert_eq!(label.contains("AB "), ab);
+        assert_eq!(label.contains("MWD "), mwd);
+    }
+}
+
+#[test]
+fn wrapped_nickname_parts_must_belong_to_one_card_column() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../resources/fixtures/ocr-background-cards.json"
+    ))
+    .unwrap();
+    let row = fixture.as_array().unwrap().last().unwrap();
+    let mut cards: ocr::Document = serde_json::from_value(row["cards"].clone()).unwrap();
+    let c = catalog();
+    assert_eq!(
+        ocr::identify_card("Juborun Vemane", &cards, &c)
+            .unwrap()
+            .ship,
+        "Brutix Navy Issue"
+    );
+    for word in &mut cards.lines[1].words {
+        word.x += 300.;
+    }
+    assert!(ocr::identify_card("Juborun Vemane", &cards, &c).is_err());
+}
+
+#[test]
 fn ocr_recognizes_selected_panel_and_overview_distance_prefix() {
     let c = catalog();
     for text in ["Haeniken\nRifter\n12.5 km", "12.5 km Haeniken Rifter"] {

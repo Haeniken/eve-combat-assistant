@@ -4,7 +4,7 @@ use crate::{
     Args,
     engine::{Catalog, Engine},
     fits,
-    model::{Settings, array, n, s},
+    model::{Settings, array, id, n, s},
     ocr::{Gate, Target},
     platform,
     sources::Sources,
@@ -59,6 +59,9 @@ pub struct CombatApp {
     profile: crate::account::Profile,
     fit_state: crate::settings_ui::FitState,
     account_busy: bool,
+    own_ship_busy: bool,
+    next_ship_check: Instant,
+    own_ship_error: Option<String>,
     fit_busy: bool,
     account_cancel: Arc<std::sync::atomic::AtomicBool>,
     status: String,
@@ -173,6 +176,9 @@ impl CombatApp {
             profile: crate::account::Profile::load(&directory),
             fit_state: Default::default(),
             account_busy: false,
+            own_ship_busy: false,
+            next_ship_check: Instant::now(),
+            own_ship_error: None,
             fit_busy: false,
             account_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tx,
@@ -361,6 +367,40 @@ impl CombatApp {
     fn messages(&mut self, ctx: &egui::Context) {
         while let Ok(message) = self.rx.try_recv() {
             match message {
+                Message::OwnShipChanging(character) => {
+                    if character == self.profile.character_id {
+                        self.settings.own_fit.clear();
+                        if let Some(draft) = &mut self.draft {
+                            draft.own_fit.clear();
+                        }
+                        if let Some(matchup) = &mut self.matchup {
+                            matchup.own = None;
+                            matchup.advice.fill(None);
+                        }
+                        self.own_ship_error = Some("Загружается фит нового корабля".into());
+                        self.recalculate();
+                    }
+                }
+                Message::OwnShipReady(character, result) => {
+                    self.own_ship_busy = false;
+                    if character != self.profile.character_id {
+                        continue;
+                    }
+                    match result {
+                        Ok(Some(profile)) => {
+                            self.own_ship_error = None;
+                            let _ = self.tx.send(Message::CharacterReady(Ok(profile)));
+                        }
+                        Ok(None) => self.own_ship_error = None,
+                        Err(error) => {
+                            self.workers
+                                .trace
+                                .job(self.settings.ocr_debug, json!({"job":"own_ship"}))
+                                .event("own_ship_check_error", json!({"error":error}));
+                            self.own_ship_error = Some(error);
+                        }
+                    }
+                }
                 Message::CharacterReady(result) => {
                     self.account_busy = false;
                     match result {
@@ -368,15 +408,16 @@ impl CombatApp {
                             let settings = self.draft.as_mut().unwrap_or(&mut self.settings);
                             settings.skills = Some(json!(profile.skills));
                             settings.implants = profile.implants.clone();
-                            if let Some(fit) = &profile.current_fit {
-                                settings.own_fit = fit.clone();
-                            }
+                            profile.apply_current_fit(&self.profile, &mut settings.own_fit);
                             self.status = format!(
                                 "{} · загружено навыков: {}",
                                 profile.name,
                                 profile.skills.len()
                             );
                             self.profile = profile;
+                            self.own_ship_error = None;
+                            self.next_ship_check =
+                                Instant::now() + std::time::Duration::from_secs(60);
                             if self.draft.is_none() {
                                 if let Err(error) = self.settings.save(&self.directory) {
                                     self.status = error;
@@ -726,6 +767,9 @@ impl CombatApp {
             .and_then(|r| r["incoming"]["hint"].as_str())
             .unwrap_or("Выберите вариант фита")
             .to_string();
+        let fitted_speed = diagnostic
+            .map(|r| tactics::fitted_speed_text(&r["fitted_speed"]))
+            .unwrap_or_else(|| "—".into());
         let own_result = self.matchup.as_ref().and_then(|m| m.own.as_ref());
         let mut approximation_hint = String::new();
         for (label, result) in [("Противник", diagnostic), ("Свой фит", own_result)]
@@ -889,14 +933,13 @@ impl CombatApp {
         });
         ui.columns(2, |cols| {
             let neut = advice.as_ref().map(|a| a.neut.as_str()).unwrap_or("—");
-            let speed = advice.as_ref().map(|a| a.speed.as_str()).unwrap_or("—");
             style::metric(
                 &mut cols[0],
                 "НЕЙТРИКИ",
                 neut,
                 neut != "НЕТ В ФИТЕ" && neut != "—",
             );
-            style::metric(&mut cols[1], "СКОРОСТЬ", speed, speed == "ОН БЫСТРЕЕ");
+            style::metric(&mut cols[1], "ЕГО СКОРОСТЬ", &fitted_speed, false);
         });
         if !approximation_hint.is_empty() {
             style::abyssal_alert(ui, &approximation_hint);
@@ -964,6 +1007,9 @@ impl CombatApp {
         if !self.pilot_status.is_empty() {
             style::caption(ui, &self.pilot_status);
         }
+        if let Some(error) = &self.own_ship_error {
+            style::caption(ui, &format!("Смена корабля: {error}"));
+        }
         style::caption(ui, &self.ocr_status);
     }
     fn settings_view(&mut self, ctx: &egui::Context) {
@@ -1016,7 +1062,7 @@ impl CombatApp {
                 cancel_sync: &self.workers.cancel,
                 profile: &self.profile,
                 fit_state: &mut self.fit_state,
-                account_busy: self.account_busy,
+                account_busy: self.account_busy || self.own_ship_busy,
                 fit_busy: self.fit_busy,
                 screen_state: &mut self.screen_state,
                 ocr_status: &self.ocr_status,
@@ -1074,7 +1120,7 @@ impl CombatApp {
                 hide_capture_windows(ctx);
             }
             Some(Action::Login) | Some(Action::RefreshCharacter) => {
-                if !self.account_busy {
+                if !self.account_busy && !self.own_ship_busy {
                     self.account_busy = true;
                     self.account_cancel.store(false, Ordering::Relaxed);
                     let tx = self.tx.clone();
@@ -1265,6 +1311,44 @@ impl eframe::App for CombatApp {
             self.recalculate();
         }
         self.messages(ctx);
+        if !self.args.demo
+            && self.draft.is_none()
+            && !self.account_busy
+            && !self.own_ship_busy
+            && self.profile.character_id > 0
+            && self.directory.join("sso.dat").is_file()
+            && Instant::now() >= self.next_ship_check
+        {
+            self.own_ship_busy = true;
+            self.next_ship_check = Instant::now() + std::time::Duration::from_secs(60);
+            let directory = self.directory.clone();
+            let client = self.settings.sso_client_id.clone();
+            let catalog = self.catalog.clone();
+            let cancel = self.account_cancel.clone();
+            let character = self.profile.character_id;
+            let previous = id(&self.profile.ship, "ship_item_id");
+            let tx = self.tx.clone();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                platform::low_priority();
+                let changed = || {
+                    let _ = tx.send(Message::OwnShipChanging(character));
+                    ctx.request_repaint();
+                };
+                let result = crate::account::check_ship(
+                    &directory, &client, character, previous, &catalog, &cancel, &changed,
+                );
+                let _ = tx.send(Message::OwnShipReady(character, result));
+                ctx.request_repaint();
+            });
+        }
+        if !self.args.demo && self.profile.character_id > 0 {
+            ctx.request_repaint_after(
+                self.next_ship_check
+                    .saturating_duration_since(Instant::now())
+                    .max(std::time::Duration::from_secs(1)),
+            );
+        }
         if self
             .gate
             .expire(Instant::now(), self.settings.target_hold_seconds)

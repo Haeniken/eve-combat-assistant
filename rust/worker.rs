@@ -39,6 +39,8 @@ pub struct Matchup {
 }
 pub enum Message {
     CharacterReady(Result<crate::account::Profile, String>),
+    OwnShipReady(i64, Result<Option<crate::account::Profile>, String>),
+    OwnShipChanging(i64),
     FitReady(String, Result<crate::fit_plan::Plan, String>),
     Analyzed(u64, AnalysisPhase, Result<Box<Matchup>, String>),
     Status(String),
@@ -232,6 +234,12 @@ impl AnalysisCore {
             seed: self.store.seed.clone(),
             seed_error: self.store.seed_error.clone(),
         };
+        if let Some(own) = &out.own {
+            trace.event(
+                "own_weapons_ready",
+                tactics::own_weapon_summary(own, &self.catalog),
+            );
+        }
         let revision = fits::hash(
             &json!([
                 settings.own_fit,
@@ -270,6 +278,15 @@ impl AnalysisCore {
                     }
                     result["incoming"] =
                         tactics::incoming_summary(&result, &variant.fit, &self.catalog);
+                    match tactics::fitted_speed(&result, &mut self.engine, &self.catalog) {
+                        Ok(speed) => result["fitted_speed"] = speed,
+                        Err(error) => {
+                            trace.event(
+                                "fitted_speed_error",
+                                json!({"variant_key":variant.key,"error":error}),
+                            );
+                        }
+                    }
                     let advice = out.own.as_ref().map(|own| {
                         tactics::advise(
                             own,
@@ -292,7 +309,7 @@ impl AnalysisCore {
                 }
                 Err(error) => (None, None, Some(error)),
             };
-            trace.event("comparison_ready",json!({"variant_key":variant.key,"personal":variant.personal,"error":error,"elapsed_ms":comparison_started.elapsed().as_millis(),"hull_id":result.as_ref().map(|r|&r["hull"]["id"]),"defense":result.as_ref().map(|r|&r["summary"]["defense"]),"base_defense":result.as_ref().map(|r|&r["base_defense"]),"incoming":result.as_ref().map(|r|&r["incoming"]),"warnings":result.as_ref().map(|r|&r["warnings"]),"approximations":result.as_ref().map(|r|&r["approximations"]),"own_approximations":out.own.as_ref().map(|r|&r["approximations"]),"advice":advice}));
+            trace.event("comparison_ready",json!({"variant_key":variant.key,"personal":variant.personal,"error":error,"elapsed_ms":comparison_started.elapsed().as_millis(),"hull_id":result.as_ref().map(|r|&r["hull"]["id"]),"defense":result.as_ref().map(|r|&r["summary"]["defense"]),"base_defense":result.as_ref().map(|r|&r["base_defense"]),"incoming":result.as_ref().map(|r|&r["incoming"]),"fitted_speed":result.as_ref().map(|r|&r["fitted_speed"]),"warnings":result.as_ref().map(|r|&r["warnings"]),"approximations":result.as_ref().map(|r|&r["approximations"]),"own_approximations":out.own.as_ref().map(|r|&r["approximations"]),"advice":advice}));
             if self.cache.len() >= 64 {
                 self.cache.clear();
             }
@@ -988,6 +1005,6 @@ pub fn diagnose(
     let started = std::time::Instant::now();
     let m = core.analyze(&request)?;
     Ok(
-        json!({"version":env!("CARGO_PKG_VERSION"),"ship":ship,"seed":m.seed,"seed_error":m.seed_error,"report":m.pop.report,"variants":m.variants.iter().enumerate().map(|(i,v)|{let r=m.results.get(i).and_then(Option::as_ref);json!({"title":v.title,"percent":v.percent,"personal":v.personal,"defense":r.map(|r|&r["summary"]["defense"]),"base_defense":r.map(|r|&r["base_defense"]),"incoming":r.map(|r|&r["incoming"]),"comparison_error":r.map(|r|&r["comparison_error"]),"warnings":r.map(|r|&r["warnings"]),"approximations":r.map(|r|&r["approximations"])})}).collect::<Vec<_>>(),"failures":m.failures,"own_evaluated":m.own.is_some(),"advice_count":m.advice.iter().filter(|v|v.is_some()).count(),"elapsed_ms":started.elapsed().as_millis()}),
+        json!({"version":env!("CARGO_PKG_VERSION"),"ship":ship,"seed":m.seed,"seed_error":m.seed_error,"report":m.pop.report,"variants":m.variants.iter().enumerate().map(|(i,v)|{let r=m.results.get(i).and_then(Option::as_ref);json!({"title":v.title,"percent":v.percent,"personal":v.personal,"defense":r.map(|r|&r["summary"]["defense"]),"base_defense":r.map(|r|&r["base_defense"]),"incoming":r.map(|r|&r["incoming"]),"fitted_speed":r.map(|r|&r["fitted_speed"]),"advice":m.advice.get(i).and_then(Option::as_ref),"comparison_error":r.map(|r|&r["comparison_error"]),"warnings":r.map(|r|&r["warnings"]),"approximations":r.map(|r|&r["approximations"])})}).collect::<Vec<_>>(),"failures":m.failures,"own_evaluated":m.own.is_some(),"advice_count":m.advice.iter().filter(|v|v.is_some()).count(),"elapsed_ms":started.elapsed().as_millis()}),
     )
 }

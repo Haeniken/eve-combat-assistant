@@ -227,5 +227,70 @@
       ]
     },
     "ship": "Drake Navy Issue"
+  },
+  {
+    "selected": "Juborun Vemane\ng SSS M",
+    "cards": {
+      "lines": [
+        {
+          "text": "Juborun",
+          "words": [
+            {
+              "height": 18.0,
+              "text": "Juborun",
+              "width": 90.0,
+              "x": 971.0,
+              "y": 185.0
+            }
+          ]
+        },
+        {
+          "text": "Vemane [CMDG'",
+          "words": [
+            {
+              "height": 18.0,
+              "text": "Vemane",
+              "width": 90.0,
+              "x": 921.0,
+              "y": 213.0
+            },
+            {
+              "height": 22.0,
+              "text": "[CMDG'",
+              "width": 70.0,
+              "x": 1025.0,
+              "y": 213.0
+            }
+          ]
+        },
+        {
+          "text": "Brutjx Navy Iss",
+          "words": [
+            {
+              "height": 18.0,
+              "text": "Brutjx",
+              "width": 64.0,
+              "x": 925.0,
+              "y": 243.0
+            },
+            {
+              "height": 20.0,
+              "text": "Navy",
+              "width": 50.0,
+              "x": 1001.0,
+              "y": 244.0
+            },
+            {
+              "height": 16.0,
+              "text": "Iss",
+              "width": 31.0,
+              "x": 1063.0,
+              "y": 244.0
+            }
+          ]
+        }
+      ]
+    },
+    "ship": "Brutix Navy Issue"
   }
 ]

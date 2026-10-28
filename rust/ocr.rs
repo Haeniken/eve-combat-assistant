@@ -269,6 +269,28 @@ pub fn identify_card(
     Ok(target)
 }
 fn nickname_anchors(pilot: &str, cards: &Document) -> Vec<(f32, f32, f32)> {
+    let mut anchors = single_line_nickname_anchors(pilot, cards);
+    let words: Vec<_> = pilot.split_whitespace().collect();
+    // Narrow EVE cards can wrap a complete nickname onto two lines. Match both
+    // exact parts in one column; never concatenate names of adjacent cards.
+    for split in 1..words.len() {
+        let first = single_line_nickname_anchors(&words[..split].join(" "), cards);
+        let second = single_line_nickname_anchors(&words[split..].join(" "), cards);
+        for (x, y, h) in &first {
+            for (nx, ny, nh) in &second {
+                let height = h.max(*nh);
+                if ny - y >= height * 0.7
+                    && ny - y <= height * 1.8
+                    && (nx - x).abs() <= height * 2.5
+                {
+                    anchors.push(((x + nx) / 2., *y, height));
+                }
+            }
+        }
+    }
+    anchors
+}
+fn single_line_nickname_anchors(pilot: &str, cards: &Document) -> Vec<(f32, f32, f32)> {
     let normalized = normalized_pilot(pilot);
     let mut anchors = Vec::new();
     for line in &cards.lines {
