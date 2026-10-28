@@ -59,6 +59,23 @@ impl Attribute {
                         }),
                 };
 
+                // Polarized armor/shield resistanceKiller is a percentage (100),
+                // while its assigned resonance is a fraction (1). Hull uses a
+                // separate dimensionless attribute and must not be divided again.
+                let source_value = if matches!(
+                    operator,
+                    EffectOperator::PreAssign | EffectOperator::PostAssign
+                ) && info
+                    .get_dogma_attribute(effect.source_attribute_id)
+                    .is_some_and(|a| a.name() == "resistanceKiller" && a.unit_id() == 105)
+                    && info.get_dogma_attribute(attribute_id).is_some_and(|a| {
+                        a.unit_id() == 108 && a.name().ends_with("DamageResonance")
+                    }) {
+                    source_value / 100.0
+                } else {
+                    source_value
+                };
+
                 /* Simplify the values so we can do the math easier later on. */
                 let source_value = match operator {
                     EffectOperator::PreAssign => source_value,

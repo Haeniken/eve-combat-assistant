@@ -34,6 +34,7 @@ pub struct Settings {
     pub ocr: bool,
     pub ocr_debug: bool,
     pub ocr_interval: f64,
+    pub target_hold_seconds: u32,
     pub region: Option<[i32; 4]>,
     pub targets_region: Option<[i32; 4]>,
     pub excluded: Vec<String>,
@@ -73,6 +74,7 @@ impl Default for Settings {
             ocr: false,
             ocr_debug: false,
             ocr_interval: 1.5,
+            target_hold_seconds: 60,
             region: None,
             targets_region: None,
             excluded: Vec::new(),
@@ -105,6 +107,7 @@ impl Settings {
         s.max_variants = s.max_variants.clamp(1, 12);
         s.max_attackers = s.max_attackers.clamp(1, 5);
         s.skill_level = s.skill_level.min(5);
+        s.target_hold_seconds = s.target_hold_seconds.min(600);
         if s.statistics_version < 2 {
             s.sync_scope = 2;
             s.force_refresh = false;

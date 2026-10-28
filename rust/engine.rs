@@ -268,10 +268,28 @@ fn run(req: Request) -> Result<Value, String> {
     let mut hull = type_json(sde, stats.hull.type_id)?;
     hull["attributes"] =
         serde_json::to_value(named(sde, &stats.hull.attributes)?).map_err(|e| e.to_string())?;
+    let uncertain_modules: Vec<_> = modules
+        .iter()
+        .filter(|m| {
+            sde.get_type(crate::model::id(m, "id") as i32)
+                .is_some_and(|t| {
+                    t.dogma_effects()
+                        .into_iter()
+                        .flatten()
+                        .any(|e| e.effect_id() == 6556)
+                })
+        })
+        .map(|m| m["name"].clone())
+        .collect();
+    let warnings = if uncertain_modules.is_empty() {
+        Vec::<String>::new()
+    } else {
+        vec!["Параметры Abyssal-модулей отсутствуют в публичной потере; расчёт по справочным значениям может быть неточным".into()]
+    };
     Ok(
         json!({"sde_build": sde.build_number(), "engine": "EVEShipFit v8.1.0", "hull": hull,
         "summary": esf_dogma_engine::rust::Output::new(&info, &stats), "modules": modules,
-        "cargo": cargo, "fit": fit_json}),
+        "cargo": cargo, "fit": fit_json,"warnings":warnings,"uncertain_modules":uncertain_modules}),
     )
 }
 
@@ -358,5 +376,146 @@ impl Engine {
         }
         self.cache.insert(key, result.clone());
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod resistance_regressions {
+    use super::*;
+    fn fixture(raw: &str) -> Value {
+        Engine::default()
+            .evaluate(serde_json::from_str(raw).unwrap())
+            .unwrap()
+    }
+    #[test]
+    fn polarized_resonances_are_fractions_and_override_resistance_modules() {
+        let result = fixture(include_str!("../resources/fixtures/marshal-0.json"));
+        for layer in ["shield", "armor", "structure"] {
+            for key in ["em", "therm", "kin", "expl"] {
+                assert_eq!(
+                    result["summary"]["defense"][layer]["resist"][key].as_f64(),
+                    Some(0.)
+                );
+            }
+        }
+        assert!(!crate::model::array(&result["warnings"]).is_empty());
+        let mut req: Value =
+            serde_json::from_str(include_str!("../resources/fixtures/marshal-1.json")).unwrap();
+        let polarized: Value =
+            serde_json::from_str(include_str!("../resources/fixtures/marshal-0.json")).unwrap();
+        let c = Catalog::load().unwrap();
+        req["fit"]["modules"] = json!(
+            crate::model::array(&req["fit"]["modules"])
+                .iter()
+                .map(|m| {
+                    if c.name(crate::model::id(m, "type_id") as i32)
+                        .contains("Rapid Heavy")
+                    {
+                        let mut m = m.clone();
+                        m["type_id"] = polarized["fit"]["modules"][6]["type_id"].clone();
+                        m["charge"] = polarized["fit"]["modules"][6]["charge"].clone();
+                        m
+                    } else {
+                        m.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+        );
+        let result = Engine::default().evaluate(req).unwrap();
+        assert!(crate::model::n(&result["summary"]["offense"], "dps") > 0.);
+        for key in ["em", "therm", "kin", "expl"] {
+            assert_eq!(result["summary"]["defense"]["armor"]["resist"][key], 0.);
+        }
+    }
+    #[test]
+    fn marshal_and_gnosis_omni_resists_match_their_real_fits_and_bare_hulls() {
+        for (raw, ship, layer, expected, base) in [
+            (
+                include_str!("../resources/fixtures/marshal-1.json"),
+                44996,
+                "armor",
+                79.31208054560844,
+                40.,
+            ),
+            (
+                include_str!("../resources/fixtures/gnosis-1.json"),
+                3756,
+                "shield",
+                64.8855805398874,
+                27.5,
+            ),
+        ] {
+            let result = fixture(raw);
+            let bare = Engine::default()
+                .evaluate(
+                    json!({"fit":{"ship_type_id":ship,"modules":[],"drones":[]},"skill_level":5}),
+                )
+                .unwrap();
+            for key in ["em", "therm", "kin", "expl"] {
+                assert!(
+                    (result["summary"]["defense"][layer]["resist"][key]
+                        .as_f64()
+                        .unwrap()
+                        - expected)
+                        .abs()
+                        < 0.001
+                );
+                assert!(
+                    (bare["summary"]["defense"][layer]["resist"][key]
+                        .as_f64()
+                        .unwrap()
+                        - base)
+                        .abs()
+                        < 0.001
+                );
+            }
+        }
+        let rifter = Engine::default()
+            .evaluate(json!({"fit":{"ship_type_id":587,"modules":[],"drones":[]}}))
+            .unwrap();
+        assert_ne!(
+            rifter["summary"]["defense"]["shield"]["resist"]["em"],
+            rifter["summary"]["defense"]["shield"]["resist"]["expl"]
+        );
+    }
+    #[test]
+    fn incoming_damage_exposes_minor_damage_and_assumed_ammunition() {
+        let c = Catalog::load().unwrap();
+        let mut engine = Engine::default();
+        let req: Value =
+            serde_json::from_str(include_str!("../resources/fixtures/marshal-1.json")).unwrap();
+        let result = engine.evaluate(req.clone()).unwrap();
+        let mix = crate::tactics::incoming_summary(&result, &req["fit"], &c);
+        let kin = mix["percentages"][2].as_f64().unwrap();
+        let explosive = mix["percentages"][3].as_f64().unwrap();
+        assert!((kin - 92.72).abs() < 0.02 && (explosive - 7.28).abs() < 0.02);
+        assert!(
+            crate::model::array(&mix["sources"])
+                .iter()
+                .any(|s| s["charge"] == "Scourge Fury Heavy Missile")
+        );
+        assert!(
+            crate::model::array(&mix["sources"])
+                .iter()
+                .all(|s| s["assumed_charge"] == false)
+        );
+        let mut empty = req["fit"].clone();
+        for m in empty["modules"].as_array_mut().unwrap() {
+            m["charge"] = Value::Null;
+        }
+        let result = engine
+            .evaluate(json!({"fit":crate::tactics::fill_charges(&empty,&c)}))
+            .unwrap();
+        let mix = crate::tactics::incoming_summary(&result, &empty, &c);
+        assert!(
+            crate::model::array(&mix["sources"])
+                .iter()
+                .any(|s| s["assumed_charge"] == true)
+        );
+        assert_eq!(crate::tactics::resistance_note(&[79.312; 4]), "РАВНОМЕРНО");
+        assert_eq!(
+            crate::tactics::resistance_note(&[20., 40., 50., 60.]),
+            "СЛАБЕЕ EM"
+        );
     }
 }

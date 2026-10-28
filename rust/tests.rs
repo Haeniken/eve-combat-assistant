@@ -510,7 +510,12 @@ fn current_selection_matches_starred_hull_in_the_right_card_after_reordering() {
     for word in &mut no_star.lines[1].words {
         word.text = word.text.replace('*', "");
     }
-    assert!(crate::ocr::selected_card("Kurenai Uchiha", &no_star, &c).is_none());
+    assert_eq!(
+        crate::ocr::selected_card("Kurenai Uchiha", &no_star, &c)
+            .unwrap()
+            .ship,
+        "Orca"
+    );
 }
 
 #[test]
@@ -1102,4 +1107,130 @@ fn legacy_statistics_settings_migrate_to_incremental_all_hull_updates() {
     assert!(!settings.force_refresh);
     assert_eq!(settings.pilot, "Preserved pilot");
     assert_eq!(std::fs::read(temp.0.join("settings.json")).unwrap(), bytes);
+}
+
+#[test]
+fn clipped_ship_names_need_a_unique_catalog_match_in_the_selected_card() {
+    use crate::ocr::{Document, TextLine, Word};
+    let c = catalog();
+    let row = |text: &str, x, y, width| TextLine {
+        text: text.into(),
+        words: vec![Word {
+            text: text.into(),
+            x,
+            y,
+            width,
+            height: 10.,
+        }],
+    };
+    let cards = |hull: &str| Document {
+        lines: vec![
+            row("Vesna83 [CR]", 10., 0., 90.),
+            row(hull, 5., 20., 100.),
+            row("23 KM", 30., 50., 40.),
+            row("Gnosis", 35., 70., 40.),
+            row("Machariel*", 160., 20., 80.),
+        ],
+    };
+    for (read, expected) in [
+        ("Hurricane Fleet", "Hurricane Fleet Issue"),
+        ("Hurricane Flee…", "Hurricane Fleet Issue"),
+        ("Hurricane Fleet Issue", "Hurricane Fleet Issue"),
+        ("Gnosis", "Gnosis"),
+    ] {
+        assert_eq!(
+            ocr::identify_card("Vesna83\n23 km", &cards(read), &c)
+                .unwrap()
+                .ship,
+            expected
+        );
+    }
+    // A prefix shared by the base and faction ship is unresolved without a marker.
+    assert!(ocr::identify_card("Vesna83", &cards("Hurricane"), &c).is_err());
+    assert!(ocr::identify_card("Vesna83", &cards("Unknown hull"), &c).is_err());
+    let wrapped = Document {
+        lines: vec![
+            row("Vesna83 [CR]", 10., 0., 90.),
+            row("Hurricane", 15., 20., 80.),
+            row("Fleet Issue", 15., 32., 80.),
+            row("23 KM", 30., 50., 40.),
+        ],
+    };
+    assert_eq!(
+        ocr::identify_card("Vesna83", &wrapped, &c).unwrap().ship,
+        "Hurricane Fleet Issue"
+    );
+}
+
+#[test]
+fn missing_targets_expire_after_configured_delay_and_changes_clear_immediately() {
+    use std::time::{Duration, Instant};
+    let c = catalog();
+    let a = ocr::parse("Pilot: First Pilot\nRifter", &c).unwrap();
+    let b = ocr::parse("Pilot: Other Pilot\nTristan", &c).unwrap();
+    let start = Instant::now();
+    let mut gate = Gate::default();
+    assert!(gate.feed_at(Some(a.clone()), start, 60).is_none());
+    assert_eq!(
+        gate.feed_at(Some(a.clone()), start, 60),
+        Some(Some(a.clone()))
+    );
+    assert!(gate.feed_at(None, start, 60).is_none());
+    assert!(
+        gate.feed_at(None, start + Duration::from_secs(59), 60)
+            .is_none()
+    );
+    assert_eq!(
+        gate.remaining(start + Duration::from_secs(59), 60),
+        Some(Duration::from_secs(1))
+    );
+    assert!(
+        gate.feed_at(Some(a.clone()), start + Duration::from_secs(59), 60)
+            .is_none()
+    );
+    assert_eq!(gate.remaining(start + Duration::from_secs(60), 60), None);
+    assert!(
+        gate.feed_at(None, start + Duration::from_secs(61), 60)
+            .is_none()
+    );
+    assert!(!gate.expire(start + Duration::from_secs(120), 60));
+    assert!(gate.expire(start + Duration::from_secs(121), 60));
+    assert!(!gate.expire(start + Duration::from_secs(122), 60));
+    gate.feed_at(Some(a.clone()), start, 60);
+    gate.feed_at(Some(a.clone()), start, 60);
+    gate.feed_at(None, start, 60);
+    assert_eq!(
+        gate.feed_at(Some(b.clone()), start + Duration::from_secs(2), 60),
+        Some(None)
+    );
+    assert_eq!(gate.remaining(start + Duration::from_secs(2), 60), None);
+    assert_eq!(
+        gate.feed_at(Some(b.clone()), start + Duration::from_secs(3), 60),
+        Some(Some(b))
+    );
+    assert_eq!(
+        gate.feed_at(None, start + Duration::from_secs(4), 0),
+        Some(None)
+    );
+    assert!(ocr::clearly_different_pilot("Other Pilot", "First Pilot"));
+    assert!(!ocr::clearly_different_pilot("Kennedy 518", "Kennedu 518"));
+    let temp = Temp::new();
+    assert_eq!(Settings::load(&temp.0).target_hold_seconds, 60);
+}
+
+#[test]
+fn base_resistance_holes_break_ties_without_overriding_real_resistance_differences() {
+    let total = [50.; 4];
+    let base = [0., 20., 40., 50.];
+    let em = tactics::base_hole_preference(&[1., 0., 0., 0.], &total, &base);
+    let explosive = tactics::base_hole_preference(&[0., 0., 0., 1.], &total, &base);
+    assert!(em > explosive);
+    assert_eq!(
+        tactics::base_hole_preference(&[1., 0., 0., 0.], &[0., 20., 40., 50.], &base),
+        0.
+    );
+    assert_eq!(
+        tactics::base_hole_preference(&[1., 0., 0., 0.], &total, &[40.; 4]),
+        tactics::base_hole_preference(&[0., 0., 0., 1.], &total, &[40.; 4])
+    );
 }

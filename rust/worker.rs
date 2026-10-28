@@ -46,7 +46,7 @@ pub enum Message {
     PilotStatus(u64, String, String, String),
     SyncDone(Result<usize, String>),
     SyncProgress(crate::sources::UpdateProgress),
-    Ocr(u64, Result<Option<Target>, String>),
+    Ocr(u64, Result<Option<Target>, String>, Option<String>),
     OcrState(u64, String),
     ScreenCaptured,
     DesktopCaptured(Result<platform::DesktopCapture, String>),
@@ -262,7 +262,13 @@ impl AnalysisCore {
                 .engine
                 .evaluate(json!({"fit":tactics::fill_charges(&variant.fit,&self.catalog)}));
             let (advice, result, error) = match result {
-                Ok(result) => {
+                Ok(mut result) => {
+                    let ship_id = result["fit"]["ship_type_id"].clone();
+                    if let Ok(bare)=self.engine.evaluate(json!({"fit":{"ship_type_id":ship_id,"modules":[],"drones":[]},"skill_level":5})) {
+                        result["base_defense"]=bare["summary"]["defense"].clone();
+                    }
+                    result["incoming"] =
+                        tactics::incoming_summary(&result, &variant.fit, &self.catalog);
                     let advice = out.own.as_ref().map(|own| {
                         tactics::advise(
                             own,
@@ -276,13 +282,22 @@ impl AnalysisCore {
                     });
                     match advice {
                         Some(Ok(a)) => (Some(a), Some(result), None),
-                        Some(Err(e)) => (None, Some(result), Some(e)),
+                        Some(Err(e)) => {
+                            let error = if crate::model::array(&result["warnings"]).is_empty() {
+                                e
+                            } else {
+                                "Неизвестны параметры Abyssal-модулей; точное сравнение недоступно"
+                                    .into()
+                            };
+                            result["comparison_error"] = json!(error);
+                            (None, Some(result), Some(error))
+                        }
                         None => (None, Some(result), None),
                     }
                 }
                 Err(error) => (None, None, Some(error)),
             };
-            trace.event("comparison_ready",json!({"variant_key":variant.key,"personal":variant.personal,"error":error,"elapsed_ms":comparison_started.elapsed().as_millis()}));
+            trace.event("comparison_ready",json!({"variant_key":variant.key,"personal":variant.personal,"error":error,"elapsed_ms":comparison_started.elapsed().as_millis(),"hull_id":result.as_ref().map(|r|&r["hull"]["id"]),"defense":result.as_ref().map(|r|&r["summary"]["defense"]),"base_defense":result.as_ref().map(|r|&r["base_defense"]),"incoming":result.as_ref().map(|r|&r["incoming"]),"warnings":result.as_ref().map(|r|&r["warnings"]),"advice":advice}));
             if self.cache.len() >= 64 {
                 self.cache.clear();
             }
@@ -578,6 +593,7 @@ impl Workers {
                     let started = std::time::Instant::now();
                     let mut frame_event = json!({"kind":"automatic_frame", "epoch":config.epoch, "region":config.settings.region, "targets_region":config.settings.targets_region, "language":config.settings.language});
                     let mut should_emit = true;
+                    let mut observed_pilot = None;
                     let result = (|| -> Result<Option<Target>, String> {
                         let image = platform::read_screen(rect)?;
                         if let Some(cards_rect) = config.settings.targets_region {
@@ -593,6 +609,10 @@ impl Workers {
                                 selected_document =
                                     platform::ocr_document(&image, &config.settings.language)?;
                             }
+                            observed_pilot = ocr::selected_pilot(&ocr::selected_text(
+                                &selected_document,
+                                &selected_retries,
+                            ));
                             // Карточки могут менять позиции независимо от правой панели.
                             let cards = platform::read_screen(cards_rect)?;
                             let card_decision = card_frames.inspect(cards.as_raw());
@@ -636,6 +656,10 @@ impl Workers {
                             json!(debug.snapshot(config.settings.ocr_debug, "selected", &image));
                         selected_document =
                             platform::ocr_document(&image, &config.settings.language)?;
+                        observed_pilot = ocr::selected_pilot(&ocr::selected_text(
+                            &selected_document,
+                            &selected_retries,
+                        ));
                         cached = ocr::parse(&selected_document.text(), &catalog);
                         Ok(cached.clone())
                     })();
@@ -675,7 +699,11 @@ impl Workers {
                         frames = ocr::FrameCache::default();
                         card_frames = ocr::FrameCache::default();
                     }
-                    emit(&event_tx, &ctx, Message::Ocr(config.epoch, result));
+                    emit(
+                        &event_tx,
+                        &ctx,
+                        Message::Ocr(config.epoch, result, observed_pilot),
+                    );
                 }
             });
         }
@@ -804,7 +832,7 @@ mod ocr_tests {
                     assert!(check.result.is_err());
                     checked += 1;
                 }
-                Ok(Message::Ocr(3, Err(_))) => failures += 1,
+                Ok(Message::Ocr(3, Err(_), _)) => failures += 1,
                 _ => {}
             }
         }
@@ -934,6 +962,6 @@ pub fn diagnose(
     let started = std::time::Instant::now();
     let m = core.analyze(&request)?;
     Ok(
-        json!({"version":env!("CARGO_PKG_VERSION"),"ship":ship,"seed":m.seed,"seed_error":m.seed_error,"report":m.pop.report,"variants":m.variants.iter().map(|v|json!({"title":v.title,"percent":v.percent,"personal":v.personal})).collect::<Vec<_>>(),"failures":m.failures,"own_evaluated":m.own.is_some(),"advice_count":m.advice.iter().filter(|v|v.is_some()).count(),"elapsed_ms":started.elapsed().as_millis()}),
+        json!({"version":env!("CARGO_PKG_VERSION"),"ship":ship,"seed":m.seed,"seed_error":m.seed_error,"report":m.pop.report,"variants":m.variants.iter().enumerate().map(|(i,v)|{let r=m.results.get(i).and_then(Option::as_ref);json!({"title":v.title,"percent":v.percent,"personal":v.personal,"defense":r.map(|r|&r["summary"]["defense"]),"base_defense":r.map(|r|&r["base_defense"]),"incoming":r.map(|r|&r["incoming"]),"comparison_error":r.map(|r|&r["comparison_error"]),"warnings":r.map(|r|&r["warnings"])})}).collect::<Vec<_>>(),"failures":m.failures,"own_evaluated":m.own.is_some(),"advice_count":m.advice.iter().filter(|v|v.is_some()).count(),"elapsed_ms":started.elapsed().as_millis()}),
     )
 }

@@ -17,7 +17,7 @@ use crate::{
     },
 };
 use eframe::egui::{self, Color32, RichText, Vec2, ViewportCommand, ViewportId};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -343,6 +343,14 @@ impl CombatApp {
         self.recalculate();
         Ok(())
     }
+    fn clear_target_view(&mut self) {
+        self.target = None;
+        self.matchup = None;
+        self.generation += 1;
+        self.pilot_generation = 0;
+        self.pilot_status.clear();
+        self.pilot_error = None;
+    }
     fn messages(&mut self, ctx: &egui::Context) {
         while let Ok(message) = self.rx.try_recv() {
             match message {
@@ -498,7 +506,7 @@ impl CombatApp {
                         self.ocr_status = status;
                     }
                 }
-                Message::Ocr(epoch, result) => {
+                Message::Ocr(epoch, result, observed_pilot) => {
                     if epoch == self.ocr_epoch {
                         match result {
                             Ok(target) => {
@@ -508,7 +516,11 @@ impl CombatApp {
                                     "OCR работает: цель не найдена"
                                 }
                                 .into();
-                                if let Some(change) = self.gate.feed(target) {
+                                if let Some(change) = self.gate.feed_at(
+                                    target,
+                                    Instant::now(),
+                                    self.settings.target_hold_seconds,
+                                ) {
                                     if change
                                         .as_ref()
                                         .zip(self.target.as_ref())
@@ -533,10 +545,26 @@ impl CombatApp {
                                     "OCR: {e} · повтор через {:.1} сек.",
                                     self.settings.ocr_interval
                                 );
-                                self.gate = Gate::default();
-                                self.target = None;
-                                self.matchup = None;
-                                self.generation += 1;
+                                let changed = observed_pilot
+                                    .as_ref()
+                                    .zip(self.target.as_ref())
+                                    .is_some_and(|(pilot, current)| {
+                                        crate::ocr::clearly_different_pilot(pilot, &current.pilot)
+                                    });
+                                if changed {
+                                    self.gate = Gate::default();
+                                    self.clear_target_view();
+                                } else if self
+                                    .gate
+                                    .feed_at(
+                                        None,
+                                        Instant::now(),
+                                        self.settings.target_hold_seconds,
+                                    )
+                                    .is_some()
+                                {
+                                    self.clear_target_view();
+                                }
                             }
                         }
                     }
@@ -639,6 +667,31 @@ impl CombatApp {
             .and_then(|m| m.advice.get(self.selected))
             .and_then(Option::as_ref)
             .cloned();
+        let diagnostic = self
+            .matchup
+            .as_ref()
+            .and_then(|m| m.results.get(self.selected))
+            .and_then(Option::as_ref);
+        let comparison_error = diagnostic
+            .and_then(|r| r["comparison_error"].as_str())
+            .map(str::to_owned);
+        let incoming_label = diagnostic
+            .and_then(|r| r["incoming"]["label"].as_str())
+            .unwrap_or("—")
+            .to_string();
+        let incoming_hint = diagnostic
+            .and_then(|r| r["incoming"]["hint"].as_str())
+            .unwrap_or("Выберите вариант фита")
+            .to_string();
+        let warnings = diagnostic
+            .map(|r| {
+                crate::model::array(&r["warnings"])
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         if let Some(a) = &advice {
             let action = if let Some(d) = self.target.as_ref().and_then(|t| t.distance) {
                 if d > a.high {
@@ -669,6 +722,8 @@ impl CombatApp {
                             .is_some_and(|m| m.own.is_none() && !m.failures.is_empty())
                     {
                         "ПРОВЕРЬ СВОЙ ФИТ"
+                    } else if comparison_error.is_some() {
+                        "РАСЧЁТ НЕДОСТУПЕН"
                     } else if own && self.matchup.as_ref().is_some_and(|m| m.variants.is_empty()) {
                         "НЕТ ПОДХОДЯЩИХ ФИТОВ"
                     } else if own {
@@ -683,7 +738,9 @@ impl CombatApp {
             ui.label(RichText::new("—").size(37.).color(CYAN));
             style::caption(
                 ui,
-                if own
+                if let Some(error) = &comparison_error {
+                    error
+                } else if own
                     && self
                         .matchup
                         .as_ref()
@@ -698,7 +755,7 @@ impl CombatApp {
                 {
                     "Потери есть в кеше, но не прошли выбранные фильтры. Подробности — в диагностике."
                 } else if own {
-                    "Настройки → Данные → обновить базу всех кораблей"
+                    ""
                 } else {
                     "Настройки → Мой корабль → вставить фит из игры"
                 },
@@ -771,12 +828,10 @@ impl CombatApp {
         }
         ui.add_space(8.);
         ui.columns(2, |cols| {
-            style::metric(
-                &mut cols[0],
-                "ЕГО УРОН",
-                advice.as_ref().map(|a| a.damage.as_str()).unwrap_or("—"),
-                false,
-            );
+            cols[0]
+                .scope(|ui| style::metric(ui, "ЕГО УРОН", &incoming_label, false))
+                .response
+                .on_hover_text(&incoming_hint);
             style::metric(
                 &mut cols[1],
                 "ТВОИ БОЕПРИПАСЫ",
@@ -795,6 +850,9 @@ impl CombatApp {
             );
             style::metric(&mut cols[1], "СКОРОСТЬ", speed, speed == "ОН БЫСТРЕЕ");
         });
+        if !warnings.is_empty() {
+            style::caption(ui, "Abyssal: параметры модулей неизвестны");
+        }
         ui.add_space(4.);
         if let Some(m) = &self.matchup
             && let Some(Some(result)) = m.results.get(self.selected)
@@ -807,20 +865,30 @@ impl CombatApp {
             } else {
                 "structure"
             };
+            let r = &result["summary"]["defense"][layer]["resist"];
+            let resistances = [n(r, "em"), n(r, "therm"), n(r, "kin"), n(r, "expl")];
             style::caption(
                 ui,
                 &format!(
-                    "РЕЗИСТЫ / {}  ·  СЛАБЕЕ {}",
+                    "РЕЗИСТЫ / {}  ·  {}",
                     match layer {
                         "armor" => "БРОНЯ",
                         "shield" => "ЩИТ",
                         _ => "КОРПУС",
                     },
-                    advice.as_ref().map(|a| a.weak.as_str()).unwrap_or("—")
+                    tactics::resistance_note(&resistances)
                 ),
             );
-            let r = &result["summary"]["defense"][layer]["resist"];
-            style::resistance(ui, [n(r, "em"), n(r, "therm"), n(r, "kin"), n(r, "expl")]);
+            let base = &result["base_defense"][layer]["resist"];
+            let base = base.is_object().then(|| {
+                [
+                    n(base, "em"),
+                    n(base, "therm"),
+                    n(base, "kin"),
+                    n(base, "expl"),
+                ]
+            });
+            style::resistance(ui, resistances, base);
         }
         ui.add_space(7.);
         style::separator(ui);
@@ -832,6 +900,19 @@ impl CombatApp {
             .unwrap_or("НЕ ВЫБРАН");
         style::caption(ui, &format!("МОЙ ФИТ / {own}"));
         style::caption(ui, &self.status);
+        if self.target.is_some()
+            && let Some(remaining) = self
+                .gate
+                .remaining(Instant::now(), self.settings.target_hold_seconds)
+        {
+            style::caption(
+                ui,
+                &format!(
+                    "Цель не видна · сохранена ещё {} с",
+                    remaining.as_secs_f64().ceil() as u32
+                ),
+            );
+        }
         if !self.pilot_status.is_empty() {
             style::caption(ui, &self.pilot_status);
         }
@@ -1136,6 +1217,19 @@ impl eframe::App for CombatApp {
             self.recalculate();
         }
         self.messages(ctx);
+        if self
+            .gate
+            .expire(Instant::now(), self.settings.target_hold_seconds)
+        {
+            self.clear_target_view();
+        }
+        if self
+            .gate
+            .remaining(Instant::now(), self.settings.target_hold_seconds)
+            .is_some()
+        {
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
         if let Some((start, kind)) = self.capture_pending {
             if start.elapsed() >= std::time::Duration::from_millis(450) {
                 self.capture_pending = None;

@@ -157,7 +157,7 @@ pub fn variant(
     );
     response.on_hover_text(format!("{title}\nДвойной щелчок — полный фит"))
 }
-pub fn resistance(ui: &mut Ui, values: [f64; 4]) {
+pub fn resistance(ui: &mut Ui, values: [f64; 4], base: Option<[f64; 4]>) {
     let colors = [
         Color32::from_rgb(100, 175, 214),
         Color32::from_rgb(214, 125, 112),
@@ -166,23 +166,25 @@ pub fn resistance(ui: &mut Ui, values: [f64; 4]) {
     ];
     ui.columns(4, |cols| {
         for i in 0..4 {
-            caption(&mut cols[i], ["EM", "THERM", "KIN", "EXP"][i]);
-            cols[i].label(
-                RichText::new(format!("{:.0}%", values[i]))
-                    .size(12.)
-                    .color(colors[i]),
-            );
-            let (rect, _) = cols[i]
-                .allocate_exact_size(Vec2::new(cols[i].available_width(), 3.), Sense::hover());
-            cols[i].painter().rect_filled(rect, 0., LINE);
-            cols[i].painter().rect_filled(
-                Rect::from_min_size(
-                    rect.min,
-                    Vec2::new(rect.width() * (values[i] / 100.).clamp(0., 1.) as f32, 3.),
-                ),
-                0.,
-                colors[i],
-            );
+            caption(&mut cols[i], ["EM","THERM","KIN","EXP"][i]);
+            let hint=if let Some(base)=base {format!("Итог {:.2}%\nБаза без модулей {:.2}%\nИзменение от модулей {:+.2} п.п.\nНавыки V, без перегрева. Это пример опубликованного фита, а не измерение текущего корабля.",values[i],base[i],values[i]-base[i])}else{format!("Итог {:.2}% · база корпуса недоступна",values[i])};
+            cols[i].label(RichText::new(format!("{:.0}%",values[i])).size(12.).color(colors[i])).on_hover_text(&hint);
+            let (rect,response)=cols[i].allocate_exact_size(Vec2::new(cols[i].available_width(),5.),Sense::hover());
+            let segment=|from:f64,to:f64|Rect::from_min_max(egui::pos2(rect.left()+rect.width()*(from/100.).clamp(0.,1.) as f32,rect.top()),egui::pos2(rect.left()+rect.width()*(to/100.).clamp(0.,1.) as f32,rect.bottom()));
+            cols[i].painter().rect_filled(rect,0.,LINE);
+            if let Some(base)=base {
+                let dark=colors[i].gamma_multiply(0.42);
+                cols[i].painter().rect_filled(segment(0.,values[i].min(base[i])),0.,dark);
+                if values[i]>=base[i] {cols[i].painter().rect_filled(segment(base[i],values[i]),0.,colors[i]);}
+                else {
+                    // A debuff (e.g. Polarized) removes the base instead of adding a bright segment.
+                    let removed=segment(values[i],base[i]);
+                    cols[i].painter().rect_stroke(removed,0.,Stroke::new(1.,AMBER),egui::StrokeKind::Inside);
+                }
+                let base_label=if (base[i]-base[i].round()).abs()<0.005 {format!("{:.0}",base[i])}else{format!("{:.1}",base[i])};
+                caption(&mut cols[i],&format!("база {}%",base_label.replace('.',",")));
+            }else{cols[i].painter().rect_filled(segment(0.,values[i]),0.,colors[i]);}
+            response.on_hover_text(hint);
         }
     });
 }

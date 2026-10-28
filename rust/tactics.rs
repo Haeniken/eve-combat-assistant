@@ -129,7 +129,8 @@ impl Profile {
             let name = s(module, "name").to_lowercase();
             let f = family(s(module, "name"), id(module, "group"));
             let drone = s(module, "slot") == "dronebay";
-            if !f.is_empty() || drone || n(a, "damagePerSecondWithoutReload") > 0. {
+            let smartbomb = id(module, "group") == 72;
+            if !f.is_empty() || drone || smartbomb || n(a, "damagePerSecondWithoutReload") > 0. {
                 let damage = vector(if module["charge"].is_null() {
                     module
                 } else {
@@ -138,9 +139,11 @@ impl Profile {
                 let mut dps = n(a, "damagePerSecondWithoutReload");
                 if dps <= 0. {
                     dps = sum(&damage) * n(a, "damageMultiplier").max(1.)
-                        / (n(a, "speed") / 1000.).max(0.1);
+                        / (n(a, if smartbomb { "duration" } else { "speed" }) / 1000.).max(0.1);
                 }
-                let kind = if drone {
+                let kind = if smartbomb {
+                    3
+                } else if drone {
                     2
                 } else if f == "Missiles" {
                     1
@@ -149,6 +152,8 @@ impl Profile {
                 };
                 let optimal = if drone {
                     n(&result["summary"]["drones"], "range") * 1000.
+                } else if smartbomb {
+                    n(a, "empFieldRange")
                 } else if kind == 1 {
                     n(ca, "maxVelocity") * n(ca, "explosionDelay") / 1000.
                 } else {
@@ -292,6 +297,7 @@ impl Profile {
 }
 fn application(weapon: &Weapon, distance: f64, signature: f64, velocity: f64, angular: f64) -> f64 {
     match weapon.kind {
+        3 => f64::from(distance <= weapon.optimal),
         2 => {
             if distance <= weapon.optimal {
                 (signature / weapon.resolution.max(25.)).min(1.)
@@ -320,6 +326,155 @@ fn application(weapon: &Weapon, distance: f64, signature: f64, velocity: f64, an
         }
     }
 }
+pub fn base_hole_preference(damage: &[f64; 4], total: &[f64; 4], base: &[f64; 4]) -> f64 {
+    let low = total.iter().copied().fold(f64::INFINITY, f64::min);
+    let high = total.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if high - low >= 0.01 || sum(damage) <= 0. {
+        return 0.;
+    }
+    (0..4)
+        .map(|i| damage[i] / sum(damage) * (1. - base[i] / 100.))
+        .sum()
+}
+fn profile_base_preference(profile: &Profile, enemy: &Value, catalog: &Catalog) -> f64 {
+    let (title, _) = crate::fits::describe(&enemy["fit"], catalog);
+    let layer = if title.contains("Armor") {
+        "armor"
+    } else if title.contains("Shield") {
+        "shield"
+    } else {
+        "structure"
+    };
+    let fields = ["em", "therm", "kin", "expl"];
+    let total = fields.map(|key| n(&enemy["summary"]["defense"][layer]["resist"], key));
+    let base = if enemy["base_defense"][layer]["resist"].is_object() {
+        fields.map(|key| n(&enemy["base_defense"][layer]["resist"], key))
+    } else {
+        DAMAGE.map(|(_, _, suffix)| {
+            let prefix = if layer == "structure" { "" } else { layer };
+            let key = if prefix.is_empty() {
+                format!(
+                    "{}{}DamageResonance",
+                    suffix[..1].to_lowercase(),
+                    &suffix[1..]
+                )
+            } else {
+                format!("{prefix}{suffix}DamageResonance")
+            };
+            (1. - catalog.get(id(&enemy["hull"], "id") as i32)["attributes"][key]
+                .as_f64()
+                .unwrap_or(1.))
+                * 100.
+        })
+    };
+    let mut damage = [0.; 4];
+    for weapon in &profile.weapons {
+        for (i, value) in damage.iter_mut().enumerate() {
+            *value += weapon.dps * weapon.damage[i] / sum(&weapon.damage).max(1.);
+        }
+    }
+    base_hole_preference(&damage, &total, &base)
+}
+
+pub fn resistance_note(values: &[f64; 4]) -> String {
+    let low = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if high - low < 0.01 {
+        return "РАВНОМЕРНО".into();
+    }
+    format!(
+        "СЛАБЕЕ {}",
+        (0..4)
+            .filter(|i| (values[*i] - low).abs() < 0.01)
+            .map(|i| DAMAGE[i].0)
+            .collect::<Vec<_>>()
+            .join(" / ")
+    )
+}
+
+/// Damage before target resists/application, for the chosen historical example.
+pub fn incoming_summary(result: &Value, original_fit: &Value, catalog: &Catalog) -> Value {
+    let profile = Profile::new(result);
+    let uncertain = !array(&result["warnings"]).is_empty();
+    let mut mix = [0.; 4];
+    for weapon in &profile.weapons {
+        for (i, value) in mix.iter_mut().enumerate() {
+            *value += weapon.damage[i] * weapon.dps / sum(&weapon.damage).max(1.);
+        }
+    }
+    let mut sources = Vec::new();
+    let mut known_types = [false; 4];
+    for module in array(&result["modules"]) {
+        if !["active", "overload"].contains(&s(module, "state")) {
+            continue;
+        }
+        let charge = &module["charge"];
+        let damage = if charge.is_null() {
+            vector(catalog.get(id(module, "id") as i32))
+        } else {
+            vector(catalog.get(id(charge, "id") as i32))
+        };
+        if sum(&damage) <= 0. {
+            continue;
+        }
+        for (i, value) in damage.iter().enumerate() {
+            known_types[i] |= *value > 0.;
+        }
+        let assumed = !charge.is_null()
+            && !array(&original_fit["modules"]).iter().any(|m| {
+                m["type_id"] == module["id"]
+                    && m["slot"]["index"] == module["slot_index"]
+                    && !m["charge"].is_null()
+            });
+        sources.push(json!({"weapon":module["name"],"charge":charge.get("name"),"assumed_charge":assumed,"damage":damage,"max_range_m":if id(module,"group")==72 {Some(n(&module["attributes"],"empFieldRange"))}else{None}}));
+    }
+    let total = sum(&mix);
+    let percentages = if !uncertain && total > 0. {
+        Some(mix.map(|v| v / total * 100.))
+    } else {
+        None
+    };
+    let mut order = [0, 1, 2, 3];
+    order.sort_by(|a, b| mix[*b].total_cmp(&mix[*a]));
+    let label = if let Some(percentages) = percentages {
+        order
+            .iter()
+            .filter(|i| percentages[**i] > 0.001)
+            .map(|i| format!("{} {:.0}%", DAMAGE[*i].0, percentages[*i]))
+            .collect::<Vec<_>>()
+            .join(" / ")
+    } else {
+        (0..4)
+            .filter(|i| known_types[*i])
+            .map(|i| DAMAGE[i].0)
+            .collect::<Vec<_>>()
+            .join(" / ")
+    };
+    let mut hint="По оружию, дронам и зарядам выбранного примера потери, до резистов и применения урона. Текущий заряд противника неизвестен; он может его сменить.".to_string();
+    for source in &sources {
+        hint += &format!(
+            "\n{}{}{}",
+            s(source, "weapon"),
+            if source["charge"].is_string() {
+                ": "
+            } else {
+                ""
+            },
+            s(source, "charge")
+        );
+        if let Some(range) = source["max_range_m"].as_f64() {
+            hint += &format!(" (до {:.1} км)", range / 1000.);
+        }
+        if source["assumed_charge"] == true {
+            hint += " (подставлен стандартный совместимый заряд)";
+        }
+    }
+    if uncertain {
+        hint += "\nПараметры Abyssal неизвестны: точные доли урона недоступны.";
+    }
+    json!({"label":if label.is_empty(){"—"}else{&label},"percentages":percentages,"sources":sources,"uncertain":uncertain,"hint":hint})
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Advice {
     pub action: String,
@@ -419,6 +574,10 @@ pub fn advise(
     .into_iter()
     .filter(|distance| *distance <= n(&own["hull"]["attributes"], "maxTargetRange"))
     .collect();
+    let base_preferences: Vec<_> = candidates
+        .iter()
+        .map(|(_, profile)| profile_base_preference(profile, enemy, catalog))
+        .collect();
     let mut rows = Vec::new();
     for (index, (_, candidate)) in candidates.iter().enumerate() {
         for distance in &grid {
@@ -451,7 +610,16 @@ pub fn advise(
     }
     let Some(best) = rows
         .iter()
-        .max_by(|a, b| a.0.total_cmp(&b.0).then(b.1.total_cmp(&a.1)))
+        .max_by(|a, b| {
+            let equal_effectiveness = (a.0 - b.0).abs() <= a.0.abs().max(b.0.abs()).max(1.) * 1e-9;
+            if equal_effectiveness && a.1 == b.1 {
+                base_preferences[a.2]
+                    .total_cmp(&base_preferences[b.2])
+                    .then(a.0.total_cmp(&b.0))
+            } else {
+                a.0.total_cmp(&b.0).then(b.1.total_cmp(&a.1))
+            }
+        })
         .copied()
     else {
         return Err("Нет применения урона на рабочей дистанции".into());

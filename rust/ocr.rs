@@ -217,7 +217,7 @@ pub fn selected_pilot(text: &str) -> Option<String> {
 }
 
 /// В карточках OCR может объединить несколько колонок в одну строку.
-/// Ищем точный ник и корпус со звёздочкой ниже в той же колонке.
+/// Ищем ник и корпус ниже в той же колонке; при обрезанном имени нужен уникальный префикс каталога.
 #[cfg(test)]
 pub fn selected_card(selected: &str, cards: &Document, catalog: &Catalog) -> Option<Target> {
     identify_card(selected, cards, catalog).ok()
@@ -242,13 +242,15 @@ pub fn identify_card(
         for start in 0..line.words.len() {
             for end in start + 1..=line.words.len().min(start + 8) {
                 let words = &line.words[start..end];
-                if normalized_pilot(
-                    &words
-                        .iter()
-                        .map(|w| w.text.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                ) == normalized
+                if words.iter().skip(1).any(|w| w.text.starts_with('[')) {
+                    continue;
+                }
+                let candidate = words
+                    .iter()
+                    .map(|w| w.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if normalized_pilot(candidate.split('[').next().unwrap_or(&candidate)) == normalized
                 {
                     let left = words[0].x;
                     let mut right = words.iter().map(|w| w.x + w.width).fold(left, f32::max);
@@ -317,12 +319,15 @@ pub fn identify_card(
             }
         }
     }
+    if matches.is_empty() {
+        matches = clipped_card_hulls(cards, catalog, *anchor_x, *anchor_y, *height);
+    }
     matches.sort();
     matches.dedup();
     let [tid] = matches.as_slice() else {
         return Err(if matches.is_empty() {
             format!(
-                "У «{pilot}» не найден корпус со звёздочкой. Включите в левую область всю строку корпуса и небольшой отступ снизу"
+                "У «{pilot}» не удалось однозначно прочитать корпус. Включите в левую область строку корпуса целиком; звёздочка необязательна"
             )
         } else {
             format!("У «{pilot}» подходят несколько корпусов. Проверьте границы карточек")
@@ -335,6 +340,96 @@ pub fn identify_card(
     target.pilot = pilot;
     target.ship = ship;
     Ok(target)
+}
+/// Missing stars and clipped/wrapped names are accepted only in the selected
+/// pilot's column, before that card's distance row, with a unique catalog prefix.
+fn clipped_card_hulls(
+    cards: &Document,
+    catalog: &Catalog,
+    x: f32,
+    y: f32,
+    height: f32,
+) -> Vec<i32> {
+    let mut segments = Vec::new();
+    for line in &cards.lines {
+        let mut start = 0;
+        while start < line.words.len() {
+            let mut end = start + 1;
+            while end < line.words.len()
+                && line.words[end].x - (line.words[end - 1].x + line.words[end - 1].width)
+                    <= height * 1.8
+            {
+                end += 1;
+            }
+            let words = &line.words[start..end];
+            start = end;
+            if words
+                .iter()
+                .any(|w| w.height <= 0. || !w.x.is_finite() || !w.y.is_finite())
+            {
+                continue;
+            }
+            let cx = (words[0].x + words.last().unwrap().x + words.last().unwrap().width) / 2.;
+            let cy = words.iter().map(|w| w.y).fold(f32::INFINITY, f32::min);
+            if cy > y && cy < y + height * 6. && (cx - x).abs() <= height * 2.5 {
+                segments.push((
+                    words
+                        .iter()
+                        .map(|w| w.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    cx,
+                    cy,
+                ));
+            }
+        }
+    }
+    segments.sort_by(|a, b| a.2.total_cmp(&b.2));
+    let bottom = segments
+        .iter()
+        .filter(|(text, _, _)| read_distance(text).is_some())
+        .map(|s| s.2)
+        .fold(y + height * 6., f32::min);
+    let mut matches = Vec::new();
+    for (i, (text, cx, cy)) in segments.iter().enumerate() {
+        if *cy >= bottom || text.contains(['[', ']']) {
+            continue;
+        }
+        if let Some(id) = unique_clipped_hull(text, catalog) {
+            matches.push(id);
+        }
+        if let Some((next, nx, ny)) = segments.get(i + 1)
+            && *ny < bottom
+            && ny - cy <= height * 2.
+            && (nx - cx).abs() <= height * 1.5
+            && let Some(id) = unique_clipped_hull(&format!("{text} {next}"), catalog)
+        {
+            matches.push(id);
+        }
+    }
+    matches
+}
+fn unique_clipped_hull(text: &str, catalog: &Catalog) -> Option<i32> {
+    let normalized = text
+        .trim()
+        .trim_end_matches(['.', '…', '*', '★', '∗', '✱', '•', '·', '●'])
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+        .replace('0', "o");
+    if normalized.chars().count() < 4 {
+        return None;
+    }
+    let mut candidates = catalog
+        .ships
+        .iter()
+        .filter(|(_, name)| name.to_lowercase().starts_with(&normalized));
+    let (id, name) = candidates.next()?;
+    if name.to_lowercase() != normalized && normalized.chars().count() < 8 {
+        return None;
+    }
+    candidates.next().is_none().then_some(*id)
 }
 // Подбираем только строку корпуса с терминальным маркером звезды/его OCR-вариантом.
 fn starred_hull(text: &str, catalog: &Catalog) -> Option<i32> {
@@ -540,16 +635,53 @@ pub struct Gate {
     current: Option<Target>,
     candidate: Option<(String, String)>,
     count: usize,
+    missing_since: Option<std::time::Instant>,
 }
 impl Gate {
     // Старую цель снимаем сразу, новую подтверждаем двумя одинаковыми наблюдениями.
+    #[cfg(test)]
     pub fn feed(&mut self, target: Option<Target>) -> Option<Option<Target>> {
+        self.feed_at(target, std::time::Instant::now(), 0)
+    }
+    pub fn remaining(
+        &self,
+        now: std::time::Instant,
+        hold_seconds: u32,
+    ) -> Option<std::time::Duration> {
+        self.missing_since.map(|since| {
+            std::time::Duration::from_secs(hold_seconds as u64)
+                .saturating_sub(now.saturating_duration_since(since))
+        })
+    }
+    pub fn expire(&mut self, now: std::time::Instant, hold_seconds: u32) -> bool {
+        if self
+            .remaining(now, hold_seconds)
+            .is_some_and(|remaining| remaining.is_zero())
+        {
+            self.missing_since = None;
+            self.candidate = None;
+            self.count = 0;
+            return self.current.take().is_some();
+        }
+        false
+    }
+    pub fn feed_at(
+        &mut self,
+        target: Option<Target>,
+        now: std::time::Instant,
+        hold_seconds: u32,
+    ) -> Option<Option<Target>> {
         let Some(target) = target else {
+            if self.current.is_some() && hold_seconds > 0 {
+                self.missing_since.get_or_insert(now);
+                return self.expire(now, hold_seconds).then_some(None);
+            }
             let changed = self.current.take().is_some();
             self.candidate = None;
             self.count = 0;
             return if changed { Some(None) } else { None };
         };
+        self.missing_since = None;
         if self
             .current
             .as_ref()
@@ -695,6 +827,18 @@ pub struct RetryRead {
     pub rect: [u32; 4],
     pub text: String,
     pub error: Option<String>,
+}
+pub fn clearly_different_pilot(a: &str, b: &str) -> bool {
+    let a = normalized_pilot(a);
+    let b = normalized_pilot(b);
+    let length = a.chars().count().max(b.chars().count());
+    nickname_distance(&a, &b)
+        > match length {
+            0..=2 => 0,
+            3..=9 => 1,
+            10..=17 => 2,
+            _ => 3,
+        }
 }
 fn normalized_pilot(text: &str) -> String {
     clean_pilot_name(text)
