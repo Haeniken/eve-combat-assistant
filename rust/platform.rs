@@ -173,11 +173,45 @@ pub fn read_screen(_: [i32; 4]) -> Result<image::RgbaImage, String> {
     Err("Автоматическое чтение экрана доступно в Windows-сборке".into())
 }
 
+// Windows OCR returns boxes in deskewed coordinates. Microsoft requires
+// clockwise rotation around the image center to overlay them on source pixels:
+// https://learn.microsoft.com/uwp/api/windows.media.ocr.ocrresult.textangle
+#[cfg(any(windows, test))]
+fn rotate_ocr_box(word: &mut crate::ocr::Word, width: f32, height: f32, degrees: f64) {
+    if degrees.abs() < 0.001 || !degrees.is_finite() {
+        return;
+    }
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let (cx, cy) = (f64::from(width) * 0.5, f64::from(height) * 0.5);
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for (x, y) in [
+        (word.x, word.y),
+        (word.x + word.width, word.y),
+        (word.x, word.y + word.height),
+        (word.x + word.width, word.y + word.height),
+    ] {
+        let (dx, dy) = (f64::from(x) - cx, f64::from(y) - cy);
+        let (x, y) = (cx + dx * cos - dy * sin, cy + dx * sin + dy * cos);
+        bounds[0] = bounds[0].min(x);
+        bounds[1] = bounds[1].min(y);
+        bounds[2] = bounds[2].max(x);
+        bounds[3] = bounds[3].max(y);
+    }
+    word.x = bounds[0] as f32;
+    word.y = bounds[1] as f32;
+    word.width = (bounds[2] - bounds[0]) as f32;
+    word.height = (bounds[3] - bounds[1]) as f32;
+}
 #[cfg(windows)]
-pub fn ocr_document(
+fn ocr_document_with_angle(
     image: &image::RgbaImage,
     language: &str,
-) -> Result<crate::ocr::Document, String> {
+) -> Result<(crate::ocr::Document, Option<f64>), String> {
     use windows::{
         Globalization::Language,
         Graphics::Imaging::{BitmapAlphaMode, BitmapPixelFormat, SoftwareBitmap},
@@ -196,7 +230,7 @@ pub fn ocr_document(
             ready.set(true);
         }
     });
-    let run = || -> windows::core::Result<crate::ocr::Document> {
+    let run = || -> windows::core::Result<(crate::ocr::Document, Option<f64>)> {
         let image = if image.width() > 2000 {
             image::imageops::resize(
                 image,
@@ -237,6 +271,11 @@ pub fn ocr_document(
                 *cache = Some((language.into(), engine));
             }
             let result = cache.as_ref().unwrap().1.RecognizeAsync(&bitmap)?.join()?;
+            let angle = result
+                .TextAngle()
+                .ok()
+                .and_then(|a| a.Value().ok())
+                .filter(|v| v.is_finite());
             let mut lines = Vec::new();
             for line in result.Lines()? {
                 let mut words = Vec::new();
@@ -255,16 +294,33 @@ pub fn ocr_document(
                     words,
                 });
             }
-            Ok(crate::ocr::Document { lines })
+            let mut document = crate::ocr::Document { lines };
+            if let Some(degrees) = angle {
+                for line in &mut document.lines {
+                    for word in &mut line.words {
+                        rotate_ocr_box(word, image.width() as f32, image.height() as f32, degrees);
+                    }
+                }
+            }
+            Ok((document, angle))
         })
     };
     run().map_err(|e| format!("Windows OCR недоступен: {e}"))
+}
+pub fn ocr_document(
+    image: &image::RgbaImage,
+    language: &str,
+) -> Result<crate::ocr::Document, String> {
+    ocr_document_with_angle(image, language).map(|(document, _)| document)
 }
 pub fn ocr_image(image: &image::RgbaImage, language: &str) -> Result<String, String> {
     Ok(ocr_document(image, language)?.text())
 }
 #[cfg(not(windows))]
-pub fn ocr_document(_: &image::RgbaImage, _: &str) -> Result<crate::ocr::Document, String> {
+fn ocr_document_with_angle(
+    _: &image::RgbaImage,
+    _: &str,
+) -> Result<(crate::ocr::Document, Option<f64>), String> {
     Err("Windows OCR доступен в Windows-сборке".into())
 }
 
@@ -436,6 +492,93 @@ pub fn selected_retry_texts(
     let rect = [x, y, end_x - x, end_y - y];
     crop_attempts(image, rect, language, "nickname_crop")
 }
+/// Retry only after card matching fails. Preserve coordinates so geometry checks
+/// still bind a nickname to its own hull, even after changing OCR input scale.
+pub fn card_retry_documents(
+    image: &image::RgbaImage,
+    language: &str,
+) -> Vec<(crate::ocr::RetryRead, crate::ocr::Document)> {
+    let mut gray = image.clone();
+    for p in gray.pixels_mut() {
+        let [r, g, b, _] = p.0;
+        let l = ((u32::from(r) * 3 + u32::from(g) * 6 + u32::from(b)) / 10) as u8;
+        p.0 = [l, l, l, 255];
+    }
+    let background = image::imageops::blur(&gray, 2.);
+    let mut neutral = image.clone();
+    let mut local = gray.clone();
+    for ((source, luma), out) in image.pixels().zip(gray.pixels()).zip(neutral.pixels_mut()) {
+        let [r, g, b, _] = source.0;
+        let chroma = r.max(g).max(b) - r.min(g).min(b);
+        let v = if luma[0] >= 140 && chroma <= 85 {
+            0
+        } else {
+            255
+        };
+        out.0 = [v, v, v, 255];
+    }
+    for ((out, luma), mean) in local
+        .pixels_mut()
+        .zip(gray.pixels())
+        .zip(background.pixels())
+    {
+        let v = if luma[0] >= 110 && i16::from(luma[0]) - i16::from(mean[0]) >= 18 {
+            0
+        } else {
+            255
+        };
+        out.0 = [v, v, v, 255];
+    }
+    let nearest = image::imageops::resize(
+        image,
+        image.width() * 2,
+        image.height() * 2,
+        image::imageops::FilterType::Nearest,
+    );
+    let scale = |width: u32| {
+        if width > 2000 {
+            2000. / width as f32
+        } else {
+            2.
+        }
+    };
+    [
+        ("cards_neutral", neutral),
+        ("cards_local_contrast", local),
+        ("cards_nearest_4x", nearest),
+    ]
+    .into_iter()
+    .map(|(method, input)| {
+        let factor = scale(image.width()) * image.width() as f32
+            / (scale(input.width()) * input.width() as f32);
+        let result = ocr_document_with_angle(&input, language);
+        let (document, error, angle_degrees) = match result {
+            Ok((mut doc, angle)) => {
+                for line in &mut doc.lines {
+                    for word in &mut line.words {
+                        word.x *= factor;
+                        word.y *= factor;
+                        word.width *= factor;
+                        word.height *= factor;
+                    }
+                }
+                (doc, None, angle)
+            }
+            Err(error) => (crate::ocr::Document::default(), Some(error), None),
+        };
+        (
+            crate::ocr::RetryRead {
+                angle_degrees,
+                method: method.into(),
+                rect: [0, 0, image.width(), image.height()],
+                text: document.text(),
+                error,
+            },
+            document,
+        )
+    })
+    .collect()
+}
 fn crop_attempts(
     image: &image::RgbaImage,
     rect: [u32; 4],
@@ -459,20 +602,24 @@ fn crop_attempts(
     }
     [("2x", native), ("4x", enlarged), ("contrast", contrast)]
         .into_iter()
-        .map(|(method, image)| match ocr_document(&image, language) {
-            Ok(document) => crate::ocr::RetryRead {
-                method: format!("{kind}_{method}"),
-                rect,
-                text: document.text(),
-                error: None,
+        .map(
+            |(method, image)| match ocr_document_with_angle(&image, language) {
+                Ok((document, angle_degrees)) => crate::ocr::RetryRead {
+                    angle_degrees,
+                    method: format!("{kind}_{method}"),
+                    rect,
+                    text: document.text(),
+                    error: None,
+                },
+                Err(error) => crate::ocr::RetryRead {
+                    angle_degrees: None,
+                    method: format!("{kind}_{method}"),
+                    rect,
+                    text: String::new(),
+                    error: Some(error),
+                },
             },
-            Err(error) => crate::ocr::RetryRead {
-                method: format!("{kind}_{method}"),
-                rect,
-                text: String::new(),
-                error: Some(error),
-            },
-        })
+        )
         .collect()
 }
 pub fn distance_retry_texts(
@@ -519,4 +666,37 @@ pub fn distance_retry_texts(
         language,
         "distance_crop",
     )
+}
+
+#[cfg(test)]
+mod ocr_rotation_regressions {
+    use super::*;
+    #[test]
+    fn deskewed_word_boxes_are_rotated_clockwise_around_the_image_center() {
+        let mut word = crate::ocr::Word {
+            text: "Pilot".into(),
+            x: 60.,
+            y: 40.,
+            width: 20.,
+            height: 10.,
+        };
+        rotate_ocr_box(&mut word, 100., 100., 90.);
+        for (value, expected) in [
+            (word.x, 50.),
+            (word.y, 60.),
+            (word.width, 10.),
+            (word.height, 20.),
+        ] {
+            assert!((value - expected).abs() < 0.001);
+        }
+        rotate_ocr_box(&mut word, 100., 100., -90.);
+        for (value, expected) in [
+            (word.x, 60.),
+            (word.y, 40.),
+            (word.width, 20.),
+            (word.height, 10.),
+        ] {
+            assert!((value - expected).abs() < 0.001);
+        }
+    }
 }

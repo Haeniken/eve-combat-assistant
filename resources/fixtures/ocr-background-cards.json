@@ -1,0 +1,147 @@
+[
+  {
+    "selected": "Malachird\n16000 m",
+    "cards": {
+      "lines": [
+        {
+          "text": "Malachird",
+          "words": [
+            {
+              "height": 25.0,
+              "text": "Malachird",
+              "width": 120.0,
+              "x": 891.0,
+              "y": 20.0
+            }
+          ]
+        },
+        {
+          "text": "Malachir",
+          "words": [
+            {
+              "height": 17.0,
+              "text": "Malachir",
+              "width": 89.0,
+              "x": 965.0,
+              "y": 185.0
+            }
+          ]
+        },
+        {
+          "text": "• CHATSCiaXBaT",
+          "words": [
+            {
+              "height": 12.0,
+              "text": "•",
+              "width": 12.0,
+              "x": 864.0,
+              "y": 224.0
+            },
+            {
+              "height": 25.0,
+              "text": "CHATSCiaXBaT",
+              "width": 188.0,
+              "x": 903.0,
+              "y": 214.0
+            }
+          ]
+        },
+        {
+          "text": "1",
+          "words": [
+            {
+              "height": 27.0,
+              "text": "1",
+              "width": 20.0,
+              "x": 860.0,
+              "y": 241.0
+            }
+          ]
+        },
+        {
+          "text": "Kikimora •",
+          "words": [
+            {
+              "height": 17.0,
+              "text": "Kikimora",
+              "width": 96.0,
+              "x": 961.0,
+              "y": 244.0
+            },
+            {
+              "height": 8.0,
+              "text": "•",
+              "width": 8.0,
+              "x": 1061.0,
+              "y": 244.0
+            }
+          ]
+        },
+        {
+          "text": "16 KM",
+          "words": [
+            {
+              "height": 18.0,
+              "text": "16",
+              "width": 27.0,
+              "x": 984.0,
+              "y": 271.0
+            },
+            {
+              "height": 12.0,
+              "text": "KM",
+              "width": 26.0,
+              "x": 1023.0,
+              "y": 276.0
+            }
+          ]
+        }
+      ]
+    },
+    "ship": "Kikimora"
+  },
+  {
+    "selected": "oWARPo\n28000 m",
+    "cards": {
+      "lines": [
+        {
+          "text": "npg",
+          "words": [
+            {
+              "height": 23.0,
+              "text": "npg",
+              "width": 41.0,
+              "x": 1094.0,
+              "y": 65.0
+            }
+          ]
+        },
+        {
+          "text": "oWARPo",
+          "words": [
+            {
+              "height": 24.0,
+              "text": "oWARPo",
+              "width": 87.0,
+              "x": 943.0,
+              "y": 142.0
+            }
+          ]
+        },
+        {
+          "text": "praxi",
+          "words": [
+            {
+              "height": 22.0,
+              "text": "praxi",
+              "width": 54.0,
+              "x": 979.0,
+              "y": 169.0
+            }
+          ]
+        }
+      ]
+    },
+    "ship": "Praxis"
+  }
+]

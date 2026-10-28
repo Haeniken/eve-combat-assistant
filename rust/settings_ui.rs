@@ -427,6 +427,8 @@ fn screen(
             for retry in &region.retries {
                 let label = if retry.method.starts_with("distance_") {
                     "Повтор дистанции"
+                } else if retry.method.starts_with("cards_") {
+                    "Повтор карточек"
                 } else {
                     "Повтор ника"
                 };

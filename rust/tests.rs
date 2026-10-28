@@ -754,6 +754,7 @@ fn nickname_matching_accepts_unique_closest_card_and_rejects_ties() {
     };
     let selected = "Kennedu 518\n6 236 M";
     let retry = |text: &str| RetryRead {
+        angle_degrees: None,
         method: "nickname_crop_4x".into(),
         rect: [120, 8, 110, 32],
         text: text.into(),
@@ -847,6 +848,7 @@ fn selected_panel_separates_arbitrary_titles_and_ignores_security_ocr() {
         assert_eq!(parsed.lines[0].text, "Ke'on Ishaq");
         assert_eq!(parsed.lines[0].words.len(), 2);
         let retries = vec![ocr::RetryRead {
+            angle_degrees: None,
             method: "distance_crop_4x".into(),
             rect: [123, 26, 229, 26],
             text: "10 KM".into(),
@@ -1137,6 +1139,8 @@ fn clipped_ship_names_need_a_unique_catalog_match_in_the_selected_card() {
         ("Hurricane Flee…", "Hurricane Fleet Issue"),
         ("Hurricane Fleet Issue", "Hurricane Fleet Issue"),
         ("Gnosis", "Gnosis"),
+        ("Praxi", "Praxis"),
+        ("praxi;", "Praxis"),
     ] {
         assert_eq!(
             ocr::identify_card("Vesna83\n23 km", &cards(read), &c)
@@ -1233,4 +1237,20 @@ fn base_resistance_holes_break_ties_without_overriding_real_resistance_differenc
         tactics::base_hole_preference(&[1., 0., 0., 0.], &total, &[40.; 4]),
         tactics::base_hole_preference(&[0., 0., 0., 1.], &total, &[40.; 4])
     );
+}
+
+#[test]
+fn space_labels_do_not_override_a_valid_target_card_and_small_unique_prefixes_recover() {
+    let c = catalog();
+    let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+        "../resources/fixtures/ocr-background-cards.json"
+    ))
+    .unwrap();
+    for fixture in fixtures.as_array().unwrap() {
+        let cards: ocr::Document = serde_json::from_value(fixture["cards"].clone()).unwrap();
+        let target =
+            ocr::identify_with_retries(fixture["selected"].as_str().unwrap(), &[], &cards, &c)
+                .unwrap();
+        assert_eq!(target.ship, fixture["ship"].as_str().unwrap());
+    }
 }

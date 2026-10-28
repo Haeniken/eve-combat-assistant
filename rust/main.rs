@@ -109,14 +109,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.target_test.len() == 2 {
         let selected_image = image::open(&args.target_test[0])?.to_rgba8();
         let selected = platform::ocr_document(&selected_image, &args.ocr_language)?;
-        let cards = platform::ocr_document(
-            &image::open(&args.target_test[1])?.to_rgba8(),
-            &args.ocr_language,
-        )?;
+        let cards_image = image::open(&args.target_test[1])?.to_rgba8();
+        let cards = platform::ocr_document(&cards_image, &args.ocr_language)?;
         let mut retries = Vec::new();
-        let result = ocr::identify_capture(
+        let result = ocr::identify_images(
             &selected_image,
             &selected,
+            &cards_image,
             &cards,
             &args.ocr_language,
             &engine::Catalog::load()?,

@@ -2,7 +2,7 @@
 
 use crate::engine::Catalog;
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Word {
     pub text: String,
     pub x: f32,
@@ -10,12 +10,12 @@ pub struct Word {
     pub width: f32,
     pub height: f32,
 }
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TextLine {
     pub text: String,
     pub words: Vec<Word>,
 }
-#[derive(Clone, Default, Debug, serde::Serialize)]
+#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Document {
     pub lines: Vec<TextLine>,
 }
@@ -232,11 +232,44 @@ pub fn identify_card(
         return Err("В EVE не выбран объект. Выберите пилота в правой панели".into());
     }
     let pilot = selected_pilot(selected).ok_or("В правой области не найден ник. Выделите строку ника вместе с расстоянием, без заголовков других окон")?;
-    let normalized = pilot
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
+    let anchors = nickname_anchors(&pilot, cards);
+    if anchors.is_empty() {
+        return Err(format!(
+            "Ник «{pilot}» не найден на карточках слева. Проверьте обе области и текст OCR"
+        ));
+    }
+    // A matching name floating in space is not a locked-target card. Require
+    // its own hull below it before choosing between nickname anchors.
+    let viable: Vec<_> = anchors
+        .into_iter()
+        .map(|(x, y, h)| hulls_at_anchor(cards, catalog, x, y, h))
+        .filter(|hulls| !hulls.is_empty())
+        .collect();
+    if viable.len() > 1 {
+        return Err(format!(
+            "Ник «{pilot}» найден в нескольких местах на карточках. Сузьте область карточек"
+        ));
+    }
+    let matches = viable.into_iter().next().unwrap_or_default();
+    let [tid] = matches.as_slice() else {
+        return Err(if matches.is_empty() {
+            format!(
+                "У «{pilot}» не удалось однозначно прочитать корпус. Включите в левую область строку корпуса целиком; звёздочка необязательна"
+            )
+        } else {
+            format!("У «{pilot}» подходят несколько корпусов. Проверьте границы карточек")
+        });
+    };
+    let ship = catalog.name(*tid).to_string();
+    // Дистанция в списке карточек может принадлежать соседу; читаем её справа.
+    let mut target = parse(&format!("{selected}\n{ship}"), catalog)
+        .ok_or("Не удалось разобрать выбранную цель")?;
+    target.pilot = pilot;
+    target.ship = ship;
+    Ok(target)
+}
+fn nickname_anchors(pilot: &str, cards: &Document) -> Vec<(f32, f32, f32)> {
+    let normalized = normalized_pilot(pilot);
     let mut anchors = Vec::new();
     for line in &cards.lines {
         for start in 0..line.words.len() {
@@ -250,7 +283,9 @@ pub fn identify_card(
                     .map(|w| w.text.as_str())
                     .collect::<Vec<_>>()
                     .join(" ");
-                if normalized_pilot(candidate.split('[').next().unwrap_or(&candidate)) == normalized
+                if normalized_pilot(&card_header_text(
+                    candidate.split('[').next().unwrap_or(&candidate),
+                )) == normalized
                 {
                     let left = words[0].x;
                     let mut right = words.iter().map(|w| w.x + w.width).fold(left, f32::max);
@@ -275,13 +310,15 @@ pub fn identify_card(
             }
         }
     }
-    let [(anchor_x, anchor_y, height)] = anchors.as_slice() else {
-        return Err(if anchors.is_empty() {
-            format!("Ник «{pilot}» не найден на карточках слева. Проверьте обе области и текст OCR")
-        } else {
-            format!("Ник «{pilot}» найден в нескольких местах. Сузьте область карточек")
-        });
-    };
+    anchors
+}
+fn hulls_at_anchor(
+    cards: &Document,
+    catalog: &Catalog,
+    anchor_x: f32,
+    anchor_y: f32,
+    height: f32,
+) -> Vec<i32> {
     let mut matches = Vec::new();
     for line in &cards.lines {
         for start in 0..line.words.len() {
@@ -310,7 +347,7 @@ pub fn identify_card(
                 let x = (words[0].x + words[end - start - 1].x + words[end - start - 1].width) / 2.;
                 let y = words.iter().map(|w| w.y).fold(f32::INFINITY, f32::min);
                 // Отступы считаются от размера шрифта, а не от конкретного разрешения EVE.
-                if y > *anchor_y
+                if y > anchor_y
                     && y < anchor_y + height * 6.
                     && (x - anchor_x).abs() <= height * 2.5
                 {
@@ -320,26 +357,11 @@ pub fn identify_card(
         }
     }
     if matches.is_empty() {
-        matches = clipped_card_hulls(cards, catalog, *anchor_x, *anchor_y, *height);
+        matches = clipped_card_hulls(cards, catalog, anchor_x, anchor_y, height);
     }
     matches.sort();
     matches.dedup();
-    let [tid] = matches.as_slice() else {
-        return Err(if matches.is_empty() {
-            format!(
-                "У «{pilot}» не удалось однозначно прочитать корпус. Включите в левую область строку корпуса целиком; звёздочка необязательна"
-            )
-        } else {
-            format!("У «{pilot}» подходят несколько корпусов. Проверьте границы карточек")
-        });
-    };
-    let ship = catalog.name(*tid).to_string();
-    // Дистанция в списке карточек может принадлежать соседу; читаем её справа.
-    let mut target = parse(&format!("{selected}\n{ship}"), catalog)
-        .ok_or("Не удалось разобрать выбранную цель")?;
-    target.pilot = pilot;
-    target.ship = ship;
-    Ok(target)
+    matches
 }
 /// Missing stars and clipped/wrapped names are accepted only in the selected
 /// pilot's column, before that card's distance row, with a unique catalog prefix.
@@ -412,7 +434,7 @@ fn clipped_card_hulls(
 fn unique_clipped_hull(text: &str, catalog: &Catalog) -> Option<i32> {
     let normalized = text
         .trim()
-        .trim_end_matches(['.', '…', '*', '★', '∗', '✱', '•', '·', '●'])
+        .trim_end_matches(['.', '…', '*', '★', '∗', '✱', '•', '·', '●', ';', ':', ','])
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -426,7 +448,15 @@ fn unique_clipped_hull(text: &str, catalog: &Catalog) -> Option<i32> {
         .iter()
         .filter(|(_, name)| name.to_lowercase().starts_with(&normalized));
     let (id, name) = candidates.next()?;
-    if name.to_lowercase() != normalized && normalized.chars().count() < 8 {
+    if name.to_lowercase() != normalized
+        && normalized.chars().count() < 8
+        && !(normalized.chars().count() >= 5
+            && name
+                .chars()
+                .count()
+                .saturating_sub(normalized.chars().count())
+                <= 2)
+    {
         return None;
     }
     candidates.next().is_none().then_some(*id)
@@ -802,9 +832,10 @@ impl ScreenCheck {
         } else if let Some(error) = self.selected.error.as_ref().or(self.cards.error.as_ref()) {
             Err(error.clone())
         } else if let (Some(selected), Some(cards)) = (&selected, &cards) {
-            let result = identify_capture(
+            let result = identify_images(
                 self.selected.image.as_ref().unwrap(),
                 selected,
+                self.cards.image.as_ref().unwrap(),
                 cards,
                 language,
                 catalog,
@@ -823,6 +854,8 @@ impl ScreenCheck {
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct RetryRead {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub angle_degrees: Option<f64>,
     pub method: String,
     pub rect: [u32; 4],
     pub text: String,
@@ -846,6 +879,11 @@ fn normalized_pilot(text: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
+}
+fn card_header_text(text: &str) -> String {
+    // A tiny bright object between words is often emitted as a bullet. Keep
+    // genuine apostrophes; only OCR's non-name bullet glyphs become spacing.
+    text.replace(['•', '·', '●'], " ")
 }
 fn nickname_distance(a: &str, b: &str) -> usize {
     let b: Vec<_> = b.chars().collect();
@@ -891,7 +929,7 @@ fn card_pilot_names(cards: &Document) -> Vec<String> {
                     .map(|w| w.text.as_str())
                     .collect::<Vec<_>>()
                     .join(" ");
-                if let Some(pilot) = selected_pilot(&text) {
+                if let Some(pilot) = selected_pilot(&card_header_text(&text)) {
                     names.push(pilot);
                 }
             }
@@ -901,7 +939,9 @@ fn card_pilot_names(cards: &Document) -> Vec<String> {
     names.dedup_by(|a, b| normalized_pilot(a) == normalized_pilot(b));
     names
 }
-fn closest_pilot(selected: &str, names: Vec<String>) -> Result<Option<String>, String> {
+fn closest_pilot(selected: &str, mut names: Vec<String>) -> Result<Option<String>, String> {
+    names.sort_by_key(|name| normalized_pilot(name));
+    names.dedup_by(|a, b| normalized_pilot(a) == normalized_pilot(b));
     let selected = normalized_pilot(selected);
     let length = selected.chars().filter(|c| !c.is_whitespace()).count();
     let budget = match length {
@@ -957,7 +997,13 @@ pub fn identify_with_retries(
     if targets.len() == 1 && closest_pilot(&pilot, vec![targets[0].pilot.clone()])?.is_some() {
         return Ok(targets.remove(0));
     }
-    if let Some(name) = closest_pilot(&pilot, card_pilot_names(cards))? {
+    if let Some(name) = closest_pilot(
+        &pilot,
+        card_pilot_names(cards)
+            .into_iter()
+            .filter(|name| identify_card(name, cards, catalog).is_ok())
+            .collect(),
+    )? {
         return identify_card(&format!("{name}\n{selected}"), cards, catalog);
     }
     Err(original)
@@ -971,7 +1017,9 @@ pub fn pilot_match(selected: &str, retries: &[RetryRead], target: &Target) -> Pi
     let original = selected_pilot(selected).unwrap_or_default();
     let expected = normalized_pilot(&target.pilot);
     let distance = nickname_distance(&normalized_pilot(&original), &expected);
-    let method = if distance == 0 {
+    let method = if retries.iter().any(|r| r.method == "cards_match") {
+        "cards_retry"
+    } else if distance == 0 {
         "exact"
     } else if retries.iter().any(|r| {
         r.error.is_none()
@@ -984,6 +1032,152 @@ pub fn pilot_match(selected: &str, retries: &[RetryRead], target: &Target) -> Pi
     PilotMatch {
         method,
         edit_distance: distance,
+    }
+}
+#[derive(Clone)]
+struct CardCandidate {
+    target: Target,
+    anchor: (f32, f32, f32),
+}
+fn located_candidate(target: Target, cards: &Document, catalog: &Catalog) -> Option<CardCandidate> {
+    let ship = catalog.ship_id(&target.ship)?;
+    let anchors: Vec<_> = nickname_anchors(&target.pilot, cards)
+        .into_iter()
+        .filter(|(x, y, h)| hulls_at_anchor(cards, catalog, *x, *y, *h).contains(&ship))
+        .collect();
+    let [anchor] = anchors.as_slice() else {
+        return None;
+    };
+    Some(CardCandidate {
+        target,
+        anchor: *anchor,
+    })
+}
+fn same_card(a: &CardCandidate, b: &CardCandidate) -> bool {
+    let h = a.anchor.2.max(b.anchor.2);
+    (a.anchor.0 - b.anchor.0).abs() <= h * 1.5 && (a.anchor.1 - b.anchor.1).abs() <= h * 1.2
+}
+fn confirm_card_name(
+    candidates: &mut [CardCandidate],
+    selected: &str,
+    retries: &[RetryRead],
+) -> Option<String> {
+    let pilot = selected_pilot(selected)?;
+    let reads: Vec<_> = retries
+        .iter()
+        .filter(|r| r.method.starts_with("nickname_") && r.error.is_none())
+        .filter_map(|r| selected_pilot(&r.text))
+        .collect();
+    let first = candidates.first()?;
+    if reads.len() < 2
+        || !reads
+            .iter()
+            .all(|p| normalized_pilot(p) == normalized_pilot(&pilot))
+        || !candidates
+            .iter()
+            .all(|c| same_card(first, c) && c.target.ship == first.target.ship)
+    {
+        return None;
+    }
+    let before = candidates
+        .iter()
+        .map(|c| c.target.pilot.clone())
+        .collect::<Vec<_>>()
+        .join(" / ");
+    let changed = candidates.iter().any(|c| c.target.pilot != pilot);
+    for candidate in candidates {
+        candidate.target.pilot = pilot.clone();
+    }
+    changed.then(|| format!("{before} -> {pilot}"))
+}
+/// Retry the left region as well: transparent target cards inherit changing
+/// space scenery. Prefer exact nickname recovery across all filtered readings.
+pub fn identify_images(
+    selected_image: &image::RgbaImage,
+    selected: &Document,
+    cards_image: &image::RgbaImage,
+    cards: &Document,
+    language: &str,
+    catalog: &Catalog,
+    retries: &mut Vec<RetryRead>,
+) -> Result<Target, String> {
+    retries.retain(|r| !r.method.starts_with("cards_"));
+    let original = identify_capture(selected_image, selected, cards, language, catalog, retries);
+    let text = selected_text(selected, retries);
+    if original
+        .as_ref()
+        .err()
+        .is_some_and(|e| e.contains("нескольких местах") || e.contains("несколько корпусов"))
+    {
+        return original;
+    }
+    if identify_card(&text, cards, catalog).is_ok() || selected_pilot(&text).is_none() {
+        return original;
+    }
+    let readings = crate::platform::card_retry_documents(cards_image, language);
+    let mut exact = Vec::new();
+    let mut fuzzy = Vec::new();
+    if let Ok(target) = &original
+        && let Some(c) = located_candidate(target.clone(), cards, catalog)
+    {
+        fuzzy.push(c);
+    }
+    for (read, document) in readings {
+        if read.error.is_none() {
+            if let Ok(target) = identify_card(&text, &document, catalog) {
+                if let Some(c) = located_candidate(target, &document, catalog) {
+                    exact.push(c);
+                }
+            } else if let Ok(target) = identify_with_retries(&text, retries, &document, catalog)
+                && let Some(c) = located_candidate(target, &document, catalog)
+            {
+                fuzzy.push(c);
+            }
+        }
+        retries.push(read);
+    }
+    retries.push(RetryRead{angle_degrees:None,method:"cards_candidates".into(),rect:[0,0,cards_image.width(),cards_image.height()],text:serde_json::json!(fuzzy.iter().map(|c|serde_json::json!({"pilot":c.target.pilot,"ship":c.target.ship,"anchor":c.anchor})).collect::<Vec<_>>()).to_string(),error:None});
+    let mut targets = if exact.is_empty() {
+        if let Some(note) = confirm_card_name(&mut fuzzy, &text, retries) {
+            retries.push(RetryRead {
+                angle_degrees: None,
+                method: "cards_name_confirmed_right".into(),
+                rect: [0, 0, selected_image.width(), selected_image.height()],
+                text: note,
+                error: None,
+            });
+        }
+        let pilot = selected_pilot(&text).unwrap();
+        let names = fuzzy.iter().map(|c| c.target.pilot.clone()).collect();
+        if let Some(name) = closest_pilot(&pilot, names)? {
+            fuzzy
+                .into_iter()
+                .filter(|c| c.target.pilot == name)
+                .collect()
+        } else {
+            Vec::new()
+        }
+    } else {
+        exact
+    };
+    targets.sort_by(|a, b| a.target.identity().cmp(&b.target.identity()));
+    targets.dedup_by(|a, b| a.target.identity() == b.target.identity() && same_card(a, b));
+    match targets.len() {
+        0 => original,
+        1 => {
+            let target = targets.remove(0).target;
+            retries.push(RetryRead {
+                angle_degrees: None,
+                method: "cards_match".into(),
+                rect: [0, 0, cards_image.width(), cards_image.height()],
+                text: format!("{} / {}", target.pilot, target.ship),
+                error: None,
+            });
+            Ok(target)
+        }
+        _ => Err(
+            "Повторное чтение карточек дало неоднозначную цель. Уточните область карточек".into(),
+        ),
     }
 }
 pub fn identify_capture(
@@ -1014,4 +1208,60 @@ pub fn identify_capture(
         ));
     }
     identify_with_retries(&text, retries, cards, catalog)
+}
+
+#[cfg(test)]
+mod card_read_regressions {
+    use super::*;
+    fn candidate(pilot: &str, x: f32) -> CardCandidate {
+        CardCandidate {
+            target: Target {
+                pilot: pilot.into(),
+                ship: "Thrasher".into(),
+                distance: Some(21000.),
+                angular: 0.,
+            },
+            anchor: (x, 180., 22.),
+        }
+    }
+    fn reads() -> Vec<RetryRead> {
+        (0..3)
+            .map(|i| RetryRead {
+                angle_degrees: None,
+                method: format!("nickname_{i}"),
+                rect: [0, 0, 80, 20],
+                text: "Flora Artua".into(),
+                error: None,
+            })
+            .collect()
+    }
+    #[test]
+    fn rereading_one_card_does_not_turn_ocr_spellings_into_competing_pilots() {
+        let mut candidates = vec![
+            candidate("Fiora Artüa", 1000.),
+            candidate("Fiora Artha", 1004.),
+        ];
+        assert!(confirm_card_name(&mut candidates, "Flora Artua", &reads()).is_some());
+        assert!(candidates.iter().all(|c| c.target.pilot == "Flora Artua"));
+        let mut separate = vec![
+            candidate("Fiora Artüa", 1000.),
+            candidate("Fiora Artha", 1200.),
+        ];
+        assert!(confirm_card_name(&mut separate, "Flora Artua", &reads()).is_none());
+        let mut mixed = vec![
+            candidate("Fiora Artüa", 1000.),
+            candidate("Fiora Artha", 1004.),
+        ];
+        mixed[1].target.ship = "Rifter".into();
+        assert!(confirm_card_name(&mut mixed, "Flora Artua", &reads()).is_none());
+    }
+    #[test]
+    fn changing_right_reads_cannot_overwrite_a_clearer_card_nickname() {
+        let mut reads = reads();
+        reads[2].text = "Flora Artur".into();
+        let mut candidates = vec![candidate("Flora Artur", 1000.)];
+        assert!(confirm_card_name(&mut candidates, "Flora Artua", &reads).is_none());
+        assert_eq!(candidates[0].target.pilot, "Flora Artur");
+        assert!(closest_pilot("Pilot8", vec!["Pilot9".into(), "Pilot7".into()]).is_err());
+    }
 }

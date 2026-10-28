@@ -657,9 +657,10 @@ impl Workers {
                                 should_emit = false;
                                 return Ok(None);
                             }
-                            return ocr::identify_capture(
+                            return ocr::identify_images(
                                 &image,
                                 &selected_document,
+                                &cards,
                                 &card_document,
                                 &config.settings.language,
                                 &catalog,
