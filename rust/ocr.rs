@@ -2,7 +2,7 @@
 
 use crate::engine::Catalog;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Word {
     pub text: String,
     pub x: f32,
@@ -10,12 +10,12 @@ pub struct Word {
     pub width: f32,
     pub height: f32,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct TextLine {
     pub text: String,
     pub words: Vec<Word>,
 }
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, serde::Serialize)]
 pub struct Document {
     pub lines: Vec<TextLine>,
 }
@@ -67,7 +67,15 @@ pub fn selected_pilot(text: &str) -> Option<String> {
 /// В карточках OCR может объединить несколько колонок в одну строку.
 /// Ищем точный ник и корпус со звёздочкой ниже в той же колонке.
 pub fn selected_card(selected: &str, cards: &Document, catalog: &Catalog) -> Option<Target> {
-    let pilot = selected_pilot(selected)?;
+    identify_card(selected, cards, catalog).ok()
+}
+
+pub fn identify_card(
+    selected: &str,
+    cards: &Document,
+    catalog: &Catalog,
+) -> Result<Target, String> {
+    let pilot = selected_pilot(selected).ok_or("В правой области не найден ник. Выделите строку ника вместе с расстоянием, без заголовков других окон")?;
     let normalized = pilot
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -105,7 +113,11 @@ pub fn selected_card(selected: &str, cards: &Document, catalog: &Catalog) -> Opt
         }
     }
     let [(anchor_x, anchor_y, height)] = anchors.as_slice() else {
-        return None;
+        return Err(if anchors.is_empty() {
+            format!("Ник «{pilot}» не найден на карточках слева. Проверьте обе области и текст OCR")
+        } else {
+            format!("Ник «{pilot}» найден в нескольких местах. Сузьте область карточек")
+        });
     };
     let mut matches = Vec::new();
     for line in &cards.lines {
@@ -123,14 +135,13 @@ pub fn selected_card(selected: &str, cards: &Document, catalog: &Catalog) -> Opt
                     .map(|word| word.text.as_str())
                     .collect::<Vec<_>>()
                     .join(" ");
-                if !text.trim_end().ends_with('*') {
+                if !text.trim_end().ends_with(['*', '★', '∗', '✱']) {
                     continue;
                 }
-                let Some(tid) = catalog.ship_id(text.trim_end().trim_end_matches('*').trim())
-                else {
+                let Some(tid) = starred_hull(&text, catalog) else {
                     continue;
                 };
-                let x = (words[0].x + words.last()?.x + words.last()?.width) / 2.;
+                let x = (words[0].x + words[end - start - 1].x + words[end - start - 1].width) / 2.;
                 let y = words.iter().map(|w| w.y).fold(f32::INFINITY, f32::min);
                 // Отступы считаются от размера шрифта, а не от конкретного разрешения EVE.
                 if y > *anchor_y
@@ -145,15 +156,75 @@ pub fn selected_card(selected: &str, cards: &Document, catalog: &Catalog) -> Opt
     matches.sort();
     matches.dedup();
     let [tid] = matches.as_slice() else {
-        return None;
+        return Err(if matches.is_empty() {
+            format!(
+                "У «{pilot}» не найден корпус со звёздочкой. Включите в левую область всю строку корпуса и небольшой отступ снизу"
+            )
+        } else {
+            format!("У «{pilot}» подходят несколько корпусов. Проверьте границы карточек")
+        });
     };
     let ship = catalog.name(*tid).to_string();
     // Дистанция в списке карточек может принадлежать соседу; читаем её справа.
-    let mut target = parse(&format!("{selected}\n{ship}"), catalog)?;
+    let mut target = parse(&format!("{selected}\n{ship}"), catalog)
+        .ok_or("Не удалось разобрать выбранную цель")?;
     target.pilot = pilot;
     target.ship = ship;
-    Some(target)
+    Ok(target)
 }
+// Полный корпус всё равно должен быть отмечен звёздочкой. Исправляем только
+// одну потерянную/перепутанную букву, если в справочнике есть единственный ответ.
+fn starred_hull(text: &str, catalog: &Catalog) -> Option<i32> {
+    let name = text
+        .trim_end()
+        .trim_end_matches(['*', '★', '∗', '✱'])
+        .trim();
+    if let Some(id) = catalog.ship_id(name) {
+        return Some(id);
+    }
+    let normalized = name.to_lowercase().replace('0', "o");
+    if let Some(id) = catalog.ship_id(&normalized) {
+        return Some(id);
+    }
+    if normalized.chars().count() < 5 {
+        return None;
+    }
+    let mut candidates = catalog
+        .ships
+        .iter()
+        .filter(|(_, ship)| one_edit(&normalized, &ship.to_lowercase()));
+    let (id, _) = candidates.next()?;
+    if candidates.next().is_some() {
+        return None;
+    }
+    Some(*id)
+}
+fn one_edit(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<_>, Vec<_>) = (a.chars().collect(), b.chars().collect());
+    if a.len().abs_diff(b.len()) > 1 {
+        return false;
+    }
+    let (mut i, mut j, mut errors) = (0, 0, 0);
+    while i < a.len() && j < b.len() {
+        if a[i] == b[j] {
+            i += 1;
+            j += 1;
+            continue;
+        }
+        errors += 1;
+        if errors > 1 {
+            return false;
+        }
+        if a.len() >= b.len() {
+            i += 1;
+        }
+        if b.len() >= a.len() {
+            j += 1;
+        }
+    }
+    errors + usize::from(i < a.len() || j < b.len()) <= 1
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct Target {
     pub ship: String,
@@ -343,5 +414,74 @@ impl FrameCache {
         } else {
             FrameDecision::Ignore
         }
+    }
+}
+
+/// Предпросмотр живёт в памяти; отдельные копии сохраняет включённый DebugLog.
+#[derive(Default)]
+pub struct RegionCheck {
+    pub rect: Option<[i32; 4]>,
+    pub image: Option<image::RgbaImage>,
+    pub text: String,
+    pub document: Option<Document>,
+    pub error: Option<String>,
+}
+impl RegionCheck {
+    fn capture(rect: Option<[i32; 4]>) -> Self {
+        let mut result = Self {
+            rect,
+            ..Default::default()
+        };
+        if let Some(rect) = rect {
+            match crate::platform::read_screen(rect) {
+                Ok(image) => result.image = Some(image),
+                Err(error) => result.error = Some(error),
+            }
+        }
+        result
+    }
+    fn recognize(&mut self, language: &str) -> Option<Document> {
+        let image = self.image.as_ref()?;
+        match crate::platform::ocr_document(image, language) {
+            Ok(document) => {
+                self.text = document.text();
+                self.document = Some(document.clone());
+                Some(document)
+            }
+            Err(error) => {
+                self.error = Some(error);
+                None
+            }
+        }
+    }
+}
+pub struct ScreenCheck {
+    pub selected: RegionCheck,
+    pub cards: RegionCheck,
+    pub result: Result<Target, String>,
+}
+impl ScreenCheck {
+    pub fn capture(settings: &crate::model::Settings) -> Self {
+        Self {
+            selected: RegionCheck::capture(settings.region),
+            cards: RegionCheck::capture(settings.targets_region),
+            result: Err("Ожидание OCR".into()),
+        }
+    }
+    pub fn recognize(&mut self, language: &str, catalog: &Catalog) {
+        let selected = self.selected.recognize(language);
+        let cards = self.cards.recognize(language);
+        self.result = if self.selected.rect.is_none() {
+            Err("Сначала выделите правую область текущего выбора".into())
+        } else if let Some(error) = self.selected.error.as_ref().or(self.cards.error.as_ref()) {
+            Err(error.clone())
+        } else if let (Some(selected), Some(cards)) = (&selected, &cards) {
+            identify_card(&selected.text(), cards, catalog)
+        } else if let Some(selected) = selected {
+            parse(&selected.text(), catalog)
+                .ok_or("В правой области не найден корпус; выделите также карточки слева".into())
+        } else {
+            Err("Не удалось прочитать выбранную область".into())
+        };
     }
 }

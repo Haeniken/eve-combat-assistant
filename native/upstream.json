@@ -6,6 +6,7 @@
   "local_patches": [
     "Bounded EFT quantities and header validation; slot indexes continue across sections",
     "Character implant and booster items participate in dogma locations and effects",
-    "Booster side effects are opt-in by dogma effect ID"
+    "Booster side effects are opt-in by dogma effect ID",
+    "Classify EFT lines individually: bare scripts/charges are cargo; reject unknown items and preserve empty slots and loaded charges"
   ]
 }

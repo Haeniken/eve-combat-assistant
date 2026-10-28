@@ -11,7 +11,7 @@ use crate::{
     store::Store,
     style::{self, CYAN, MUTED, TEXT},
     tactics,
-    worker::{AnalysisRequest, Matchup, Message, NetworkRequest, OcrConfig, Workers},
+    worker::{AnalysisRequest, Matchup, Message, NetworkRequest, OcrConfig, OcrRequest, Workers},
 };
 use eframe::egui::{self, Color32, RichText, Vec2, ViewportCommand, ViewportId};
 use serde_json::json;
@@ -56,6 +56,11 @@ pub struct CombatApp {
     tab: usize,
     syncing: bool,
     ocr_epoch: u64,
+    ocr_status: String,
+    screen_state: crate::settings_ui::ScreenState,
+    capture_pending: Option<Instant>,
+    capturing: bool,
+    restore_pending: bool,
     gate: Gate,
     details: Option<String>,
     selecting: bool,
@@ -178,6 +183,11 @@ impl CombatApp {
             status: "Локальный анализ · zKillboard".into(),
             syncing: false,
             ocr_epoch: 0,
+            ocr_status: "OCR: ожидание".into(),
+            screen_state: Default::default(),
+            capture_pending: None,
+            capturing: false,
+            restore_pending: false,
             gate: Gate::default(),
             details: None,
             selecting: false,
@@ -228,11 +238,11 @@ impl CombatApp {
             self.target = None;
             self.matchup = None;
         }
-        let _ = self.workers.ocr.send(OcrConfig {
+        let _ = self.workers.ocr.send(OcrRequest::Configure(OcrConfig {
             epoch: self.ocr_epoch,
             settings: self.settings.clone(),
             enabled: self.draft.is_none() && !self.selecting,
-        });
+        }));
     }
     fn open_settings(&mut self) {
         if self.draft.is_none() {
@@ -276,6 +286,7 @@ impl CombatApp {
         self.settings = draft;
         self.settings.save(&self.directory)?;
         self.draft = None;
+        self.screen_state = Default::default();
         self.target = Some(Target {
             ship: self.settings.ship.clone(),
             pilot: self.settings.pilot.clone(),
@@ -289,7 +300,6 @@ impl CombatApp {
         Ok(())
     }
     fn messages(&mut self, ctx: &egui::Context) {
-        let _ = ctx;
         while let Ok(message) = self.rx.try_recv() {
             match message {
                 Message::CharacterReady(result) => {
@@ -368,10 +378,30 @@ impl CombatApp {
                     };
                     self.recalculate();
                 }
+                Message::ScreenCaptured => {
+                    self.restore_pending = true;
+                    ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(true));
+                }
+                Message::ScreenChecked(check) => {
+                    if self.draft.is_some() {
+                        self.screen_state.set(ctx, *check);
+                    }
+                }
+                Message::OcrState(epoch, status) => {
+                    if epoch == self.ocr_epoch {
+                        self.ocr_status = status;
+                    }
+                }
                 Message::Ocr(epoch, result) => {
                     if epoch == self.ocr_epoch {
                         match result {
                             Ok(target) => {
+                                self.ocr_status = if target.is_some() {
+                                    "OCR работает: цель распознана"
+                                } else {
+                                    "OCR работает: цель не найдена"
+                                }
+                                .into();
                                 if let Some(change) = self.gate.feed(target) {
                                     if change
                                         .as_ref()
@@ -394,12 +424,14 @@ impl CombatApp {
                                 }
                             }
                             Err(e) => {
-                                self.status = e;
-                                self.settings.ocr = false;
+                                self.ocr_status = format!(
+                                    "OCR: {e} · повтор через {:.1} сек.",
+                                    self.settings.ocr_interval
+                                );
+                                self.gate = Gate::default();
                                 self.target = None;
                                 self.matchup = None;
                                 self.generation += 1;
-                                self.configure_ocr();
                             }
                         }
                     }
@@ -659,9 +691,10 @@ impl CombatApp {
             .unwrap_or("НЕ ВЫБРАН");
         style::caption(ui, &format!("МОЙ ФИТ / {own}"));
         style::caption(ui, &self.status);
+        style::caption(ui, &self.ocr_status);
     }
     fn settings_view(&mut self, ctx: &egui::Context) {
-        if self.draft.is_none() || self.selecting {
+        if self.draft.is_none() || self.selecting || self.capturing {
             return;
         }
         // Изменения вида видны сразу, но Отмена должна вернуть сохранённые настройки.
@@ -672,6 +705,7 @@ impl CombatApp {
             .unwrap_or(Vec2::new(1920., 1080.));
         let builder = egui::ViewportBuilder::default()
             .with_title("Настройки · EVE Combat Assistant")
+            .with_visible(true)
             .with_inner_size([
                 760_f32.min(available.x - 30.),
                 650_f32.min(available.y - 60.),
@@ -689,6 +723,8 @@ impl CombatApp {
                 fit_state: &mut self.fit_state,
                 account_busy: self.account_busy,
                 fit_busy: self.fit_busy,
+                screen_state: &mut self.screen_state,
+                ocr_status: &self.ocr_status,
             }
             .show(ui, &mut draft);
             response.action = current.action.or(response.action);
@@ -717,6 +753,40 @@ impl CombatApp {
         }
         use crate::settings_ui::Action;
         match response.action {
+            Some(Action::OpenDebugFolder) => {
+                let path = self.directory.join("debug");
+                let result = std::fs::create_dir_all(&path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|()| {
+                        let url = url::Url::from_directory_path(&path)
+                            .map_err(|_| "Не удалось открыть папку".to_string())?;
+                        webbrowser::open(url.as_str()).map_err(|e| e.to_string())
+                    });
+                if let Err(error) = result {
+                    self.status = error;
+                }
+                self.draft = Some(draft);
+            }
+            Some(Action::CheckScreen) => {
+                self.screen_state = crate::settings_ui::ScreenState {
+                    busy: true,
+                    language: draft.language.clone(),
+                    ..Default::default()
+                };
+                self.draft = Some(draft);
+                self.capturing = true;
+                self.capture_pending = Some(Instant::now());
+                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(false));
+                ctx.send_viewport_cmd_to(
+                    ViewportId::from_hash_of("settings"),
+                    ViewportCommand::Visible(false),
+                );
+                ctx.send_viewport_cmd_to(
+                    ViewportId::from_hash_of("fit-detail"),
+                    ViewportCommand::Visible(false),
+                );
+                ctx.request_repaint_after(std::time::Duration::from_millis(450));
+            }
             Some(Action::Login) | Some(Action::RefreshCharacter) => {
                 if !self.account_busy {
                     self.account_busy = true;
@@ -787,6 +857,7 @@ impl CombatApp {
                 }
             }
             Some(Action::Cancel) => {
+                self.screen_state = Default::default();
                 self.draft = None;
                 ctx.set_zoom_factor(self.settings.scale / 100.);
                 self.configure_ocr();
@@ -890,6 +961,28 @@ impl eframe::App for CombatApp {
             self.request_pilot();
         }
         self.messages(ctx);
+        if let Some(start) = self.capture_pending {
+            if start.elapsed() >= std::time::Duration::from_millis(450) {
+                self.capture_pending = None;
+                if let Some(draft) = &self.draft
+                    && self
+                        .workers
+                        .ocr
+                        .send(OcrRequest::Check(draft.clone()))
+                        .is_err()
+                {
+                    self.restore_pending = true;
+                    self.screen_state.busy = false;
+                    self.status = "Поток OCR недоступен".into();
+                    ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(true));
+                }
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+        }
+        if self.capturing {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
         let want = usize::from(self.args.screenshot.is_some())
             + usize::from(self.args.settings_screenshot.is_some());
         if want > 0 {
@@ -985,12 +1078,13 @@ impl eframe::App for CombatApp {
         }
         self.settings_view(&ctx);
         self.region_view(&ctx);
-        if let Some(text) = self.details.clone() {
+        if let Some(text) = self.details.clone().filter(|_| !self.capturing) {
             let mut open = true;
             ctx.show_viewport_immediate(
                 ViewportId::from_hash_of("fit-detail"),
                 egui::ViewportBuilder::default()
                     .with_title("Полный фит")
+                    .with_visible(true)
                     .with_inner_size([570., 620.])
                     .with_always_on_top(),
                 |ui, _| {
@@ -1017,6 +1111,13 @@ impl eframe::App for CombatApp {
             if !open {
                 self.details = None;
             }
+        }
+        // Сначала убираем скрытые immediate-окна из одного UI-прохода.
+        // Иначе egui вызывает их с visible=false и пропускает callback.
+        if self.restore_pending {
+            self.restore_pending = false;
+            self.capturing = false;
+            ctx.request_repaint();
         }
     }
     fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {

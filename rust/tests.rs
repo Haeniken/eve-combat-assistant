@@ -271,6 +271,7 @@ fn ocr_handles_eve_distance_grouping() {
 fn legacy_settings_keep_the_pilot_lookup_preference() {
     let settings: Settings = serde_json::from_value(json!({"auto_sync":false})).unwrap();
     assert!(!settings.auto_pilot_lookup);
+    assert!(!settings.ocr_debug);
 }
 
 #[test]
@@ -568,4 +569,124 @@ fn enlarged_overlay_fits_full_hd_work_area_on_either_monitor() {
         assert_eq!(actual.width(), 770.);
         assert!(actual.height() <= 1032.);
     }
+}
+
+#[test]
+fn eft_bare_scripts_mixed_cargo_and_missing_sections_preserve_modules() {
+    let c = catalog();
+    let raw = include_str!("../tests/fixtures/talwar.eft");
+    let mut engine = Engine::default();
+    let baseline = engine.evaluate(json!({"raw_fit":raw})).unwrap();
+    for text in [
+        raw.replace("Scan Resolution Script x3", "Scan Resolution Script"),
+        raw.lines()
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace("Scan Resolution Script x3", "Scan Resolution Script"),
+        format!(
+            "\u{feff}  {}\r\n",
+            raw.lines()
+                .map(|line| format!("  {line}  "))
+                .collect::<Vec<_>>()
+                .join("\r\n")
+        )
+        .replace("Scan Resolution Script x3", "Scan Resolution Script"),
+    ] {
+        let result = engine.evaluate(json!({"raw_fit":text})).unwrap();
+        assert_eq!(baseline["fit"]["modules"], result["fit"]["modules"]);
+        assert_eq!(result["cargo"].as_array().unwrap().len(), 5);
+        assert!(
+            result["cargo"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type_id"] == tid(&c, "Scan Resolution Script")
+                    && item["quantity"] == 1)
+        );
+        assert_eq!(
+            baseline["summary"]["offense"]["dps"],
+            result["summary"]["offense"]["dps"]
+        );
+    }
+    let result = engine.evaluate(json!({"raw_fit":"[Rifter, slots]\n[Empty High slot]\n200mm AutoCannon II, Fusion S /offline\n[Empty High slot]\n200mm AutoCannon II"})).unwrap();
+    let modules = result["fit"]["modules"].as_array().unwrap();
+    assert_eq!(modules[0]["slot"]["index"], 1);
+    assert_eq!(modules[1]["slot"]["index"], 3);
+    for line in [
+        "Unknown Module II",
+        "[Empty Strange slot]",
+        "Scan Resolution Script x0",
+        "Hobgoblin II x101",
+        "Sensor Booster II, Missing Script",
+    ] {
+        assert!(
+            engine
+                .evaluate(json!({"raw_fit":format!("[Rifter, bad]\n{line}")}))
+                .is_err(),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn ocr_hull_correction_requires_a_unique_starred_match_and_reports_failures() {
+    use crate::ocr::{Document, TextLine, Word};
+    let c = catalog();
+    let cards = |hull: &str| Document {
+        lines: vec![
+            TextLine {
+                text: "Pilot9".into(),
+                words: vec![Word {
+                    text: "Pilot9".into(),
+                    x: 10.,
+                    y: 0.,
+                    width: 60.,
+                    height: 10.,
+                }],
+            },
+            TextLine {
+                text: hull.into(),
+                words: vec![Word {
+                    text: hull.into(),
+                    x: 10.,
+                    y: 25.,
+                    width: 60.,
+                    height: 10.,
+                }],
+            },
+        ],
+    };
+    for (text, expected) in [
+        ("Rifer*", "Rifter"),
+        ("0rca★", "Orca"),
+        ("Talwar∗", "Talwar"),
+    ] {
+        let target = ocr::identify_card("Pilot9\n24 km", &cards(text), &c).unwrap();
+        assert_eq!(target.ship, expected);
+        assert_eq!(target.pilot, "Pilot9");
+        assert_eq!(target.distance, Some(24000.));
+    }
+    assert!(ocr::identify_card("Pilot9", &cards("Rifer"), &c).is_err());
+    // Одинаковая дистанция до двух корпусов не разрешает выбирать первый.
+    let mut ambiguous = c.clone();
+    ambiguous.ships = vec![(1, "Rifter".into()), (2, "Rifler".into())].into();
+    assert!(ocr::identify_card("Pilot9", &cards("Rifer*"), &ambiguous).is_err());
+    assert!(
+        ocr::identify_card("24 km", &cards("Rifter*"), &c)
+            .unwrap_err()
+            .contains("не найден ник")
+    );
+    assert!(
+        ocr::identify_card("Another Pilot", &cards("Rifter*"), &c)
+            .unwrap_err()
+            .contains("не найден на карточках")
+    );
+    let mut duplicate = cards("Rifter*");
+    duplicate.lines.push(duplicate.lines[0].clone());
+    assert!(
+        ocr::identify_card("Pilot9", &duplicate, &c)
+            .unwrap_err()
+            .contains("нескольких местах")
+    );
 }

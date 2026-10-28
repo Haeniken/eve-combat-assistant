@@ -116,7 +116,7 @@ function Invoke-CardFixture([string]$Path, [bool]$Reorder) {
     } finally { $font.Dispose(); $graphics.Dispose(); $bitmap.Dispose() }
 }
 
-$fit = [System.IO.File]::ReadAllText((Join-Path $Root 'tests\fixtures\talwar.eft'))
+$originalFit = [System.IO.File]::ReadAllText((Join-Path $Root 'tests\fixtures\talwar.eft'))
 $original = [System.Windows.Forms.Clipboard]::GetDataObject()
 $backup = New-Object System.Windows.Forms.DataObject
 if ($null -ne $original) {
@@ -127,7 +127,8 @@ if ($null -ne $original) {
 }
 $pasteResults = @()
 try {
-    foreach ($mode in @('button')) {
+    foreach ($mode in @('button', 'bare-script')) {
+        $fit = if ($mode -eq 'bare-script') { $originalFit.Replace('Scan Resolution Script x3', 'Scan Resolution Script') } else { $originalFit }
         $directory = Join-Path $testRoot $mode
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
         [System.IO.File]::WriteAllText((Join-Path $directory 'settings.json'), '{"auto_pilot_lookup":false,"scale":100}')
@@ -202,4 +203,4 @@ foreach ($reorder in @($false, $true)) {
 }
 [pscustomobject]@{Clipboard=$pasteResults;TenTargetOcr=$ocrResults} | ConvertTo-Json -Depth 8 |
     Set-Content (Join-Path $evidence 'result.json') -Encoding UTF8
-Write-Output 'PASS: paste button, ten targets in two rows, reordered targets'
+Write-Output 'PASS: paste/save original and bare-script EFT, ten targets in two rows, reordered targets'

@@ -17,6 +17,8 @@ use std::{
 pub enum Action {
     Save,
     Cancel,
+    CheckScreen,
+    OpenDebugFolder,
     SelectRegion,
     SelectTargetsRegion,
     Sync,
@@ -42,6 +44,8 @@ pub struct Window<'a> {
     pub fit_state: &'a mut FitState,
     pub account_busy: bool,
     pub fit_busy: bool,
+    pub screen_state: &'a mut ScreenState,
+    pub ocr_status: &'a str,
 }
 
 #[derive(Default)]
@@ -98,7 +102,9 @@ impl Window<'_> {
                         0 => appearance(ui, draft),
                         1 => response.error = own_fit(ui, draft),
                         2 => target(ui, draft, self.catalog),
-                        3 => response.action = screen(ui, draft),
+                        3 => {
+                            response.action = screen(ui, draft, self.screen_state, self.ocr_status)
+                        }
                         4 => response.action = data(ui, draft, self.syncing, self.cancel_sync),
                         5 => {
                             response.action =
@@ -244,7 +250,13 @@ fn target(ui: &mut Ui, draft: &mut Settings, catalog: &Catalog) {
     );
 }
 
-fn screen(ui: &mut Ui, draft: &mut Settings) -> Option<Action> {
+fn screen(
+    ui: &mut Ui,
+    draft: &mut Settings,
+    state: &mut ScreenState,
+    status: &str,
+) -> Option<Action> {
+    ui.label(status);
     ui.checkbox(&mut draft.ocr, "Читать выбранную цель с экрана");
     ui.checkbox(
         &mut draft.pause_outside_eve,
@@ -305,7 +317,121 @@ fn screen(ui: &mut Ui, draft: &mut Settings) -> Option<Action> {
         ui,
         "Справа читается ник текущего выбора. Если корпус там не виден, выделите слева всю полосу ников и названий со звёздочкой, например Orca*. Позиции карточек могут меняться; изображения и анимированные кольца в область включать не нужно.",
     );
+    style::separator(ui);
+    ui.checkbox(
+        &mut draft.ocr_debug,
+        "Расширенное логирование OCR (текст и снимки областей)",
+    );
+    style::caption(
+        ui,
+        "Журнал включает координаты, язык, паузы, время обработки, текст, позиции слов и результат выбора корпуса. До 80 снимков / 64 МиБ и 4 журналов по 4 МиБ. Настройка применяется после сохранения; ручная проверка использует галочку сразу.",
+    );
+    if ui.button("Открыть папку диагностики").clicked() {
+        action = Some(Action::OpenDebugFolder);
+    }
+    if ui
+        .add_enabled(!state.busy, egui::Button::new("Проверить области сейчас"))
+        .clicked()
+    {
+        action = Some(Action::CheckScreen);
+    }
+    style::caption(
+        ui,
+        "Проверка использует координаты и язык выше без сохранения. Окна помощника на время захвата скрываются. При расширенном логировании снимки также сохраняются в папку диагностики.",
+    );
+    if state.busy {
+        ui.label("Проверка экрана…");
+    }
+    if let Some(check) = &state.check {
+        if check.selected.rect != draft.region
+            || check.cards.rect != draft.targets_region
+            || state.language != draft.language
+        {
+            ui.colored_label(AMBER, "Области или язык изменены — повторите проверку.");
+        }
+        if state.scroll_to_result {
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+            state.scroll_to_result = false;
+        }
+        match &check.result {
+            Ok(target) => {
+                ui.colored_label(CYAN, format!("Найдено: {} · {}", target.pilot, target.ship));
+            }
+            Err(error) => {
+                ui.colored_label(AMBER, error);
+            }
+        }
+        for (index, title, region) in [
+            (0, "Текущий выбор — справа", &check.selected),
+            (1, "Карточки — слева", &check.cards),
+        ] {
+            ui.label(title);
+            if let Some(rect) = region.rect {
+                ui.monospace(format!(
+                    "X={} Y={} · {} × {} px",
+                    rect[0], rect[1], rect[2], rect[3]
+                ));
+            } else {
+                style::caption(ui, "Область не выбрана");
+            }
+            if let Some(texture) = &state.textures[index] {
+                ui.add(
+                    egui::Image::new(texture)
+                        .max_width(ui.available_width())
+                        .max_height(220.)
+                        .shrink_to_fit(),
+                );
+            }
+            if let Some(error) = &region.error {
+                ui.colored_label(AMBER, error);
+            }
+            if region.rect.is_some() {
+                let mut text = if region.text.is_empty() {
+                    "(OCR не вернул текст)".into()
+                } else {
+                    region.text.clone()
+                };
+                ui.add(
+                    egui::TextEdit::multiline(&mut text)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(3)
+                        .interactive(false),
+                );
+            }
+        }
+    }
     action
+}
+
+#[derive(Default)]
+pub struct ScreenState {
+    pub busy: bool,
+    pub check: Option<crate::ocr::ScreenCheck>,
+    pub textures: [Option<egui::TextureHandle>; 2],
+    pub language: String,
+    pub scroll_to_result: bool,
+}
+impl ScreenState {
+    pub fn set(&mut self, ctx: &egui::Context, mut check: crate::ocr::ScreenCheck) {
+        self.busy = false;
+        self.scroll_to_result = true;
+        for (index, region) in [&mut check.selected, &mut check.cards]
+            .into_iter()
+            .enumerate()
+        {
+            self.textures[index] = region.image.take().map(|image| {
+                ctx.load_texture(
+                    format!("screen-check-{index}"),
+                    egui::ColorImage::from_rgba_unmultiplied(
+                        [image.width() as usize, image.height() as usize],
+                        image.as_raw(),
+                    ),
+                    Default::default(),
+                )
+            });
+        }
+        self.check = Some(check);
+    }
 }
 
 fn data(

@@ -3,6 +3,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod account;
 mod app;
+mod diagnostics;
 mod engine;
 mod fit_plan;
 mod fits;
@@ -51,6 +52,8 @@ pub struct Args {
     archive_to: Option<String>,
     #[arg(long)]
     ocr_test: Option<PathBuf>,
+    #[arg(long, default_value = "eng")]
+    ocr_language: String,
     #[arg(long, num_args = 4, allow_hyphen_values = true)]
     capture_test: Vec<i32>,
     #[arg(long, num_args = 2)]
@@ -72,8 +75,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     std::fs::create_dir_all(&directory)?;
     if args.target_test.len() == 2 {
-        let selected = platform::ocr_image(&image::open(&args.target_test[0])?.to_rgba8(), "eng")?;
-        let cards = platform::ocr_document(&image::open(&args.target_test[1])?.to_rgba8(), "eng")?;
+        let selected = platform::ocr_image(
+            &image::open(&args.target_test[0])?.to_rgba8(),
+            &args.ocr_language,
+        )?;
+        let cards = platform::ocr_document(
+            &image::open(&args.target_test[1])?.to_rgba8(),
+            &args.ocr_language,
+        )?;
         let target = ocr::selected_card(&selected, &cards, &engine::Catalog::load()?);
         let value =
             serde_json::json!({"target":target,"selected_text":selected,"cards_text":cards.text()});
@@ -92,14 +101,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|_| "Нужны 4 координаты")?;
         let image = platform::read_screen(rect)?;
         image.save(directory.join("capture.png"))?;
-        let text = platform::ocr_image(&image, "eng")?;
+        let text = platform::ocr_image(&image, &args.ocr_language)?;
         std::fs::write(directory.join("ocr-result.txt"), &text)?;
         println!("{text}");
         return Ok(());
     }
     if let Some(path) = &args.ocr_test {
         let image = image::open(path)?.to_rgba8();
-        let text = platform::ocr_image(&image, "eng")?;
+        let document = platform::ocr_document(&image, &args.ocr_language)?;
+        let text = document.text();
+        std::fs::write(
+            directory.join("ocr-result.json"),
+            serde_json::to_vec_pretty(&document)?,
+        )?;
         let _ = std::fs::write(directory.join("ocr-result.txt"), &text);
         println!("{text}");
         return Ok(());

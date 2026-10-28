@@ -14,32 +14,6 @@ pub struct EftFit {
     pub cargo: Vec<EftCargo>,
 }
 
-fn section_iter(eft_lines: Vec<&str>) -> impl Iterator<Item = Vec<&str>> {
-    let mut section: Vec<&str> = Vec::new();
-
-    let mut eft_lines = eft_lines
-        .into_iter()
-        .skip(1)
-        .fold(Vec::new(), |mut sections, line| {
-            if line.is_empty() {
-                if !section.is_empty() {
-                    sections.push(section.clone());
-                    section.clear();
-                }
-            } else {
-                section.push(line);
-            }
-
-            sections
-        });
-
-    if !section.is_empty() {
-        eft_lines.push(section);
-    }
-
-    eft_lines.into_iter()
-}
-
 fn find_slot_type_index(
     info: &impl InfoName,
     type_id: i32,
@@ -103,27 +77,30 @@ fn parse_quantity(line: &str) -> Option<(&str, i32)> {
     Some((type_name.trim(), quantity))
 }
 
-/* Load an EFT string and return an ESF fit structure. */
+/// Разбираем строки независимо: пустые строки и скопированные отступы
+/// не должны превращать заряд или скрипт в корабельный модуль.
 pub fn load_eft(info: &impl InfoName, eft: &str) -> Result<EftFit, String> {
-    let eft_lines: Vec<&str> = eft.lines().collect();
-
-    /* First line of an EFT always start with "[ship-type,name]". */
-    let header = eft_lines.first().ok_or("Пустой фит")?;
-    if !header.starts_with("[") || !header.ends_with("]") {
-        return Err("Invalid EFT header".to_string());
-    }
-    let header = header.trim_start_matches("[").trim_end_matches("]");
-
-    let header = header.split(",").collect::<Vec<&str>>();
-    let ship_type_name = header[0];
-    let name = header
-        .get(1)
+    let mut lines = eft.trim().trim_start_matches('\u{feff}').trim().lines();
+    let header = lines.next().ok_or("Пустой фит")?.trim();
+    let header = header
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .ok_or("Заголовок фита должен иметь вид [Корабль, Название]")?;
+    let (ship, name) = header
+        .split_once(',')
         .ok_or("В заголовке нужны корпус и название фита")?;
-
-    let mut eft_fit = EftFit {
-        name: name.to_string(),
+    let ship_type_id = info.type_name_to_id(ship.trim());
+    if ship_type_id == 0
+        || info
+            .get_type(ship_type_id)
+            .is_none_or(|t| t.category_id() != 6)
+    {
+        return Err(format!("Неизвестный корпус: {}", ship.trim()));
+    }
+    let mut result = EftFit {
+        name: name.trim().into(),
         esf_fit: data_types::EsfFit {
-            ship_type_id: info.type_name_to_id(ship_type_name),
+            ship_type_id,
             modules: Vec::new(),
             drones: Vec::new(),
             implants: Vec::new(),
@@ -132,133 +109,94 @@ pub fn load_eft(info: &impl InfoName, eft: &str) -> Result<EftFit, String> {
         },
         cargo: Vec::new(),
     };
-
-    let mut module_slots: HashMap<data_types::EsfSlotType, i32> = HashMap::new();
-
-    /* An EFT has sections, which are seperated by a new line. */
-    for section in section_iter(eft_lines) {
-        /* This is a module section if none of the strings end with "x<quantity>". */
-        let is_module_section = !section.iter().all(|line| parse_quantity(line).is_some());
-
-        match is_module_section {
-            true => {
-                for line in section {
-                    let mut line = line.trim();
-                    let mut state = data_types::EsfState::Active;
-
-                    if line.starts_with("[Empty") {
-                        let slot_type = match line {
-                            "[Empty High slot]" => data_types::EsfSlotType::High,
-                            "[Empty Med slot]" => data_types::EsfSlotType::Medium,
-                            "[Empty Low slot]" => data_types::EsfSlotType::Low,
-                            "[Empty Rig slot]" => data_types::EsfSlotType::Rig,
-                            "[Empty Subsystem slot]" => data_types::EsfSlotType::SubSystem,
-                            _ => panic!("Invalid slot type"),
-                        };
-
-                        let index = module_slots.entry(slot_type).or_insert(0);
-                        *index += 1;
-                        continue;
-                    }
-
-                    /* EVE only writes "/offline"; the other three are an
-                     * EVEShip.fit extension, so a fit can pin the state of a
-                     * single module. */
-                    if let Some(position) = line.rfind('/') {
-                        let suffix = match &line[position..] {
-                            "/offline" => Some(data_types::EsfState::Passive),
-                            "/online" => Some(data_types::EsfState::Online),
-                            "/active" => Some(data_types::EsfState::Active),
-                            "/overload" => Some(data_types::EsfState::Overload),
-                            _ => None,
-                        };
-
-                        if let Some(suffix) = suffix {
-                            state = suffix;
-                            line = line[..position].trim_end();
-                        }
-                    }
-
-                    /* Can either be "<Module Name>" or "<Module Name>, <Charge Name>". */
-                    let comma_pos = line.find(",");
-
-                    let (module_name, charge_name) = match comma_pos {
-                        Some(comma_pos) => {
-                            let module_name = line[..comma_pos].trim();
-                            let charge_name = line[comma_pos + 1..].trim();
-                            (module_name, Some(charge_name))
-                        }
-                        None => {
-                            let module_name = line.trim();
-                            (module_name, None)
-                        }
-                    };
-
-                    let module_type_id = info.type_name_to_id(module_name);
-                    let charge_type_id =
-                        charge_name.map(|charge_name| info.type_name_to_id(charge_name));
-
-                    let slot_type_index =
-                        find_slot_type_index(info, module_type_id, &mut module_slots);
-                    if slot_type_index.is_none() {
-                        return Err(format!("Module {} does not fit in any slot", module_name));
-                    }
-                    let (slot_type, index) = slot_type_index.unwrap();
-
-                    let module = data_types::EsfModule {
-                        type_id: module_type_id,
-                        slot: data_types::EsfSlot {
-                            r#type: slot_type,
-                            index,
-                        },
-                        state,
-                        charge: charge_type_id.map(|charge_type_id| data_types::EsfCharge {
-                            type_id: charge_type_id,
-                        }),
-                    };
-
-                    eft_fit.esf_fit.modules.push(module);
+    let mut slots = HashMap::new();
+    for line in lines.map(str::trim).filter(|line| !line.is_empty()) {
+        if line.starts_with("[Empty") {
+            let slot = match line {
+                "[Empty High slot]" => data_types::EsfSlotType::High,
+                "[Empty Med slot]" => data_types::EsfSlotType::Medium,
+                "[Empty Low slot]" => data_types::EsfSlotType::Low,
+                "[Empty Rig slot]" => data_types::EsfSlotType::Rig,
+                "[Empty Subsystem slot]" => data_types::EsfSlotType::SubSystem,
+                _ => return Err(format!("Неизвестный пустой слот: {line}")),
+            };
+            *slots.entry(slot).or_insert(0) += 1;
+            continue;
+        }
+        let (mut text, quantity) = match parse_quantity(line) {
+            Some((name, count)) => {
+                if !(1..=1_000_000_000).contains(&count) {
+                    return Err("Неверное количество предметов".into());
                 }
+                (name, Some(count))
             }
-            false => {
-                let mut items = Vec::new();
-
-                let mut are_drones = true;
-
-                for line in section {
-                    /* Always in the form "<Type Name> x<Quantity>" */
-                    let (type_name, quantity) = parse_quantity(line).unwrap();
-
-                    let type_id = info.type_name_to_id(type_name);
-
-                    let r#type = info.get_type(type_id);
-                    are_drones =
-                        are_drones && r#type.is_some_and(|r#type| r#type.category_id() == 18); // Drone
-
-                    items.push((type_id, quantity));
-                }
-
-                if are_drones {
-                    for (type_id, quantity) in items {
-                        for _ in 0..quantity {
-                            let drone = data_types::EsfDrone {
-                                type_id,
-                                state: data_types::EsfState::Active,
-                            };
-
-                            eft_fit.esf_fit.drones.push(drone);
-                        }
-                    }
-                } else {
-                    for (type_id, quantity) in items {
-                        let cargo = EftCargo { type_id, quantity };
-
-                        eft_fit.cargo.push(cargo);
-                    }
-                }
+            None => (line, None),
+        };
+        let mut state = data_types::EsfState::Active;
+        for (suffix, value) in [
+            ("/offline", data_types::EsfState::Passive),
+            ("/online", data_types::EsfState::Online),
+            ("/active", data_types::EsfState::Active),
+            ("/overload", data_types::EsfState::Overload),
+        ] {
+            if let Some(name) = text.strip_suffix(suffix) {
+                text = name.trim_end();
+                state = value;
+                break;
             }
         }
+        let (name, charge) = text
+            .split_once(',')
+            .map_or((text, None), |(a, b)| (a.trim(), Some(b.trim())));
+        let tid = info.type_name_to_id(name);
+        if tid == 0 {
+            return Err(format!("Неизвестный предмет: {name}"));
+        }
+        let item = info
+            .get_type(tid)
+            .ok_or_else(|| format!("Неизвестный предмет: {name}"))?;
+        // Количество xN обозначает трюм/дронов даже в смешанном блоке.
+        // Заряды и скрипты без xN также относятся к трюму, по одной штуке.
+        if quantity.is_some() || ![7, 32, 66].contains(&item.category_id()) {
+            let count = quantity.unwrap_or(1);
+            if item.category_id() == 18 {
+                if result.esf_fit.drones.len() + count as usize > 100 {
+                    return Err("Слишком много дронов".into());
+                }
+                for _ in 0..count {
+                    result.esf_fit.drones.push(data_types::EsfDrone {
+                        type_id: tid,
+                        state: data_types::EsfState::Active,
+                    });
+                }
+            } else {
+                result.cargo.push(EftCargo {
+                    type_id: tid,
+                    quantity: count,
+                });
+            }
+            continue;
+        }
+        let (slot, index) = find_slot_type_index(info, tid, &mut slots)
+            .ok_or_else(|| format!("Модуль {name} не подходит ни в один слот"))?;
+        let charge = charge
+            .map(|name| {
+                let type_id = info.type_name_to_id(name);
+                if info.get_type(type_id).is_none_or(|t| t.category_id() != 8) {
+                    return Err(format!("Неизвестный заряд: {name}"));
+                }
+                Ok(data_types::EsfCharge { type_id })
+            })
+            .transpose()?;
+        result.esf_fit.modules.push(data_types::EsfModule {
+            type_id: tid,
+            slot: data_types::EsfSlot {
+                r#type: slot,
+                index,
+            },
+            state,
+            charge,
+        });
     }
-
-    Ok(eft_fit)
+    Ok(result)
 }
