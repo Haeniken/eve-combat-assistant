@@ -17,7 +17,7 @@ use crate::{
     },
 };
 use eframe::egui::{self, Color32, RichText, Vec2, ViewportCommand, ViewportId};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -65,6 +65,9 @@ pub struct CombatApp {
     pilot_status: String,
     pilot_error: Option<String>,
     pilot_generation: u64,
+    pilot_rating: Option<crate::pilot::Rating>,
+    rating_pilot: String,
+    rating_error: Option<String>,
     tab: usize,
     syncing: bool,
     sync_progress: Option<crate::sources::UpdateProgress>,
@@ -81,7 +84,6 @@ pub struct CombatApp {
     selection_start: Option<egui::Pos2>,
     selection_background: Option<([i32; 4], egui::TextureHandle)>,
     root_before_selection: Option<egui::Rect>,
-    ship_texture: egui::TextureHandle,
     root_shot: bool,
     settings_frames: usize,
     settings_shot: bool,
@@ -124,17 +126,6 @@ impl CombatApp {
             distance: None,
             angular: 0.,
         });
-        let image = image::load_from_memory(include_bytes!("../resources/ships/587.png"))
-            .expect("ship image")
-            .to_rgba8();
-        let texture = cc.egui_ctx.load_texture(
-            "Rifter",
-            egui::ColorImage::from_rgba_unmultiplied(
-                [image.width() as usize, image.height() as usize],
-                image.as_raw(),
-            ),
-            Default::default(),
-        );
         let mut style = egui::Style {
             animation_time: 0.,
             visuals: egui::Visuals::dark(),
@@ -199,6 +190,9 @@ impl CombatApp {
             pilot_status: String::new(),
             pilot_error: None,
             pilot_generation: 0,
+            pilot_rating: None,
+            rating_pilot: String::new(),
+            rating_error: None,
             syncing: false,
             sync_progress: None,
             ocr_epoch: 0,
@@ -214,7 +208,6 @@ impl CombatApp {
             selection_start: None,
             selection_background: None,
             root_before_selection: None,
-            ship_texture: texture,
             root_shot: false,
             settings_frames: 0,
             settings_shot: false,
@@ -250,7 +243,7 @@ impl CombatApp {
         }
     }
     fn request_pilot(&mut self) {
-        if !self.settings.auto_pilot_lookup || self.args.demo {
+        if !(self.settings.auto_pilot_lookup || self.settings.pilot_rating) || self.args.demo {
             return;
         }
         if let Some(target) = self.target.clone()
@@ -258,7 +251,9 @@ impl CombatApp {
         {
             self.pilot_generation = self.generation;
             self.pilot_error = None;
-            self.pilot_status = "Поиск фита пилота в фоне…".into();
+            if self.settings.auto_pilot_lookup {
+                self.pilot_status = "Поиск фита пилота в фоне…".into();
+            }
             self.workers.trace.job(self.settings.ocr_debug,json!({"generation":self.generation,"job":"ui","target_ship":target.ship,"pilot":target.pilot})).event("pilot_enqueued",json!({"after":"local_analysis_displayed"}));
             let _ = self.workers.network.send(NetworkRequest {
                 generation: self.generation,
@@ -350,6 +345,9 @@ impl CombatApp {
         self.pilot_generation = 0;
         self.pilot_status.clear();
         self.pilot_error = None;
+        self.pilot_rating = None;
+        self.rating_pilot.clear();
+        self.rating_error = None;
     }
     fn messages(&mut self, ctx: &egui::Context) {
         while let Ok(message) = self.rx.try_recv() {
@@ -431,6 +429,24 @@ impl CombatApp {
                     }
                 }
                 Message::Status(text) => self.status = text,
+                Message::PilotRating(generation, pilot, result) => {
+                    if (generation == self.pilot_generation || generation == self.generation)
+                        && self.target.as_ref().is_some_and(|t| t.pilot == pilot)
+                        && self.settings.pilot_rating
+                    {
+                        if self.rating_pilot != pilot {
+                            self.pilot_rating = None;
+                        }
+                        self.rating_pilot = pilot;
+                        match result {
+                            Ok(rating) => {
+                                self.pilot_rating = Some(rating);
+                                self.rating_error = None;
+                            }
+                            Err(error) => self.rating_error = Some(error),
+                        }
+                    }
+                }
                 Message::PilotStatus(generation, ship, pilot, text) => {
                     if generation == self.pilot_generation
                         && self
@@ -616,20 +632,30 @@ impl CombatApp {
         self.header(ui);
         let target = self.target.clone();
         ui.horizontal(|ui| {
-            if target.as_ref().is_some_and(|t| t.ship == "Rifter") {
-                ui.image((self.ship_texture.id(), Vec2::new(88., 70.)));
+            let rating = if self.settings.pilot_rating {
+                self.pilot_rating.as_ref()
             } else {
-                let (r, _) = ui.allocate_exact_size(Vec2::new(88., 70.), egui::Sense::hover());
-                ui.painter()
-                    .circle_stroke(r.center(), 23., egui::Stroke::new(1., style::LINE));
-                ui.painter().line_segment(
-                    [
-                        r.center() - Vec2::new(28., 0.),
-                        r.center() + Vec2::new(28., 0.),
-                    ],
-                    egui::Stroke::new(1., CYAN),
-                );
+                None
             }
+            .filter(|_| {
+                target
+                    .as_ref()
+                    .is_some_and(|t| t.pilot == self.rating_pilot)
+            });
+            let state = if !self.settings.pilot_rating {
+                "Соло-рейтинг выключен в настройках"
+            } else if target.as_ref().is_none_or(|t| t.pilot.trim().is_empty()) {
+                "Выберите пилота для соло-оценки"
+            } else if self.rating_pilot == target.as_ref().map(|t| t.pilot.as_str()).unwrap_or("") {
+                self.rating_error.as_deref().unwrap_or(if rating.is_some() {
+                    ""
+                } else {
+                    "Загрузка соло-статистики zKillboard…"
+                })
+            } else {
+                "Загрузка соло-статистики zKillboard…"
+            };
+            style::pilot_rating(ui, rating, state);
             ui.vertical(|ui| {
                 ui.label(
                     RichText::new(
@@ -683,15 +709,20 @@ impl CombatApp {
             .and_then(|r| r["incoming"]["hint"].as_str())
             .unwrap_or("Выберите вариант фита")
             .to_string();
-        let warnings = diagnostic
-            .map(|r| {
-                crate::model::array(&r["warnings"])
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let own_result = self.matchup.as_ref().and_then(|m| m.own.as_ref());
+        let mut approximation_hint = String::new();
+        for (label, result) in [("Противник", diagnostic), ("Свой фит", own_result)]
+        {
+            if let Some(result) = result {
+                for estimate in array(&result["approximations"]) {
+                    approximation_hint += &format!(
+                        "{label}: {} → {}\n",
+                        s(estimate, "original_name"),
+                        s(estimate, "estimated_name")
+                    );
+                }
+            }
+        }
         if let Some(a) = &advice {
             let action = if let Some(d) = self.target.as_ref().and_then(|t| t.distance) {
                 if d > a.high {
@@ -850,8 +881,8 @@ impl CombatApp {
             );
             style::metric(&mut cols[1], "СКОРОСТЬ", speed, speed == "ОН БЫСТРЕЕ");
         });
-        if !warnings.is_empty() {
-            style::caption(ui, "Abyssal: параметры модулей неизвестны");
+        if !approximation_hint.is_empty() {
+            style::abyssal_alert(ui, &approximation_hint);
         }
         ui.add_space(4.);
         if let Some(m) = &self.matchup

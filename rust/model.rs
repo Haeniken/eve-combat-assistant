@@ -41,6 +41,7 @@ pub struct Settings {
     pub language: String,
     #[serde(alias = "auto_sync")]
     pub auto_pilot_lookup: bool,
+    pub pilot_rating: bool,
     pub pause_outside_eve: bool,
 }
 impl Default for Settings {
@@ -80,6 +81,7 @@ impl Default for Settings {
             excluded: Vec::new(),
             language: "eng".into(),
             auto_pilot_lookup: true,
+            pilot_rating: true,
             pause_outside_eve: true,
         }
     }

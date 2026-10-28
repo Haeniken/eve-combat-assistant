@@ -21,6 +21,76 @@ pub fn separator(ui: &mut Ui) {
         .line_segment([rect.left_top(), rect.right_top()], Stroke::new(1., LINE));
     ui.add_space(7.);
 }
+pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &str) {
+    let colors = [
+        Color32::from_rgb(231, 91, 91),
+        Color32::from_rgb(240, 148, 69),
+        Color32::from_rgb(231, 210, 96),
+        Color32::from_rgb(116, 205, 118),
+        Color32::from_rgb(73, 213, 201),
+        Color32::from_rgb(189, 131, 239),
+    ];
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(88., 70.), Sense::hover());
+    let center = rect.left_top() + Vec2::new(44., 27.);
+    let color = rating
+        .and_then(|r| r.tier())
+        .map(|i| colors[i])
+        .unwrap_or(MUTED);
+    let p = ui.painter();
+    p.circle_filled(center, 25., color.gamma_multiply(0.08));
+    p.circle_stroke(center, 25., Stroke::new(1.8, color));
+    p.text(
+        center + Vec2::new(0., -11.),
+        Align2::CENTER_CENTER,
+        "SOLO",
+        FontId::proportional(8.),
+        MUTED,
+    );
+    p.text(
+        center + Vec2::new(0., 6.),
+        Align2::CENTER_CENTER,
+        rating
+            .and_then(|r| r.score)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "—".into()),
+        FontId::proportional(18.),
+        color,
+    );
+    if let Some(marker) = rating.and_then(|r| r.group_marker()) {
+        let color = if marker == "БЛОБ" { AMBER } else { MUTED };
+        let origin = rect.left_top() + Vec2::new(13., 61.);
+        // A separate cluster of ships; it never changes the solo ring's color.
+        for offset in [Vec2::new(0., 0.), Vec2::new(7., -3.), Vec2::new(7., 3.)] {
+            let c = origin + offset;
+            p.line_segment(
+                [c + Vec2::new(-2., 2.), c + Vec2::new(0., -2.)],
+                Stroke::new(1., color),
+            );
+            p.line_segment(
+                [c + Vec2::new(0., -2.), c + Vec2::new(2., 2.)],
+                Stroke::new(1., color),
+            );
+        }
+        p.text(
+            rect.left_top() + Vec2::new(31., 61.),
+            Align2::LEFT_CENTER,
+            marker,
+            FontId::proportional(9.),
+            color,
+        );
+    }
+    response.on_hover_text(
+        rating
+            .map(|r| {
+                let mut hint = r.hint();
+                if !state.is_empty() {
+                    hint += &format!("\n{state}");
+                }
+                hint
+            })
+            .unwrap_or_else(|| state.to_string()),
+    );
+}
 pub fn gear(ui: &mut Ui) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(28.), Sense::click());
     let p = ui.painter();
@@ -157,6 +227,34 @@ pub fn variant(
     );
     response.on_hover_text(format!("{title}\nДвойной щелчок — полный фит"))
 }
+/// A flat fitted layer has no effective hole. Only then show a distinct base hint.
+fn resistance_holes(values: [f64; 4], base: Option<[f64; 4]>) -> ([bool; 4], bool) {
+    let minima = |values: [f64; 4]| {
+        let low = values.into_iter().fold(f64::INFINITY, f64::min);
+        let high = values.into_iter().fold(f64::NEG_INFINITY, f64::max);
+        values.map(|v| high - low >= 0.01 && (v - low).abs() < 0.01)
+    };
+    let fitted = minima(values);
+    if fitted.iter().any(|v| *v) {
+        (fitted, false)
+    } else {
+        (base.map(minima).unwrap_or([false; 4]), true)
+    }
+}
+
+pub fn abyssal_alert(ui: &mut Ui, details: &str) {
+    egui::Frame::new()
+        .fill(AMBER.gamma_multiply(0.08))
+        .stroke(Stroke::new(1., AMBER.gamma_multiply(0.65)))
+        .inner_margin(7.)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("!  Присутствуют Abyssal модули, оценка не точна").size(11.).color(AMBER));
+        })
+        .response
+        .on_hover_text(format!("Исходный модуль и параметры мутации не указаны в публичной потере. Для расчёта подставлен обычный аналог T2 того же размера; для семейств без T2 — существующий обычный аналог.\n{details}"));
+}
+
 pub fn resistance(ui: &mut Ui, values: [f64; 4], base: Option<[f64; 4]>) {
     let colors = [
         Color32::from_rgb(100, 175, 214),
@@ -164,27 +262,64 @@ pub fn resistance(ui: &mut Ui, values: [f64; 4], base: Option<[f64; 4]>) {
         Color32::from_rgb(181, 193, 203),
         AMBER,
     ];
+    let (holes, base_only) = resistance_holes(values, base);
     ui.columns(4, |cols| {
         for i in 0..4 {
-            caption(&mut cols[i], ["EM","THERM","KIN","EXP"][i]);
-            let hint=if let Some(base)=base {format!("Итог {:.2}%\nБаза без модулей {:.2}%\nИзменение от модулей {:+.2} п.п.\nНавыки V, без перегрева. Это пример опубликованного фита, а не измерение текущего корабля.",values[i],base[i],values[i]-base[i])}else{format!("Итог {:.2}% · база корпуса недоступна",values[i])};
-            cols[i].label(RichText::new(format!("{:.0}%",values[i])).size(12.).color(colors[i])).on_hover_text(&hint);
-            let (rect,response)=cols[i].allocate_exact_size(Vec2::new(cols[i].available_width(),5.),Sense::hover());
+            let (cell, response) = cols[i].allocate_exact_size(Vec2::new(cols[i].available_width(), 74.), Sense::hover());
+            let p = cols[i].painter();
+            let highlight = if base_only { CYAN } else { AMBER };
+            if holes[i] {
+                p.rect_filled(cell, 2., highlight.gamma_multiply(0.08));
+                p.rect_stroke(cell, 2., Stroke::new(1.5, highlight), StrokeKind::Inside);
+                p.text(cell.right_top()+Vec2::new(-5.,7.), Align2::RIGHT_TOP,
+                    if base_only {"БАЗА"} else {"ДЫРА"}, FontId::proportional(9.), highlight);
+            }
+            p.text(cell.left_top()+Vec2::new(5.,7.), Align2::LEFT_TOP,
+                ["EM","THERM","KIN","EXP"][i], FontId::proportional(10.), MUTED);
+            p.text(cell.left_top()+Vec2::new(5.,24.), Align2::LEFT_TOP,
+                format!("{:.0}%",values[i]), FontId::proportional(14.), colors[i]);
+            let rect = Rect::from_min_size(cell.left_top()+Vec2::new(5.,46.),Vec2::new((cell.width()-10.).max(0.),5.));
             let segment=|from:f64,to:f64|Rect::from_min_max(egui::pos2(rect.left()+rect.width()*(from/100.).clamp(0.,1.) as f32,rect.top()),egui::pos2(rect.left()+rect.width()*(to/100.).clamp(0.,1.) as f32,rect.bottom()));
-            cols[i].painter().rect_filled(rect,0.,LINE);
+            p.rect_filled(rect,0.,LINE);
             if let Some(base)=base {
                 let dark=colors[i].gamma_multiply(0.42);
-                cols[i].painter().rect_filled(segment(0.,values[i].min(base[i])),0.,dark);
-                if values[i]>=base[i] {cols[i].painter().rect_filled(segment(base[i],values[i]),0.,colors[i]);}
+                p.rect_filled(segment(0.,values[i].min(base[i])),0.,dark);
+                if values[i]>=base[i] {p.rect_filled(segment(base[i],values[i]),0.,colors[i]);}
                 else {
-                    // A debuff (e.g. Polarized) removes the base instead of adding a bright segment.
                     let removed=segment(values[i],base[i]);
-                    cols[i].painter().rect_stroke(removed,0.,Stroke::new(1.,AMBER),egui::StrokeKind::Inside);
+                    p.rect_stroke(removed,0.,Stroke::new(1.,AMBER),StrokeKind::Inside);
                 }
                 let base_label=if (base[i]-base[i].round()).abs()<0.005 {format!("{:.0}",base[i])}else{format!("{:.1}",base[i])};
-                caption(&mut cols[i],&format!("база {}%",base_label.replace('.',",")));
-            }else{cols[i].painter().rect_filled(segment(0.,values[i]),0.,colors[i]);}
+                p.text(cell.left_top()+Vec2::new(5.,57.),Align2::LEFT_TOP,format!("база {}%",base_label.replace('.',",")),FontId::proportional(9.),if holes[i] && base_only {CYAN} else {MUTED});
+            }else{p.rect_filled(segment(0.,values[i]),0.,colors[i]);}
+            let mut hint=if let Some(base)=base {format!("Итог {:.2}%\nБаза без модулей {:.2}%\nИзменение от модулей {:+.2} п.п.\nНавыки V, без перегрева. Это пример опубликованного фита, а не измерение текущего корабля.",values[i],base[i],values[i]-base[i])}else{format!("Итог {:.2}% · база недоступна",values[i])};
+            if holes[i] {hint+=if base_only {"\nБазовая уязвимость. Итоговые резисты равны: этот тип не получает преимущества по фактической защите."} else {"\nДыра: минимальный итоговый резист выбранного слоя."};}
             response.on_hover_text(hint);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn holes_distinguish_fitted_minima_from_base_ties_and_uniform_layers() {
+        assert_eq!(
+            resistance_holes([20., 40., 20., 60.], Some([0., 20., 40., 50.])),
+            ([true, false, true, false], false)
+        );
+        assert_eq!(
+            resistance_holes([65.; 4], Some([0., 20., 40., 50.])),
+            ([true, false, false, false], true)
+        );
+        assert_eq!(
+            resistance_holes([65.; 4], Some([27.5; 4])),
+            ([false; 4], true)
+        );
+        assert_eq!(
+            resistance_holes([0.; 4], Some([40.; 4])),
+            ([false; 4], true)
+        );
+        assert_eq!(resistance_holes([65.; 4], None), ([false; 4], true));
+    }
 }

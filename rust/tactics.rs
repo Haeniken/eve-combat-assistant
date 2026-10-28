@@ -420,16 +420,19 @@ pub fn incoming_summary(result: &Value, original_fit: &Value, catalog: &Catalog)
         for (i, value) in damage.iter().enumerate() {
             known_types[i] |= *value > 0.;
         }
+        let original_type = module["approximation"]
+            .get("original_type_id")
+            .unwrap_or(&module["id"]);
         let assumed = !charge.is_null()
             && !array(&original_fit["modules"]).iter().any(|m| {
-                m["type_id"] == module["id"]
+                &m["type_id"] == original_type
                     && m["slot"]["index"] == module["slot_index"]
                     && !m["charge"].is_null()
             });
-        sources.push(json!({"weapon":module["name"],"charge":charge.get("name"),"assumed_charge":assumed,"damage":damage,"max_range_m":if id(module,"group")==72 {Some(n(&module["attributes"],"empFieldRange"))}else{None}}));
+        sources.push(json!({"weapon":module["name"],"approximation":module.get("approximation"),"charge":charge.get("name"),"assumed_charge":assumed,"damage":damage,"max_range_m":if id(module,"group")==72 {Some(n(&module["attributes"],"empFieldRange"))}else{None}}));
     }
     let total = sum(&mix);
-    let percentages = if !uncertain && total > 0. {
+    let percentages = if total > 0. {
         Some(mix.map(|v| v / total * 100.))
     } else {
         None
@@ -468,9 +471,15 @@ pub fn incoming_summary(result: &Value, original_fit: &Value, catalog: &Catalog)
         if source["assumed_charge"] == true {
             hint += " (подставлен стандартный совместимый заряд)";
         }
+        if source["approximation"].is_object() {
+            hint += &format!(
+                " (аналог для {})",
+                s(&source["approximation"], "original_name")
+            );
+        }
     }
     if uncertain {
-        hint += "\nПараметры Abyssal неизвестны: точные доли урона недоступны.";
+        hint += "\nПрисутствуют Abyssal модули, оценка не точна. Доли рассчитаны по обычным аналогам; исходный модуль и результат мутации неизвестны.";
     }
     json!({"label":if label.is_empty(){"—"}else{&label},"percentages":percentages,"sources":sources,"uncertain":uncertain,"hint":hint})
 }

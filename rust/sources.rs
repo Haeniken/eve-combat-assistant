@@ -420,6 +420,48 @@ impl Sources {
         )?;
         Ok(total)
     }
+    fn resolve_pilot(&mut self, name: &str) -> Result<Option<i64>, String> {
+        if let Some(character) = self
+            .store
+            .meta(&format!("character:{}", name.to_lowercase()))
+            .and_then(|v| v.as_i64())
+            .filter(|id| *id > 0)
+        {
+            return Ok(Some(character));
+        }
+        let resolved = self.request(
+            "https://esi.evetech.net/universe/ids/",
+            Some(&json!([name])),
+            86400,
+        )?;
+        let character = array(&resolved["characters"])
+            .iter()
+            .find(|r| s(r, "name").to_lowercase() == name.to_lowercase())
+            .map(|r| id(r, "id"))
+            .filter(|id| *id > 0);
+        if let Some(character) = character {
+            self.store.set_meta(
+                &format!("character:{}", name.to_lowercase()),
+                &json!(character),
+            )?;
+        }
+        Ok(character)
+    }
+    pub fn pilot_rating(&mut self, name: &str) -> Result<crate::pilot::Rating, String> {
+        let character = self.resolve_pilot(name)?.ok_or("Пилот не найден в ESI")?;
+        let stats = self.request(
+            &format!("https://zkillboard.com/api/stats/characterID/{character}/"),
+            None,
+            3600,
+        )?;
+        let rating = crate::pilot::Rating::from_stats(&stats, character)?;
+        self.store.set_meta(
+            &format!("pilot_rating:v1:{character}"),
+            &serde_json::to_value(&rating).map_err(|e| e.to_string())?,
+        )?;
+        self.record("pilot_rating_ready", json!({"pilot":name,"rating":rating}));
+        Ok(rating)
+    }
     pub fn sync_pilot(
         &mut self,
         name: &str,
@@ -430,15 +472,7 @@ impl Sources {
             return Ok(());
         }
         progress("Поиск фита пилота…".into());
-        let resolved = self.request(
-            "https://esi.evetech.net/universe/ids/",
-            Some(&json!([name])),
-            86400,
-        )?;
-        let character = array(&resolved["characters"])
-            .iter()
-            .find(|r| s(r, "name").to_lowercase() == name.to_lowercase())
-            .map(|r| id(r, "id"));
+        let character = self.resolve_pilot(name)?;
         let Some(character) = character else {
             self.record("pilot_not_found", json!({"pilot":name}));
             return Ok(());
@@ -696,6 +730,32 @@ mod tests {
         let path = std::env::temp_dir().join(crate::diagnostics::trace_id("eve-source-test"));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+    #[test]
+    fn pilot_rating_uses_cached_identity_and_stats_independently_of_fitting() {
+        let directory = temp();
+        let store = Store::open_with_seed(&directory, None).unwrap();
+        store.set_meta("character:pilot", &json!(123)).unwrap();
+        store.cache("https://zkillboard.com/api/stats/characterID/123/",&json!({"type":"characterID","id":123,"shipsDestroyed":1000,"shipsLost":30,"soloKills":70,"soloLosses":30,"labels":{"#:10+":{"shipsDestroyed":800}}}),3600).unwrap();
+        let mut source = Sources::new(
+            store,
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        source.set_trace(
+            crate::diagnostics::Trace::new(directory.join("debug"))
+                .job(true, json!({"job_id":"rating-test"})),
+        );
+        let rating = source.pilot_rating("Pilot").unwrap();
+        assert_eq!(rating.group_marker(), Some("БЛОБ"));
+        assert_eq!(
+            crate::pilot::cached(&source.store, "PILOT").unwrap().score,
+            rating.score
+        );
+        assert!(crate::pilot::cached(&source.store, "Someone Else").is_none());
+        let log = std::fs::read_to_string(directory.join("debug/fits.jsonl")).unwrap();
+        assert!(log.contains("http_cache_hit") && log.contains("pilot_rating_ready"));
+        assert!(!log.contains("http_attempt") && !log.contains("/api/losses/"));
     }
     #[test]
     fn http_retry_cache_and_trace_redact_secrets_and_response_body() {

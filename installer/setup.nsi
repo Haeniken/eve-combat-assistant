@@ -27,7 +27,7 @@ SetCompressor zlib
 !ifndef PRODUCT_NAME
   !define PRODUCT_NAME "EVE Combat Assistant"
 !endif
-!define PRODUCT_VERSION "0.3.5"
+!define PRODUCT_VERSION "0.3.6"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_ID}"
 !define BACKGROUND "09131D"
 !define FOREGROUND "D7E5ED"
@@ -41,7 +41,7 @@ BrandingText " "
 ShowInstDetails hide
 ShowUninstDetails hide
 InstallColors ${FOREGROUND} ${BACKGROUND}
-VIProductVersion "0.3.5.0"
+VIProductVersion "0.3.6.0"
 VIAddVersionKey ProductName "${PRODUCT_NAME}"
 VIAddVersionKey FileDescription "Tactical overlay installer"
 VIAddVersionKey FileVersion "${PRODUCT_VERSION}"
@@ -183,6 +183,7 @@ Section "Бортовые системы"
   DetailPrint "Загрузка корабельных протоколов..."
   SetDetailsPrint none
   File "${PAYLOAD}/README.txt"
+  File "${PAYLOAD}/PILOT_RATING.md"
   File "${PAYLOAD}/THIRD_PARTY_NOTICES.md"
   File /r "${PAYLOAD}/licenses"
   SetDetailsPrint both
@@ -274,6 +275,7 @@ Section "Uninstall"
   Delete "$INSTDIR\close_app.ps1"
   Delete "$INSTDIR\icon.ico"
   Delete "$INSTDIR\README.txt"
+  Delete "$INSTDIR\PILOT_RATING.md"
   Delete "$INSTDIR\THIRD_PARTY_NOTICES.md"
   RMDir /r "$INSTDIR\licenses"
   Delete "$INSTDIR\seed\seed.sqlite3"

@@ -44,6 +44,7 @@ pub enum Message {
     Status(String),
     PilotReady(u64, String, String, Result<(), String>),
     PilotStatus(u64, String, String, String),
+    PilotRating(u64, String, Result<crate::pilot::Rating, String>),
     SyncDone(Result<usize, String>),
     SyncProgress(crate::sources::UpdateProgress),
     Ocr(u64, Result<Option<Target>, String>, Option<String>),
@@ -282,13 +283,7 @@ impl AnalysisCore {
                     });
                     match advice {
                         Some(Ok(a)) => (Some(a), Some(result), None),
-                        Some(Err(e)) => {
-                            let error = if crate::model::array(&result["warnings"]).is_empty() {
-                                e
-                            } else {
-                                "Неизвестны параметры Abyssal-модулей; точное сравнение недоступно"
-                                    .into()
-                            };
+                        Some(Err(error)) => {
                             result["comparison_error"] = json!(error);
                             (None, Some(result), Some(error))
                         }
@@ -297,7 +292,7 @@ impl AnalysisCore {
                 }
                 Err(error) => (None, None, Some(error)),
             };
-            trace.event("comparison_ready",json!({"variant_key":variant.key,"personal":variant.personal,"error":error,"elapsed_ms":comparison_started.elapsed().as_millis(),"hull_id":result.as_ref().map(|r|&r["hull"]["id"]),"defense":result.as_ref().map(|r|&r["summary"]["defense"]),"base_defense":result.as_ref().map(|r|&r["base_defense"]),"incoming":result.as_ref().map(|r|&r["incoming"]),"warnings":result.as_ref().map(|r|&r["warnings"]),"advice":advice}));
+            trace.event("comparison_ready",json!({"variant_key":variant.key,"personal":variant.personal,"error":error,"elapsed_ms":comparison_started.elapsed().as_millis(),"hull_id":result.as_ref().map(|r|&r["hull"]["id"]),"defense":result.as_ref().map(|r|&r["summary"]["defense"]),"base_defense":result.as_ref().map(|r|&r["base_defense"]),"incoming":result.as_ref().map(|r|&r["incoming"]),"warnings":result.as_ref().map(|r|&r["warnings"]),"approximations":result.as_ref().map(|r|&r["approximations"]),"own_approximations":out.own.as_ref().map(|r|&r["approximations"]),"advice":advice}));
             if self.cache.len() >= 64 {
                 self.cache.clear();
             }
@@ -358,6 +353,20 @@ impl Workers {
                         &ctx,
                         Message::Analyzed(request.generation, request.phase, result.map(Box::new)),
                     );
+                    if request.settings.pilot_rating
+                        && let Some(rating) =
+                            crate::pilot::cached(&core.store, &request.target.pilot)
+                    {
+                        emit(
+                            &event_tx,
+                            &ctx,
+                            Message::PilotRating(
+                                request.generation,
+                                request.target.pilot.clone(),
+                                Ok(rating),
+                            ),
+                        );
+                    }
                     if request.phase == AnalysisPhase::Local
                         && !request.target.pilot.is_empty()
                         && core
@@ -467,6 +476,22 @@ impl Workers {
                         emit(&event_tx, &ctx, Message::SyncDone(result));
                     } else {
                         let started = std::time::Instant::now();
+                        if request.settings.pilot_rating {
+                            let rating = source.pilot_rating(&request.target.pilot);
+                            trace.event("pilot_rating_end",json!({"error":rating.as_ref().err(),"rating":rating.as_ref().ok()}));
+                            emit(
+                                &event_tx,
+                                &ctx,
+                                Message::PilotRating(
+                                    request.generation,
+                                    request.target.pilot.clone(),
+                                    rating,
+                                ),
+                            );
+                        }
+                        if !request.settings.auto_pilot_lookup {
+                            continue;
+                        }
                         let result =
                             source.sync_pilot(&request.target.pilot, ship.unwrap(), &progress);
                         trace.event("network_end",json!({"error":result.as_ref().err(),"elapsed_ms":started.elapsed().as_millis()}));
@@ -962,6 +987,6 @@ pub fn diagnose(
     let started = std::time::Instant::now();
     let m = core.analyze(&request)?;
     Ok(
-        json!({"version":env!("CARGO_PKG_VERSION"),"ship":ship,"seed":m.seed,"seed_error":m.seed_error,"report":m.pop.report,"variants":m.variants.iter().enumerate().map(|(i,v)|{let r=m.results.get(i).and_then(Option::as_ref);json!({"title":v.title,"percent":v.percent,"personal":v.personal,"defense":r.map(|r|&r["summary"]["defense"]),"base_defense":r.map(|r|&r["base_defense"]),"incoming":r.map(|r|&r["incoming"]),"comparison_error":r.map(|r|&r["comparison_error"]),"warnings":r.map(|r|&r["warnings"])})}).collect::<Vec<_>>(),"failures":m.failures,"own_evaluated":m.own.is_some(),"advice_count":m.advice.iter().filter(|v|v.is_some()).count(),"elapsed_ms":started.elapsed().as_millis()}),
+        json!({"version":env!("CARGO_PKG_VERSION"),"ship":ship,"seed":m.seed,"seed_error":m.seed_error,"report":m.pop.report,"variants":m.variants.iter().enumerate().map(|(i,v)|{let r=m.results.get(i).and_then(Option::as_ref);json!({"title":v.title,"percent":v.percent,"personal":v.personal,"defense":r.map(|r|&r["summary"]["defense"]),"base_defense":r.map(|r|&r["base_defense"]),"incoming":r.map(|r|&r["incoming"]),"comparison_error":r.map(|r|&r["comparison_error"]),"warnings":r.map(|r|&r["warnings"]),"approximations":r.map(|r|&r["approximations"])})}).collect::<Vec<_>>(),"failures":m.failures,"own_evaluated":m.own.is_some(),"advice_count":m.advice.iter().filter(|v|v.is_some()).count(),"elapsed_ms":started.elapsed().as_millis()}),
     )
 }

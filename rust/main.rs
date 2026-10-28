@@ -9,6 +9,7 @@ mod fit_plan;
 mod fits;
 mod model;
 mod ocr;
+mod pilot;
 mod platform;
 mod seed;
 mod settings_ui;

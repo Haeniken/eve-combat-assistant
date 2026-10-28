@@ -31,6 +31,7 @@ $licenses = Join-Path $destination 'licenses'
 New-Item -ItemType Directory -Path $licenses -Force | Out-Null
 Copy-Item (Join-Path $LicenseDirectory '*') $licenses -Recurse -Force
 Copy-Item (Join-Path $root 'resources\WINDOWS_README.txt') (Join-Path $destination 'README.txt') -Force
+Copy-Item (Join-Path $root 'docs\pilot-rating.md') (Join-Path $destination 'PILOT_RATING.md') -Force
 Get-ChildItem $destination -Recurse -File | Where-Object { $_.LastWriteTime.Year -lt 1980 -or $_.LastWriteTime.Year -gt 2107 } | ForEach-Object { $_.LastWriteTime = [datetime]'2000-01-01' }
 $archive = Join-Path $dist 'EVECombatAssistant-windows-x64.zip'
 # Create mode streams entries; Compress-Archive uses Update mode and buffers large files.

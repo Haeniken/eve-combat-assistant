@@ -30,6 +30,44 @@ fn five() -> i32 {
     5
 }
 
+/// Killmails identify the Abyssal type, not the original item or its rolled values.
+/// Use an explicit, repeatable estimate instead of the empty dynamic SDE attributes.
+fn abyssal_surrogate(sde: &sde::Sde, type_id: i32) -> Result<Option<i32>, String> {
+    let Some(module) = sde.get_type(type_id) else {
+        return Ok(None);
+    };
+    if module.category_id() != 7 || !module.name().contains("Abyssal ") {
+        return Ok(None);
+    }
+    let plain = module.name().replace("Abyssal ", "");
+    let special = match plain.as_str() {
+        "Small Armor Plates" => Some("200mm Steel Plates II"),
+        "Medium Armor Plates" => Some("800mm Steel Plates II"),
+        "Large Armor Plates" => Some("1600mm Steel Plates II"),
+        "Mining Laser" => Some("Miner II"),
+        // These families have no T2 version in the bundled SDE.
+        "Deep Core Mining Laser" => Some("Deep Core Mining Laser I"),
+        "Deep Core Strip Miner" => Some("ORE Deep Core Strip Miner"),
+        _ => None,
+    };
+    let candidates = if let Some(name) = special {
+        vec![name.to_owned()]
+    } else {
+        vec![format!("{plain} II"), format!("{plain} I"), plain]
+    };
+    for name in candidates {
+        if let Some(base) = sde.type_name_to_id(&name).and_then(|id| sde.get_type(id))
+            && base.published()
+            && base.category_id() == module.category_id()
+            && base.group_id() == module.group_id()
+            && !base.name().contains("Abyssal")
+        {
+            return Ok(Some(base.id()));
+        }
+    }
+    Err(format!("Не найден обычный аналог для {}", module.name()))
+}
+
 fn named(
     sde: &sde::Sde,
     attrs: &BTreeMap<i32, calculate::item::Attribute>,
@@ -177,6 +215,18 @@ fn run(req: Request) -> Result<Value, String> {
             }
         }
     }
+    let mut approximations = Vec::new();
+    for (index, module) in fit.modules.iter_mut().enumerate() {
+        if let Some(estimated) = abyssal_surrogate(sde, module.type_id)? {
+            let original = type_json(sde, module.type_id)?;
+            let surrogate = type_json(sde, estimated)?;
+            approximations.push(json!({"module_index":index,"original_type_id":module.type_id,
+                "original_name":original["name"],"estimated_type_id":estimated,"estimated_name":surrogate["name"],
+                "slot":format!("{:?}",module.slot.r#type).to_lowercase(),"slot_index":module.slot.index,
+                "basis":"original_unknown_standard_analogue","tech_level":surrogate["attributes"]["techLevel"]}));
+            module.type_id = estimated;
+        }
+    }
     // EFT перечисляет запас боеприпасов отдельно. Если заряд не указан у модуля,
     // берём первый совместимый из трюма: сам импорт не должен давать нулевой DPS.
     for module in &mut fit.modules {
@@ -252,15 +302,20 @@ fn run(req: Request) -> Result<Value, String> {
             skills.insert(id, level);
         }
     }
-    let fit_json = json!({"ship_type_id": fit.ship_type_id,
+    let mut fit_json = json!({"ship_type_id": fit.ship_type_id,
         "modules": fit.modules.iter().map(|m| json!({"type_id":m.type_id,
             "slot":{"type":format!("{:?}",m.slot.r#type),"index":m.slot.index},
             "state":format!("{:?}",m.state), "charge":m.charge.as_ref().map(|c|json!({"type_id":c.type_id}))})).collect::<Vec<_>>(),
         "drones":fit.drones.iter().map(|d|json!({"type_id":d.type_id,"state":format!("{:?}",d.state)})).collect::<Vec<_>>(),
         "implants":fit.implants,"boosters":fit.boosters,"booster_effects":fit.booster_effects});
+    // Keep the import intact for subsequent ammo/MWD recalculations and diagnostics.
+    for estimate in &approximations {
+        fit_json["modules"][estimate["module_index"].as_u64().unwrap() as usize]["type_id"] =
+            estimate["original_type_id"].clone();
+    }
     let info = sde::InfoSde::new(fit, skills, sde);
     let stats = calculate::calculate(&info);
-    let modules = stats
+    let mut modules = stats
         .items
         .iter()
         .map(|i| item_json(sde, i))
@@ -268,28 +323,27 @@ fn run(req: Request) -> Result<Value, String> {
     let mut hull = type_json(sde, stats.hull.type_id)?;
     hull["attributes"] =
         serde_json::to_value(named(sde, &stats.hull.attributes)?).map_err(|e| e.to_string())?;
-    let uncertain_modules: Vec<_> = modules
+    for module in &mut modules {
+        if let Some(estimate) = approximations
+            .iter()
+            .find(|a| a["slot"] == module["slot"] && a["slot_index"] == module["slot_index"])
+        {
+            module["approximation"] = estimate.clone();
+        }
+    }
+    let uncertain_modules: Vec<_> = approximations
         .iter()
-        .filter(|m| {
-            sde.get_type(crate::model::id(m, "id") as i32)
-                .is_some_and(|t| {
-                    t.dogma_effects()
-                        .into_iter()
-                        .flatten()
-                        .any(|e| e.effect_id() == 6556)
-                })
-        })
-        .map(|m| m["name"].clone())
+        .map(|a| a["original_name"].clone())
         .collect();
     let warnings = if uncertain_modules.is_empty() {
         Vec::<String>::new()
     } else {
-        vec!["Параметры Abyssal-модулей отсутствуют в публичной потере; расчёт по справочным значениям может быть неточным".into()]
+        vec!["Присутствуют Abyssal модули, оценка не точна".into()]
     };
     Ok(
         json!({"sde_build": sde.build_number(), "engine": "EVEShipFit v8.1.0", "hull": hull,
         "summary": esf_dogma_engine::rust::Output::new(&info, &stats), "modules": modules,
-        "cargo": cargo, "fit": fit_json,"warnings":warnings,"uncertain_modules":uncertain_modules}),
+        "cargo": cargo, "fit": fit_json,"warnings":warnings,"uncertain_modules":uncertain_modules,"approximations":approximations}),
     )
 }
 
@@ -386,6 +440,79 @@ mod resistance_regressions {
         Engine::default()
             .evaluate(serde_json::from_str(raw).unwrap())
             .unwrap()
+    }
+    #[test]
+    fn every_published_abyssal_module_has_a_same_family_standard_analogue() {
+        let sde = &static_data().unwrap().sde;
+        let mut count = 0;
+        for original in sde
+            .types()
+            .filter(|t| t.published() && t.category_id() == 7 && t.name().contains("Abyssal "))
+        {
+            let base = sde
+                .get_type(abyssal_surrogate(sde, original.id()).unwrap().unwrap())
+                .unwrap();
+            assert_eq!(base.group_id(), original.group_id());
+            assert!(!base.name().contains("Abyssal"));
+            assert!(base.dogma_attributes().is_some_and(|a| a.len() > 5));
+            count += 1;
+        }
+        assert!(count > 50);
+    }
+    #[test]
+    fn abyssal_fit_calculates_like_its_standard_analogues_and_keeps_original_import() {
+        let req: Value =
+            serde_json::from_str(include_str!("../resources/fixtures/marshal-0.json")).unwrap();
+        let mut engine = Engine::default();
+        let estimated = engine.evaluate(req.clone()).unwrap();
+        assert!(crate::model::n(&estimated["summary"]["offense"], "dps") > 0.);
+        assert_eq!(
+            estimated["warnings"][0],
+            "Присутствуют Abyssal модули, оценка не точна"
+        );
+        assert_eq!(estimated["fit"]["modules"], req["fit"]["modules"]);
+        let mut standard = req;
+        for estimate in crate::model::array(&estimated["approximations"]) {
+            let index = estimate["module_index"].as_u64().unwrap() as usize;
+            standard["fit"]["modules"][index]["type_id"] = estimate["estimated_type_id"].clone();
+        }
+        let standard = engine.evaluate(standard).unwrap();
+        assert_eq!(estimated["summary"], standard["summary"]);
+        assert!(crate::model::array(&standard["warnings"]).is_empty());
+        let catalog = Catalog::load().unwrap();
+        let incoming = crate::tactics::incoming_summary(&estimated, &estimated["fit"], &catalog);
+        assert!(incoming["percentages"].is_array() && incoming["uncertain"] == true);
+        let own = engine
+            .evaluate(json!({"raw_fit": include_str!("../resources/example-tristan.eft")}))
+            .unwrap();
+        let advice = crate::tactics::advise(
+            &own,
+            &estimated,
+            &mut engine,
+            &catalog,
+            &crate::model::Settings::default(),
+            None,
+            0.,
+        )
+        .unwrap();
+        assert!(advice.own_dps > 0. && advice.low.is_finite() && advice.high >= advice.low);
+    }
+    #[test]
+    fn abyssal_detection_includes_propulsion_and_damage_control_without_effect_6556() {
+        let result = Engine::default().evaluate(json!({"raw_fit":"[Rifter, approximate]\nAbyssal Damage Control\n\n1MN Abyssal Afterburner\nAbyssal Stasis Webifier\n"})).unwrap();
+        let replacements = crate::model::array(&result["approximations"]);
+        for expected in [
+            "Damage Control II",
+            "1MN Afterburner II",
+            "Stasis Webifier II",
+        ] {
+            assert!(
+                replacements.iter().any(|a| a["estimated_name"] == expected),
+                "{expected}"
+            );
+        }
+        assert!(crate::model::n(&result["hull"]["attributes"], "maxVelocity") > 500.);
+        assert!(crate::model::n(&result["summary"]["defense"]["shield"]["resist"], "em") > 0.);
     }
     #[test]
     fn polarized_resonances_are_fractions_and_override_resistance_modules() {
