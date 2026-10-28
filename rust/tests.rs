@@ -807,3 +807,159 @@ fn nickname_matching_accepts_unique_closest_card_and_rejects_ties() {
         );
     }
 }
+
+#[test]
+fn selected_panel_separates_arbitrary_titles_and_ignores_security_ocr() {
+    use crate::ocr::{Document, TextLine, Word};
+    let word = |text: &str, x, y, width, height| Word {
+        text: text.into(),
+        x,
+        y,
+        width,
+        height,
+    };
+    for title in ["HauraTop", "Навигатор", "Неизвестное звание"] {
+        let raw = Document {
+            lines: vec![
+                TextLine {
+                    text: format!("Ke•on Ishaq {title}"),
+                    words: vec![
+                        word("Ke•on", 269., 27., 59., 22.),
+                        word("Ishaq", 341., 27., 61., 23.),
+                        word(title, 428., 27., 100., 18.),
+                    ],
+                },
+                TextLine {
+                    text: "CTaryc 6eaonacH0ffM".into(),
+                    words: vec![
+                        word("CTaryc", 271., 103., 69., 22.),
+                        word("6eaonacH0ffM", 351., 101., 153., 19.),
+                    ],
+                },
+            ],
+        };
+        let parsed = ocr::selected_document(&raw);
+        assert_eq!(parsed.lines[0].text, "Ke'on Ishaq");
+        assert_eq!(parsed.lines[0].words.len(), 2);
+        let retries = vec![ocr::RetryRead {
+            method: "distance_crop_4x".into(),
+            rect: [123, 26, 229, 26],
+            text: "10 KM".into(),
+            error: None,
+        }];
+        let text = ocr::selected_text(&raw, &retries);
+        assert_eq!(ocr::selected_pilot(&text).as_deref(), Some("Ke'on Ishaq"));
+        assert_eq!(ocr::read_distance(&text), Some(10000.));
+        assert!(!text.contains(title));
+    }
+    for status in [
+        "Статус безопасности 0,7",
+        "Статусбезопасности -1,2",
+        "CTaryc 6eaonacH0ffM",
+        "Craryc beaonacHocnq -1,2",
+        "Security status 0.7",
+    ] {
+        assert!(ocr::selected_pilot(status).is_none(), "{status}");
+        assert_eq!(ocr::read_distance(status), None);
+    }
+    assert_eq!(
+        ocr::selected_pilot("Black Council\n8 418 M\nCraryc beaonacHocnq -1,2").as_deref(),
+        Some("Black Council")
+    );
+}
+
+#[test]
+fn distance_supports_cyrillic_units_grouping_and_ocr_digits() {
+    for (text, meters) in [
+        ("10 км", 10000.),
+        ("3 021 м", 3021.),
+        ("8 418 M", 8418.),
+        ("lø KM", 10000.),
+        ("10км", 10000.),
+        ("3\u{202f}021м", 3021.),
+        ("12,5 км", 12500.),
+        ("1 083 km", 1083000.),
+    ] {
+        assert_eq!(ocr::read_distance(text), Some(meters), "{text}");
+    }
+}
+
+#[test]
+fn catalog_hull_matching_accepts_ocr_star_and_name_errors() {
+    use crate::ocr::{Document, TextLine, Word};
+    let c = catalog();
+    for (read, expected) in [
+        ("Machariet•", "Machariel"),
+        ("Machariel·", "Machariel"),
+        ("Kikimora*", "Kikimora"),
+        ("Kikimara•", "Kikimora"),
+    ] {
+        let cards = Document {
+            lines: vec![
+                TextLine {
+                    text: "Black Council".into(),
+                    words: vec![Word {
+                        text: "Black Council".into(),
+                        x: 943.,
+                        y: 185.,
+                        width: 147.,
+                        height: 18.,
+                    }],
+                },
+                TextLine {
+                    text: read.into(),
+                    words: vec![Word {
+                        text: read.into(),
+                        x: 957.,
+                        y: 243.,
+                        width: 118.,
+                        height: 17.,
+                    }],
+                },
+            ],
+        };
+        let target = ocr::identify_card("Black Council\n8 418 M", &cards, &c).unwrap();
+        assert_eq!(target.ship, expected);
+        assert_eq!(target.distance, Some(8418.));
+    }
+}
+
+#[test]
+fn inline_corporation_tag_does_not_hide_ship_name_selection() {
+    use crate::ocr::{Document, TextLine, Word};
+    let c = catalog();
+    let word = |text: &str, x, y, width, height| Word {
+        text: text.into(),
+        x,
+        y,
+        width,
+        height,
+    };
+    let selected = Document {
+        lines: vec![TextLine {
+            text: "Velator•".into(),
+            words: vec![word("Velator•", 147., 30., 91., 21.)],
+        }],
+    };
+    let text = ocr::selected_document(&selected).text();
+    assert_eq!(text, "Velator");
+    let cards = Document {
+        lines: vec![
+            TextLine {
+                text: "Velator [HDEUJ]".into(),
+                words: vec![
+                    word("Velator", 923., 185., 79., 18.),
+                    word("[HDEUJ]", 1029., 185., 78., 22.),
+                ],
+            },
+            TextLine {
+                text: "Velator•".into(),
+                words: vec![word("Velator•", 971., 214., 91., 16.)],
+            },
+        ],
+    };
+    assert_eq!(
+        ocr::identify_card(&text, &cards, &c).unwrap().ship,
+        "Velator"
+    );
+}

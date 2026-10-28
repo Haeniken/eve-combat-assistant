@@ -434,38 +434,89 @@ pub fn selected_retry_texts(
         return Vec::new();
     }
     let rect = [x, y, end_x - x, end_y - y];
-    let crop = image::imageops::crop_imm(image, x, y, rect[2], rect[3]).to_image();
-    let enlarged = image::imageops::resize(
-        &crop,
-        crop.width() * 2,
-        crop.height() * 2,
-        image::imageops::FilterType::Nearest,
-    );
+    crop_attempts(image, rect, language, "nickname_crop")
+}
+fn crop_attempts(
+    image: &image::RgbaImage,
+    rect: [u32; 4],
+    language: &str,
+    kind: &str,
+) -> Vec<crate::ocr::RetryRead> {
+    let [x, y, w, h] = rect;
+    if w == 0 || h == 0 || x + w > image.width() || y + h > image.height() {
+        return Vec::new();
+    }
+    let crop = image::imageops::crop_imm(image, x, y, w, h).to_image();
+    let native = crop.clone();
+    let enlarged =
+        image::imageops::resize(&crop, w * 2, h * 2, image::imageops::FilterType::Nearest);
     let mut contrast = crop;
     for pixel in contrast.pixels_mut() {
         let [r, g, b, _] = pixel.0;
-        let level = ((i32::from(r) + i32::from(g) + i32::from(b)) / 3 - 50) * 2;
-        let level = level.clamp(0, 255) as u8;
-        pixel.0 = [level, level, level, 255];
+        let value = ((i32::from(r) + i32::from(g) + i32::from(b)) / 3 - 50) * 2;
+        let value = value.clamp(0, 255) as u8;
+        pixel.0 = [value, value, value, 255];
     }
-    [
-        ("nickname_crop_4x", enlarged),
-        ("nickname_crop_contrast", contrast),
-    ]
-    .into_iter()
-    .map(|(method, image)| match ocr_document(&image, language) {
-        Ok(document) => crate::ocr::RetryRead {
-            method: method.into(),
-            rect,
-            text: document.text(),
-            error: None,
-        },
-        Err(error) => crate::ocr::RetryRead {
-            method: method.into(),
-            rect,
-            text: String::new(),
-            error: Some(error),
-        },
-    })
-    .collect()
+    [("2x", native), ("4x", enlarged), ("contrast", contrast)]
+        .into_iter()
+        .map(|(method, image)| match ocr_document(&image, language) {
+            Ok(document) => crate::ocr::RetryRead {
+                method: format!("{kind}_{method}"),
+                rect,
+                text: document.text(),
+                error: None,
+            },
+            Err(error) => crate::ocr::RetryRead {
+                method: format!("{kind}_{method}"),
+                rect,
+                text: String::new(),
+                error: Some(error),
+            },
+        })
+        .collect()
+}
+pub fn distance_retry_texts(
+    image: &image::RgbaImage,
+    document: &crate::ocr::Document,
+    language: &str,
+) -> Vec<crate::ocr::RetryRead> {
+    let Some(header) = document.lines.first() else {
+        return Vec::new();
+    };
+    let scale = if image.width() > 2000 {
+        2000. / image.width() as f32
+    } else {
+        2.
+    };
+    let height = header
+        .words
+        .iter()
+        .map(|w| w.height / scale)
+        .fold(0_f32, f32::max);
+    if height <= 0. || !height.is_finite() {
+        return Vec::new();
+    }
+    let left = header
+        .words
+        .iter()
+        .map(|w| w.x / scale)
+        .fold(f32::INFINITY, f32::min);
+    let bottom = header
+        .words
+        .iter()
+        .map(|w| (w.y + w.height) / scale)
+        .fold(0_f32, f32::max);
+    let x = (left - height).floor().clamp(0., image.width() as f32) as u32;
+    let y = (bottom + height * 0.1)
+        .floor()
+        .clamp(0., image.height() as f32) as u32;
+    let end = (bottom + height * 2.3)
+        .ceil()
+        .clamp(y as f32, image.height() as f32) as u32;
+    crop_attempts(
+        image,
+        [x, y, image.width() - x, end - y],
+        language,
+        "distance_crop",
+    )
 }

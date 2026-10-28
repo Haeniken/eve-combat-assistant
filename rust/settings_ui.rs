@@ -356,8 +356,16 @@ fn screen(
         match &check.result {
             Ok(target) => {
                 ui.colored_label(CYAN, format!("Найдено: {} · {}", target.pilot, target.ship));
-                let matched =
-                    crate::ocr::pilot_match(&check.selected.text, &check.selected.retries, target);
+                let matched = crate::ocr::pilot_match(
+                    &check.selected.parsed_text,
+                    &check.selected.retries,
+                    target,
+                );
+                if let Some(distance) = target.distance {
+                    style::caption(ui, &format!("Дистанция: {distance:.0} м"));
+                } else {
+                    style::caption(ui, "Дистанция: не прочитана");
+                }
                 if matched.method == "closest" {
                     style::caption(
                         ui,
@@ -394,14 +402,22 @@ fn screen(
                 );
             }
             for retry in &region.retries {
+                let label = if retry.method.starts_with("distance_") {
+                    "Повтор дистанции"
+                } else {
+                    "Повтор ника"
+                };
                 style::caption(
                     ui,
                     &format!(
-                        "Повтор строки ника ({}): {}",
+                        "{label} ({}): {}",
                         retry.method,
                         retry.error.as_ref().unwrap_or(&retry.text)
                     ),
                 );
+            }
+            if !region.parsed_text.is_empty() && region.parsed_text != region.text {
+                style::caption(ui, &format!("Для сопоставления: {}", region.parsed_text));
             }
             if let Some(error) = &region.error {
                 ui.colored_label(AMBER, error);

@@ -552,9 +552,13 @@ impl CombatApp {
                     }
                     if let Some(r) = t.distance {
                         ui.label(
-                            RichText::new(format!("{:.1} км", r / 1000.).replace('.', ","))
-                                .size(11.)
-                                .color(CYAN),
+                            RichText::new(if r < 10000. {
+                                format!("{r:.0} м")
+                            } else {
+                                format!("{:.1} км", r / 1000.).replace('.', ",")
+                            })
+                            .size(11.)
+                            .color(CYAN),
                         );
                     }
                 }

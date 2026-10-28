@@ -355,7 +355,7 @@ impl Workers {
                             check.recognize(&settings.language, &catalog);
                             debug.event(settings.ocr_debug, json!({"kind":"manual_check", "region": settings.region, "targets_region": settings.targets_region, "language":settings.language,
                                 "elapsed_ms": started.elapsed().as_millis(), "selected_png": selected_png, "cards_png": cards_png,
-                                "selected_text":check.selected.text, "selected_words":check.selected.document, "selected_retries":check.selected.retries, "pilot_match":check.result.as_ref().ok().map(|target|ocr::pilot_match(&check.selected.text,&check.selected.retries,target)), "selected_error":check.selected.error,
+                                "selected_text":check.selected.text, "selected_parsed":check.selected.parsed_text, "selected_words":check.selected.document, "selected_retries":check.selected.retries, "pilot_match":check.result.as_ref().ok().map(|target|ocr::pilot_match(&check.selected.parsed_text,&check.selected.retries,target)), "selected_error":check.selected.error,
                                 "cards_text":check.cards.text, "cards_words":check.cards.document, "cards_error":check.cards.error, "result":check.result}));
                             if let Some(error) = debug.take_error() {
                                 emit(&event_tx, &ctx, Message::Status(error));
@@ -486,6 +486,8 @@ impl Workers {
                         frame_event["elapsed_ms"] = json!(started.elapsed().as_millis());
                         frame_event["selected_text"] = json!(selected_document.text());
                         frame_event["selected_words"] = json!(selected_document);
+                        frame_event["selected_parsed"] =
+                            json!(ocr::selected_text(&selected_document, &selected_retries));
                         frame_event["selected_retries"] = json!(selected_retries);
                         frame_event["pilot_match"] =
                             json!(result.as_ref().ok().and_then(|target| target.as_ref()).map(
@@ -497,8 +499,9 @@ impl Workers {
                             ));
                         frame_event["cards_text"] = json!(card_document.text());
                         frame_event["cards_words"] = json!(card_document);
-                        frame_event["selected_pilot"] =
-                            json!(ocr::selected_pilot(&selected_document.text()));
+                        frame_event["selected_pilot"] = json!(ocr::selected_pilot(
+                            &ocr::selected_text(&selected_document, &selected_retries)
+                        ));
                         frame_event["result"] = json!(result);
                         frame_event["emitted"] = json!(should_emit);
                         debug.event(true, frame_event);

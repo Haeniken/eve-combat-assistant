@@ -42,12 +42,148 @@ fn empty_selection(text: &str) -> bool {
     .iter()
     .any(|message| text.contains(message))
 }
+fn clean_pilot_name(text: &str) -> String {
+    let chars: Vec<_> = text.chars().collect();
+    chars
+        .iter()
+        .enumerate()
+        .map(|(i, c)| match c {
+            '’' | '‘' | 'ʼ' | '`' | '´' => '\'',
+            '•' | '·'
+                if i > 0
+                    && i + 1 < chars.len()
+                    && chars[i - 1].is_alphabetic()
+                    && chars[i + 1].is_alphabetic() =>
+            {
+                '\''
+            }
+            _ => *c,
+        })
+        .collect()
+}
+fn status_line(text: &str) -> bool {
+    let visual: String = text
+        .to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'с' => 'c',
+            'т' => 't',
+            'а' => 'a',
+            'у' => 'y',
+            'р' => 'p',
+            'н' => 'h',
+            'о' | '0' => 'o',
+            'е' => 'e',
+            'м' => 'm',
+            'и' => 'u',
+            'п' => 'n',
+            'б' | '6' => 'b',
+            'з' => 'z',
+            _ => c,
+        })
+        .collect();
+    visual.replace(' ', "").contains("securitystatus")
+        || visual.contains("статус безопасности")
+        || (visual.contains("onac")
+            && visual.split_whitespace().next().is_some_and(|first| {
+                ["ctatyc", "ctatus", "status"].iter().any(|prefix| {
+                    nickname_distance(&first.chars().take(6).collect::<String>(), prefix) <= 2
+                })
+            }))
+}
+/// Отделяем ник от произвольного звания в меньшем шрифте/бейдже справа.
+/// Остальные текстовые строки не могут подменить первую строку имени.
+pub fn selected_document(raw: &Document) -> Document {
+    if empty_selection(&raw.text()) {
+        return raw.clone();
+    }
+    let mut ordered: Vec<_> = raw.lines.iter().collect();
+    ordered.sort_by(|a, b| {
+        let top = |line: &TextLine| line.words.iter().map(|w| w.y).fold(f32::INFINITY, f32::min);
+        top(a).total_cmp(&top(b))
+    });
+    let mut header = None;
+    for line in &ordered {
+        if status_line(&line.text) || read_distance(&line.text).is_some() {
+            continue;
+        }
+        let mut words = line.words.clone();
+        words.sort_by(|a, b| a.x.total_cmp(&b.x));
+        let height = words.iter().map(|w| w.height).fold(0_f32, f32::max);
+        for index in 1..words.len() {
+            let gap = words[index].x - (words[index - 1].x + words[index - 1].width);
+            if gap >= height * 0.85 || words[index].height < height * 0.82 && gap >= height * 0.6 {
+                words.truncate(index);
+                break;
+            }
+        }
+        let text = clean_pilot_name(&if words.is_empty() {
+            line.text.clone()
+        } else {
+            words
+                .iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+        let text = text
+            .trim_end()
+            .trim_end_matches(['*', '★', '∗', '✱', '•', '·', '●'])
+            .trim();
+        if let Some(pilot) = selected_pilot(text) {
+            header = Some(TextLine { text: pilot, words });
+            break;
+        }
+    }
+    let Some(header) = header else {
+        return Document::default();
+    };
+    let top = header.words.iter().map(|w| w.y).fold(0_f32, f32::max);
+    let height = header.words.iter().map(|w| w.height).fold(0_f32, f32::max);
+    let mut lines = vec![header];
+    for line in ordered {
+        if status_line(&line.text) {
+            continue;
+        }
+        let y = line.words.iter().map(|w| w.y).fold(f32::INFINITY, f32::min);
+        if height > 0. && (y < top || y > top + height * 4.5) {
+            continue;
+        }
+        if read_distance(&line.text).is_some()
+            || line.text.contains("rad/s")
+            || line.text.contains("рад/с")
+        {
+            lines.push(line.clone());
+        }
+    }
+    Document { lines }
+}
+pub fn selected_text(raw: &Document, retries: &[RetryRead]) -> String {
+    let mut text = selected_document(raw).text();
+    if read_distance(&text).is_none() {
+        let mut distances: Vec<_> = retries
+            .iter()
+            .filter(|r| r.method.starts_with("distance_") && r.error.is_none())
+            .filter_map(|r| read_distance(&r.text))
+            .collect();
+        distances.sort_by(f64::total_cmp);
+        distances.dedup_by(|a, b| (*a - *b).abs() < 0.1);
+        if let [distance] = distances.as_slice() {
+            text.push_str(&format!("\n{distance} m"));
+        }
+    }
+    text
+}
 pub fn selected_pilot(text: &str) -> Option<String> {
     if empty_selection(text) {
         return None;
     }
     for line in text.lines() {
-        let candidate = line
+        if status_line(line) {
+            continue;
+        }
+        let cleaned = clean_pilot_name(line);
+        let candidate = cleaned
             .trim()
             .trim_start_matches("Pilot:")
             .trim_start_matches("Пилот:")
@@ -55,6 +191,7 @@ pub fn selected_pilot(text: &str) -> Option<String> {
         let lower = candidate.to_lowercase();
         if candidate.is_empty()
             || candidate.len() > 100
+            || candidate.chars().filter(|c| c.is_alphanumeric()).count() < 3
             || candidate.contains(':')
             || [
                 "selected item",
@@ -105,26 +242,31 @@ pub fn identify_card(
         for start in 0..line.words.len() {
             for end in start + 1..=line.words.len().min(start + 8) {
                 let words = &line.words[start..end];
-                if words
-                    .iter()
-                    .map(|w| w.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .to_lowercase()
-                    == normalized
+                if normalized_pilot(
+                    &words
+                        .iter()
+                        .map(|w| w.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ) == normalized
                 {
                     let left = words[0].x;
-                    let right = words.iter().map(|w| w.x + w.width).fold(left, f32::max);
+                    let mut right = words.iter().map(|w| w.x + w.width).fold(left, f32::max);
                     let top = words.iter().map(|w| w.y).fold(f32::INFINITY, f32::min);
-                    let height = words.iter().map(|w| w.height).fold(0., f32::max);
+                    let mut height = words.iter().map(|w| w.height).fold(0., f32::max);
                     if start > 0
                         && left - (line.words[start - 1].x + line.words[start - 1].width)
                             < height * 1.5
                     {
                         continue;
                     }
-                    if end < line.words.len() && line.words[end].x - right < height * 1.5 {
-                        continue;
+                    if let Some(next) = line.words.get(end) {
+                        if next.text.starts_with('[') {
+                            right = right.max(next.x + next.width);
+                            height = height.max(next.height);
+                        } else if next.x - right < height * 1.5 {
+                            continue;
+                        }
                     }
                     anchors.push(((left + right) / 2., top, height));
                 }
@@ -154,7 +296,10 @@ pub fn identify_card(
                     .map(|word| word.text.as_str())
                     .collect::<Vec<_>>()
                     .join(" ");
-                if !text.trim_end().ends_with(['*', '★', '∗', '✱']) {
+                if !text
+                    .trim_end()
+                    .ends_with(['*', '★', '∗', '✱', '•', '·', '●'])
+                {
                     continue;
                 }
                 let Some(tid) = starred_hull(&text, catalog) else {
@@ -191,12 +336,11 @@ pub fn identify_card(
     target.ship = ship;
     Ok(target)
 }
-// Полный корпус всё равно должен быть отмечен звёздочкой. Исправляем только
-// одну потерянную/перепутанную букву, если в справочнике есть единственный ответ.
+// Подбираем только строку корпуса с терминальным маркером звезды/его OCR-вариантом.
 fn starred_hull(text: &str, catalog: &Catalog) -> Option<i32> {
     let name = text
         .trim_end()
-        .trim_end_matches(['*', '★', '∗', '✱'])
+        .trim_end_matches(['*', '★', '∗', '✱', '•', '·', '●'])
         .trim();
     if let Some(id) = catalog.ship_id(name) {
         return Some(id);
@@ -205,45 +349,27 @@ fn starred_hull(text: &str, catalog: &Catalog) -> Option<i32> {
     if let Some(id) = catalog.ship_id(&normalized) {
         return Some(id);
     }
-    if normalized.chars().count() < 5 {
-        return None;
-    }
-    let mut candidates = catalog
+    let length = normalized.chars().count();
+    let budget = match length {
+        0..=3 => 0,
+        4..=6 => 1,
+        7..=14 => 2,
+        _ => 3,
+    };
+    let mut candidates: Vec<_> = catalog
         .ships
         .iter()
-        .filter(|(_, ship)| one_edit(&normalized, &ship.to_lowercase()));
-    let (id, _) = candidates.next()?;
-    if candidates.next().is_some() {
+        .filter(|(_, ship)| ship.chars().count().abs_diff(length) <= budget)
+        .map(|(id, ship)| (nickname_distance(&normalized, &ship.to_lowercase()), *id))
+        .filter(|(distance, _)| *distance <= budget)
+        .collect();
+    candidates.sort();
+    let (distance, id) = *candidates.first()?;
+    if candidates.get(1).is_some_and(|(next, _)| *next == distance) {
         return None;
     }
-    Some(*id)
+    Some(id)
 }
-fn one_edit(a: &str, b: &str) -> bool {
-    let (a, b): (Vec<_>, Vec<_>) = (a.chars().collect(), b.chars().collect());
-    if a.len().abs_diff(b.len()) > 1 {
-        return false;
-    }
-    let (mut i, mut j, mut errors) = (0, 0, 0);
-    while i < a.len() && j < b.len() {
-        if a[i] == b[j] {
-            i += 1;
-            j += 1;
-            continue;
-        }
-        errors += 1;
-        if errors > 1 {
-            return false;
-        }
-        if a.len() >= b.len() {
-            i += 1;
-        }
-        if b.len() >= a.len() {
-            j += 1;
-        }
-    }
-    errors + usize::from(i < a.len() || j < b.len()) <= 1
-}
-
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct Target {
     pub ship: String,
@@ -315,20 +441,11 @@ pub fn parse(text: &str, c: &Catalog) -> Option<Target> {
         }
     }
     let tokens: Vec<_> = text.split_whitespace().collect();
-    let mut distance = None;
+    let distance = read_distance(text);
     let mut angular = 0.;
     for i in 1..tokens.len() {
         let unit = tokens[i].to_lowercase();
         let value = tokens[i - 1].replace(',', ".").parse::<f64>().ok();
-        if ["km", "км", "m", "м"].contains(&unit.as_str()) && distance.is_none() {
-            distance = distance_value(&tokens, i, unit == "m" || unit == "м").map(|v| {
-                v * if unit == "km" || unit == "км" {
-                    1000.
-                } else {
-                    1.
-                }
-            });
-        }
         if unit == "rad/s" || unit == "рад/с" {
             angular = value.unwrap_or(0.);
         }
@@ -342,27 +459,80 @@ pub fn parse(text: &str, c: &Catalog) -> Option<Target> {
 }
 // EVE выводит метры целыми: «9,655 m» и «9 655 м» означают 9655, а не 9,655.
 // Десятичная запятая в километрах при этом сохраняется: «12,5 км».
-fn distance_value(tokens: &[&str], unit_index: usize, meters: bool) -> Option<f64> {
-    let mut number = tokens[unit_index - 1].to_string();
-    if meters {
-        number = number.replace([',', '.'], "");
-        let mut index = unit_index - 1;
-        while index > 0
-            && number.len().is_multiple_of(3)
-            && tokens[index - 1]
-                .chars()
-                .all(|character| character.is_ascii_digit())
-        {
-            index -= 1;
-            number.insert_str(0, tokens[index]);
-        }
-    } else {
-        number = number.replace(',', ".");
+fn numeric_token(text: &str) -> Option<String> {
+    let mut output = String::new();
+    for c in text.trim_matches(['•', '·', '(', ')']).chars() {
+        output.push(match c {
+            '0'..='9' | ',' | '.' => c,
+            'O' | 'o' | 'ø' | 'Ø' | 'О' | 'о' => '0',
+            'l' | 'I' | 'i' | '|' | 'ı' => '1',
+            'S' | 's' => '5',
+            'B' | 'В' => '8',
+            _ => return None,
+        });
     }
-    number
-        .parse::<f64>()
-        .ok()
-        .filter(|value| value.is_finite() && *value >= 0.)
+    (!output.is_empty()).then_some(output)
+}
+pub fn read_distance(text: &str) -> Option<f64> {
+    let mut tokens = Vec::new();
+    for token in text.split_whitespace() {
+        let lower = token.to_lowercase();
+        let mut split = None;
+        if token.chars().any(|c| c.is_ascii_digit()) {
+            for unit in ["km", "км", "kм", "кm", "м", "m"] {
+                if let Some(number) = lower.strip_suffix(unit)
+                    && !number.is_empty()
+                {
+                    split = Some((number.to_string(), unit.to_string()));
+                    break;
+                }
+            }
+        }
+        if let Some((number, unit)) = split {
+            tokens.push(number);
+            tokens.push(unit);
+        } else {
+            tokens.push(token.to_string());
+        }
+    }
+    for index in 1..tokens.len() {
+        let unit = tokens[index]
+            .trim_matches([',', ';'])
+            .to_lowercase()
+            .replace('к', "k")
+            .replace('м', "m");
+        if !["km", "m"].contains(&unit.as_str()) {
+            continue;
+        }
+        let Some(mut number) = numeric_token(&tokens[index - 1]) else {
+            continue;
+        };
+        if unit == "m" {
+            number = number.replace([',', '.'], "");
+        } else {
+            number = number.replace(',', ".");
+        }
+        if number.chars().all(|c| c.is_ascii_digit()) {
+            let mut previous = index - 1;
+            while previous > 0 && number.len().is_multiple_of(3) {
+                let Some(group) = numeric_token(&tokens[previous - 1]) else {
+                    break;
+                };
+                if !group.chars().all(|c| c.is_ascii_digit()) {
+                    break;
+                }
+                previous -= 1;
+                number.insert_str(0, &group);
+            }
+        }
+        if let Ok(value) = number.parse::<f64>()
+            && value.is_finite()
+            && value >= 0.
+        {
+            return Some(value * if unit == "km" { 1000. } else { 1. });
+        }
+    }
+    None
 }
 
 #[derive(Default)]
@@ -444,6 +614,7 @@ pub struct RegionCheck {
     pub text: String,
     pub document: Option<Document>,
     pub retries: Vec<RetryRead>,
+    pub parsed_text: String,
     pub error: Option<String>,
 }
 impl RegionCheck {
@@ -491,19 +662,24 @@ impl ScreenCheck {
     pub fn recognize(&mut self, language: &str, catalog: &Catalog) {
         let selected = self.selected.recognize(language);
         let cards = self.cards.recognize(language);
+        if let Some(document) = &selected {
+            self.selected.parsed_text = selected_text(document, &self.selected.retries);
+        }
         self.result = if self.selected.rect.is_none() {
             Err("Сначала выделите правую область текущего выбора".into())
         } else if let Some(error) = self.selected.error.as_ref().or(self.cards.error.as_ref()) {
             Err(error.clone())
         } else if let (Some(selected), Some(cards)) = (&selected, &cards) {
-            identify_capture(
+            let result = identify_capture(
                 self.selected.image.as_ref().unwrap(),
                 selected,
                 cards,
                 language,
                 catalog,
                 &mut self.selected.retries,
-            )
+            );
+            self.selected.parsed_text = selected_text(selected, &self.selected.retries);
+            result
         } else if let Some(selected) = selected {
             parse(&selected.text(), catalog)
                 .ok_or("В правой области не найден корпус; выделите также карточки слева".into())
@@ -521,7 +697,8 @@ pub struct RetryRead {
     pub error: Option<String>,
 }
 fn normalized_pilot(text: &str) -> String {
-    text.split_whitespace()
+    clean_pilot_name(text)
+        .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
@@ -559,7 +736,10 @@ fn card_pilot_names(cards: &Document) -> Vec<String> {
                 {
                     continue;
                 }
-                if end < line.words.len() && line.words[end].x - right < height * 1.5 {
+                if end < line.words.len()
+                    && !line.words[end].text.starts_with('[')
+                    && line.words[end].x - right < height * 1.5
+                {
                     continue;
                 }
                 let text = words
@@ -567,8 +747,8 @@ fn card_pilot_names(cards: &Document) -> Vec<String> {
                     .map(|w| w.text.as_str())
                     .collect::<Vec<_>>()
                     .join(" ");
-                if selected_pilot(&text).as_deref() == Some(text.as_str()) {
-                    names.push(text);
+                if let Some(pilot) = selected_pilot(&text) {
+                    names.push(pilot);
                 }
             }
         }
@@ -619,7 +799,7 @@ pub fn identify_with_retries(
     };
     let mut targets = Vec::new();
     for retry in retries {
-        if retry.error.is_some() {
+        if retry.error.is_some() || !retry.method.starts_with("nickname_") {
             continue;
         }
         if let Some(name) = selected_pilot(&retry.text)
@@ -670,13 +850,24 @@ pub fn identify_capture(
     catalog: &Catalog,
     retries: &mut Vec<RetryRead>,
 ) -> Result<Target, String> {
-    let text = selected.text();
+    let clean = selected_document(selected);
+    if selected_pilot(&clean.text()).is_some()
+        && read_distance(&clean.text()).is_none()
+        && !retries.iter().any(|r| r.method.starts_with("distance_"))
+    {
+        retries.extend(crate::platform::distance_retry_texts(
+            image, &clean, language,
+        ));
+    }
+    let text = selected_text(selected, retries);
     let result = identify_card(&text, cards, catalog);
     if result.is_ok() || selected_pilot(&text).is_none() {
         return result;
     }
-    if retries.is_empty() {
-        *retries = crate::platform::selected_retry_texts(image, selected, language);
+    if !retries.iter().any(|r| r.method.starts_with("nickname_")) {
+        retries.extend(crate::platform::selected_retry_texts(
+            image, &clean, language,
+        ));
     }
     identify_with_retries(&text, retries, cards, catalog)
 }

@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &engine::Catalog::load()?,
             &mut retries,
         );
-        let value = serde_json::json!({"target":result.as_ref().ok(),"result":result,"selected_text":selected.text(),"selected_retries":retries,"pilot_match":result.as_ref().ok().map(|target|ocr::pilot_match(&selected.text(),&retries,target)),"cards_text":cards.text()});
+        let value = serde_json::json!({"target":result.as_ref().ok(),"result":result,"selected_text":selected.text(),"selected_parsed":ocr::selected_text(&selected,&retries),"selected_retries":retries,"pilot_match":result.as_ref().ok().map(|target|ocr::pilot_match(&ocr::selected_text(&selected,&retries),&retries,target)),"cards_text":cards.text()});
         std::fs::write(
             directory.join("target-result.json"),
             serde_json::to_vec_pretty(&value)?,
