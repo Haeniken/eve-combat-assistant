@@ -338,7 +338,7 @@ pub fn items_to_eft(
             .collect();
         rack.sort_by_key(|item| s(item, "flag"));
         for item in rack {
-            lines.push(catalog.name(id(item, "type_id") as i32).to_string());
+            lines.push(catalog.esi_item_name(id(item, "type_id") as i32)?);
         }
         lines.push(String::new());
     }
@@ -349,7 +349,7 @@ pub fn items_to_eft(
         {
             lines.push(format!(
                 "{} x{}",
-                catalog.name(id(item, "type_id") as i32),
+                catalog.esi_item_name(id(item, "type_id") as i32)?,
                 id(item, "quantity")
             ));
         }

@@ -364,7 +364,8 @@ fn hulls_at_anchor(
     matches
 }
 /// Missing stars and clipped/wrapped names are accepted only in the selected
-/// pilot's column, before that card's distance row, with a unique catalog prefix.
+/// pilot's column, before that card's distance row. A damaged prefix must also
+/// have one closest catalog match; an ambiguous exact prefix stays unresolved.
 fn clipped_card_hulls(
     cards: &Document,
     catalog: &Catalog,
@@ -447,7 +448,9 @@ fn unique_clipped_hull(text: &str, catalog: &Catalog) -> Option<i32> {
         .ships
         .iter()
         .filter(|(_, name)| name.to_lowercase().starts_with(&normalized));
-    let (id, name) = candidates.next()?;
+    let Some((id, name)) = candidates.next() else {
+        return damaged_clipped_hull(&normalized, catalog);
+    };
     if name.to_lowercase() != normalized
         && normalized.chars().count() < 8
         && !(normalized.chars().count() >= 5
@@ -460,6 +463,37 @@ fn unique_clipped_hull(text: &str, catalog: &Catalog) -> Option<i32> {
         return None;
     }
     candidates.next().is_none().then_some(*id)
+}
+fn damaged_clipped_hull(text: &str, catalog: &Catalog) -> Option<i32> {
+    let length = text.chars().count();
+    // Small fragments and short names are too easily confused without a star.
+    if length < 8 {
+        return None;
+    }
+    let budget = if length <= 14 { 2 } else { 3 };
+    let mut candidates: Vec<_> = catalog
+        .ships
+        .iter()
+        .filter_map(|(id, ship)| {
+            let name = ship.to_lowercase();
+            let ship_length = name.chars().count();
+            let score = if ship_length >= length {
+                // The end of the label may be clipped by EVE's card width.
+                nickname_distance(text, &name.chars().take(length).collect::<String>())
+            } else if length - ship_length <= budget {
+                nickname_distance(text, &name)
+            } else {
+                return None;
+            };
+            (score <= budget).then_some((score, *id))
+        })
+        .collect();
+    candidates.sort();
+    let (score, id) = *candidates.first()?;
+    if candidates.get(1).is_some_and(|(next, _)| *next == score) {
+        return None;
+    }
+    Some(id)
 }
 // Подбираем только строку корпуса с терминальным маркером звезды/его OCR-вариантом.
 fn starred_hull(text: &str, catalog: &Catalog) -> Option<i32> {

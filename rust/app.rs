@@ -321,7 +321,16 @@ impl CombatApp {
         }
         if !draft.own_fit.trim().is_empty() {
             let request = draft.own_request(json!(draft.own_fit), true);
-            Engine::default().evaluate(request)?;
+            if let Err(error) = Engine::default().evaluate(request) {
+                self.workers
+                    .trace
+                    .job(draft.ocr_debug, json!({"job":"own_fit_validation"}))
+                    .event(
+                        "own_fit_validation_error",
+                        json!({"error":error,"fit_hash":fits::hash(&draft.own_fit)}),
+                    );
+                return Err(error);
+            }
         }
         self.settings = draft;
         self.settings.save(&self.directory)?;
@@ -400,9 +409,6 @@ impl CombatApp {
                                         m.target.ship, m.pop.total, m.pop.report.input
                                     )
                                 };
-                                if !m.failures.is_empty() {
-                                    self.status += " · часть расчётов недоступна";
-                                }
                                 let personal = m.variants.iter().any(|v| v.personal);
                                 self.workers.trace.job(self.settings.ocr_debug,json!({"generation":generation,"job":"ui","target_ship":m.target.ship,"pilot":m.target.pilot})).event("analysis_displayed",json!({"phase":phase,"popular_variants":m.pop.variants.len(),"personal":personal}));
                                 self.matchup = Some(*m);
@@ -657,6 +663,7 @@ impl CombatApp {
             };
             style::pilot_rating(ui, rating, state);
             ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.;
                 ui.label(
                     RichText::new(
                         target
@@ -671,16 +678,26 @@ impl CombatApp {
                     if !t.pilot.is_empty() {
                         ui.label(RichText::new(&t.pilot).size(12.).color(MUTED));
                     }
-                    if let Some(r) = t.distance {
-                        ui.label(
-                            RichText::new(if r < 10000. {
-                                format!("{r:.0} м")
-                            } else {
-                                format!("{:.1} км", r / 1000.).replace('.', ",")
-                            })
-                            .size(11.)
-                            .color(CYAN),
-                        );
+                    if t.distance.is_some() || rating.is_some_and(|r| r.group_marker().is_some()) {
+                        ui.horizontal(|ui| {
+                            if let Some(r) = t.distance {
+                                ui.label(
+                                    RichText::new(if r < 10000. {
+                                        format!("{r:.0} м")
+                                    } else {
+                                        format!("{:.1} км", r / 1000.).replace('.', ",")
+                                    })
+                                    .size(11.)
+                                    .color(CYAN),
+                                );
+                            }
+                            if let Some(rating) = rating {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| style::pilot_group(ui, rating),
+                                );
+                            }
+                        });
                     }
                 }
             });

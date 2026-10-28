@@ -143,5 +143,89 @@
       ]
     },
     "ship": "Praxis"
+  },
+  {
+    "selected": "Catari Blaster",
+    "cards": {
+      "lines": [
+        {
+          "text": "Catari Blaster",
+          "words": [
+            {
+              "height": 17.0,
+              "text": "Catari",
+              "width": 64.0,
+              "x": 939.0,
+              "y": 185.0
+            },
+            {
+              "height": 17.0,
+              "text": "Blaster",
+              "width": 79.0,
+              "x": 1015.0,
+              "y": 185.0
+            }
+          ]
+        },
+        {
+          "text": "[AO-2ø]",
+          "words": [
+            {
+              "height": 22.0,
+              "text": "[AO-2ø]",
+              "width": 84.0,
+              "x": 975.0,
+              "y": 213.0
+            }
+          ]
+        },
+        {
+          "text": "Drake Navy ISSI",
+          "words": [
+            {
+              "height": 18.0,
+              "text": "Drake",
+              "width": 61.0,
+              "x": 919.0,
+              "y": 243.0
+            },
+            {
+              "height": 20.0,
+              "text": "Navy",
+              "width": 50.0,
+              "x": 993.0,
+              "y": 244.0
+            },
+            {
+              "height": 16.0,
+              "text": "ISSI",
+              "width": 38.0,
+              "x": 1055.0,
+              "y": 244.0
+            }
+          ]
+        },
+        {
+          "text": "36 KM",
+          "words": [
+            {
+              "height": 16.0,
+              "text": "36",
+              "width": 25.0,
+              "x": 985.0,
+              "y": 272.0
+            },
+            {
+              "height": 12.0,
+              "text": "KM",
+              "width": 26.0,
+              "x": 1023.0,
+              "y": 276.0
+            }
+          ]
+        }
+      ]
+    },
+    "ship": "Drake Navy Issue"
   }
 ]

@@ -169,6 +169,13 @@ fn run(req: Request) -> Result<Value, String> {
         if raw.len() > 131072 || raw.lines().count() > 2048 {
             return Err("fit too large".into());
         }
+        if raw
+            .lines()
+            .skip(1)
+            .any(|line| line.trim().starts_with("Неизвестный модуль"))
+        {
+            return Err("В снимке фита ESI потеряны названия предметов. Обновите персонажа и выберите фит заново".into());
+        }
         // Upstream expands drone quantities. Bound before entering its parser.
         let mut drones = 0i64;
         for line in raw.lines().skip(1) {
@@ -404,6 +411,18 @@ impl Catalog {
         self.get(id)["name"]
             .as_str()
             .unwrap_or("Неизвестный модуль")
+    }
+    /// ESI cargo includes filaments, deployables and other non-fitting items
+    /// omitted from the lightweight catalog. Resolve them without expanding it.
+    pub fn esi_item_name(&self, id: i32) -> Result<String, String> {
+        if let Some(name) = self.get(id)["name"].as_str() {
+            return Ok(name.to_string());
+        }
+        static_data()?
+            .sde
+            .get_type(id)
+            .map(|item| item.name().to_string())
+            .ok_or_else(|| format!("Неизвестный предмет ESI: type_id={id}"))
     }
 }
 #[derive(Default)]

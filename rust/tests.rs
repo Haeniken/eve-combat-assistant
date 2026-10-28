@@ -420,6 +420,39 @@ fn esi_fitting_import_keeps_cargo_separate() {
 }
 
 #[test]
+fn esi_fitting_import_resolves_non_fitting_cargo_and_preserves_type_ids() {
+    let c = catalog();
+    // Nanite paste, deployables and filaments occur in real ESI cargo but are
+    // intentionally absent from the small combat-type catalog.
+    let cargo = [28668, 28672, 45998, 56076];
+    let mut items = vec![json!({"flag":"HiSlot0","type_id":8089,"quantity":1})];
+    for type_id in cargo {
+        items.push(json!({"flag":"Cargo","type_id":type_id,"quantity":2}));
+    }
+    let eft = crate::account::items_to_eft(32878, "ESI cargo", &items, &c).unwrap();
+    assert!(!eft.contains("Неизвестный модуль"));
+    let result = Engine::default().evaluate(json!({"raw_fit":eft})).unwrap();
+    assert_eq!(crate::model::array(&result["modules"]).len(), 1);
+    for type_id in cargo {
+        assert!(crate::model::array(&result["cargo"]).iter().any(|item| {
+            crate::model::id(item, "type_id") == type_id && crate::model::id(item, "quantity") == 2
+        }));
+    }
+    let unknown = crate::account::items_to_eft(
+        32878,
+        "Unknown ESI item",
+        &[json!({"flag":"Cargo","type_id":2147483647,"quantity":1})],
+        &c,
+    )
+    .unwrap_err();
+    assert!(unknown.contains("type_id=2147483647"));
+    let legacy = Engine::default()
+        .evaluate(json!({"raw_fit":"[Talwar, Old ESI snapshot]\nНеизвестный модуль x4"}))
+        .unwrap_err();
+    assert!(legacy.contains("Обновите персонажа"));
+}
+
+#[test]
 fn forced_refresh_preserves_global_and_personal_records() {
     let temp = Temp::new();
     let c = catalog();
@@ -1141,6 +1174,9 @@ fn clipped_ship_names_need_a_unique_catalog_match_in_the_selected_card() {
         ("Gnosis", "Gnosis"),
         ("Praxi", "Praxis"),
         ("praxi;", "Praxis"),
+        ("Drake Navy ISSI", "Drake Navy Issue"),
+        ("Orake Navu", "Drake Navy Issue"),
+        ("Apocaiypse Nav", "Apocalypse Navy Issue"),
     ] {
         assert_eq!(
             ocr::identify_card("Vesna83\n23 km", &cards(read), &c)
@@ -1151,6 +1187,10 @@ fn clipped_ship_names_need_a_unique_catalog_match_in_the_selected_card() {
     }
     // A prefix shared by the base and faction ship is unresolved without a marker.
     assert!(ocr::identify_card("Vesna83", &cards("Hurricane"), &c).is_err());
+    // A damaged base name must not choose between base and navy/fleet hulls.
+    assert!(ocr::identify_card("Vesna83", &cards("Hurricame"), &c).is_err());
+    assert!(ocr::identify_card("Vesna83", &cards("Apocaiypse"), &c).is_err());
+    assert!(ocr::identify_card("Vesna83", &cards("Glid"), &c).is_err());
     assert!(ocr::identify_card("Vesna83", &cards("Unknown hull"), &c).is_err());
     let wrapped = Document {
         lines: vec![

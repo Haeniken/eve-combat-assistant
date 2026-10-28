@@ -56,29 +56,6 @@ pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &
         FontId::proportional(18.),
         color,
     );
-    if let Some(marker) = rating.and_then(|r| r.group_marker()) {
-        let color = if marker == "БЛОБ" { AMBER } else { MUTED };
-        let origin = rect.left_top() + Vec2::new(13., 61.);
-        // A separate cluster of ships; it never changes the solo ring's color.
-        for offset in [Vec2::new(0., 0.), Vec2::new(7., -3.), Vec2::new(7., 3.)] {
-            let c = origin + offset;
-            p.line_segment(
-                [c + Vec2::new(-2., 2.), c + Vec2::new(0., -2.)],
-                Stroke::new(1., color),
-            );
-            p.line_segment(
-                [c + Vec2::new(0., -2.), c + Vec2::new(2., 2.)],
-                Stroke::new(1., color),
-            );
-        }
-        p.text(
-            rect.left_top() + Vec2::new(31., 61.),
-            Align2::LEFT_CENTER,
-            marker,
-            FontId::proportional(9.),
-            color,
-        );
-    }
     response.on_hover_text(
         rating
             .map(|r| {
@@ -89,6 +66,41 @@ pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &
                 hint
             })
             .unwrap_or_else(|| state.to_string()),
+    );
+}
+/// A historical participation marker, separate from the solo score's color.
+/// Deliberately has no hover text: its definitions live in the documentation.
+pub fn pilot_group(ui: &mut Ui, rating: &crate::pilot::Rating) {
+    let Some(marker) = rating.group_marker() else {
+        return;
+    };
+    let (label, width, color, fill, border) = if marker == "БЛОБ" {
+        (
+            "БЛОБ 10+",
+            78.,
+            AMBER,
+            Color32::from_rgb(48, 41, 31),
+            Color32::from_rgb(114, 84, 58),
+        )
+    } else {
+        (
+            "ГРУППА",
+            70.,
+            Color32::from_rgb(160, 189, 206),
+            Color32::from_rgb(22, 41, 52),
+            Color32::from_rgb(53, 85, 104),
+        )
+    };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 18.), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 4., fill);
+    p.rect_stroke(rect, 4., Stroke::new(1., border), StrokeKind::Inside);
+    p.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(9.),
+        color,
     );
 }
 pub fn gear(ui: &mut Ui) -> Response {
