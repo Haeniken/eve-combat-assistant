@@ -1309,23 +1309,6 @@ impl CombatApp {
         }
         use crate::settings_ui::Action;
         match response.action {
-            Some(Action::CheckPilotInput) => {
-                let result = std::env::current_exe()
-                    .map_err(|error| error.to_string())
-                    .and_then(|exe| {
-                        std::process::Command::new(exe)
-                            .arg("--pilot-input-test")
-                            .arg("--data-dir")
-                            .arg(&self.directory)
-                            .spawn()
-                            .map(|_| ())
-                            .map_err(|error| error.to_string())
-                    });
-                if let Err(error) = result {
-                    self.status = error;
-                }
-                self.draft = Some(draft);
-            }
             Some(Action::OpenDebugFolder) => {
                 let path = self.directory.join("debug");
                 let result = std::fs::create_dir_all(&path)

@@ -19,7 +19,6 @@ pub enum Action {
     Cancel,
     CheckScreen,
     OpenDebugFolder,
-    CheckPilotInput,
     SelectRegion,
     SelectTargetsRegion,
     Sync,
@@ -656,15 +655,6 @@ fn screen(
         ui.checkbox(&mut draft.ocr_debug, "Подробная диагностика").on_hover_text("Снимки, OCR, фиты, кеш и трассировка запросов. До 512 снимков / 64 МиБ; журналы имеют ограничение размера.");
         if ui.button("Открыть папку").clicked() {
             action = Some(Action::OpenDebugFolder);
-        }
-        if ui
-            .add_enabled(
-                draft.ocr_debug,
-                egui::Button::new("Проверить перенос ника из EVE"),
-            )
-            .clicked()
-        {
-            action = Some(Action::CheckPilotInput);
         }
     });
     if state.busy {

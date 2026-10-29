@@ -20,10 +20,6 @@ impl DebugLog {
     pub fn new(directory: PathBuf) -> Self {
         Self::named(directory, "ocr")
     }
-    #[cfg(windows)]
-    pub fn pilot_input(directory: PathBuf) -> Self {
-        Self::named(directory, "pilot-input")
-    }
     fn named(directory: PathBuf, stem: &'static str) -> Self {
         Self {
             directory,
