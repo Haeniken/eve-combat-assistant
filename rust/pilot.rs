@@ -7,6 +7,91 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::OnceLock;
 
+pub const ACTIVITY_WINDOW: i64 = 3 * 86400;
+pub const ACTIVITY_TTL: i64 = 3600;
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ActivityAge {
+    Day,
+    ThreeDays,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RecentActivity {
+    pub group_at: Option<i64>,
+    pub blob_at: Option<i64>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActivityCache {
+    pub character_id: i64,
+    pub checked_at: i64,
+    pub activity: RecentActivity,
+}
+impl RecentActivity {
+    pub fn from_kills(rows: &[Value], character: i64, now: i64) -> Self {
+        let mut activity = Self::default();
+        for row in rows.iter().take(200) {
+            let Some(at) = row["killmail_time"]
+                .as_str()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|v| v.timestamp())
+            else {
+                continue;
+            };
+            if !(0..ACTIVITY_WINDOW).contains(&now.saturating_sub(at))
+                || row["zkb"]["npc"] == true
+                || row["zkb"]["solo"] == true
+                || id(&row["victim"], "character_id") == character
+            {
+                continue;
+            }
+            let players: std::collections::HashSet<_> = crate::model::array(&row["attackers"])
+                .iter()
+                .map(|a| id(a, "character_id"))
+                .filter(|id| *id > 0)
+                .collect();
+            if character <= 0 || !players.contains(&character) {
+                continue;
+            }
+            let labels: Vec<_> = crate::model::array(&row["zkb"]["labels"])
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+            if labels.contains(&"npc") || labels.contains(&"solo") || labels.contains(&"padding") {
+                continue;
+            }
+            // Current zKillboard labels are exclusive attacker-count buckets.
+            let bucket = labels
+                .iter()
+                .filter_map(|s| {
+                    s.strip_prefix("#:")?
+                        .trim_end_matches('+')
+                        .parse::<usize>()
+                        .ok()
+                })
+                .max();
+            let count = bucket.unwrap_or(players.len());
+            let pvp = row["zkb"]["npc"] == false
+                || labels.contains(&"pvp")
+                || id(&row["victim"], "character_id") > 0;
+            if pvp && count >= 2 {
+                activity.group_at = Some(activity.group_at.unwrap_or(at).max(at));
+            }
+            if pvp && count >= 10 {
+                activity.blob_at = Some(activity.blob_at.unwrap_or(at).max(at));
+            }
+        }
+        activity
+    }
+    pub fn merge(&mut self, other: Self) {
+        self.group_at = self.group_at.into_iter().chain(other.group_at).max();
+        self.blob_at = self.blob_at.into_iter().chain(other.blob_at).max();
+    }
+}
+pub fn cached_activity(store: &Store, character: i64) -> Option<ActivityCache> {
+    let entry: ActivityCache =
+        serde_json::from_value(store.meta(&format!("pilot_activity:v1:{character}"))?).ok()?;
+    (entry.character_id == character).then_some(entry)
+}
+
 #[derive(Deserialize)]
 struct Reference {
     knots: Vec<[f64; 2]>,
@@ -50,6 +135,8 @@ pub struct Rating {
     pub group_fraction: Option<f64>,
     pub large_group_fraction: Option<f64>,
     pub average_gang: Option<f64>,
+    #[serde(default)]
+    pub recent: RecentActivity,
 }
 impl Rating {
     pub fn from_stats(stats: &Value, character_id: i64) -> Result<Self, String> {
@@ -74,10 +161,20 @@ impl Rating {
             return Err("Несогласованные соло-счётчики zKillboard".into());
         }
         let score = solo_score(solo_kills, solo_losses);
-        // #:10+ is cumulative: do not add #:25+, #:50+ etc. again.
-        let large = stats["labels"]["#:10+"]
-            .get("shipsDestroyed")
-            .and_then(Value::as_u64);
+        let large_keys = ["#:10+", "#:25+", "#:50+", "#:100+", "#:1000+"];
+        let large = large_keys
+            .iter()
+            .any(|key| stats["labels"].get(key).is_some())
+            .then(|| {
+                large_keys.iter().try_fold(0_u64, |sum, key| {
+                    let count = match stats["labels"][key].get("shipsDestroyed") {
+                        None | Some(Value::Null) => 0,
+                        Some(v) => v.as_u64()?,
+                    };
+                    sum.checked_add(count)
+                })
+            })
+            .flatten();
         let average = n(stats, "avgGangSize");
         Ok(Self {
             character_id,
@@ -90,6 +187,7 @@ impl Rating {
                 .filter(|n| *n <= kills && kills > 0)
                 .map(|n| n as f64 / kills as f64),
             average_gang: (average.is_finite() && average > 0.).then_some(average),
+            recent: RecentActivity::default(),
         })
     }
     pub fn tier(&self) -> Option<usize> {
@@ -111,6 +209,32 @@ impl Rating {
         } else {
             None
         }
+    }
+    pub fn recent_marker(&self, now: i64) -> Option<(ActivityAge, i64)> {
+        let at = match self.group_marker()? {
+            "БЛОБ" => self.recent.blob_at?,
+            _ => self.recent.group_at?,
+        };
+        let age = now.checked_sub(at)?;
+        match age {
+            0..86400 => Some((ActivityAge::Day, age)),
+            86400..ACTIVITY_WINDOW => Some((ActivityAge::ThreeDays, age)),
+            _ => None,
+        }
+    }
+    pub fn recent_hint(&self, age: i64) -> String {
+        let who = if self.group_marker() == Some("БЛОБ") {
+            "В блобе"
+        } else {
+            "В группе"
+        };
+        let time = match age {
+            0..60 => "только что".into(),
+            60..3600 => format!("{} мин назад", age / 60),
+            3600..86400 => format!("{} ч назад", age / 3600),
+            _ => format!("{} дн назад", age / 86400),
+        };
+        format!("{who} · {time}")
     }
     pub fn hint(&self) -> String {
         let mut hint = if self.score.is_some() {
@@ -147,6 +271,9 @@ pub fn cached_character(store: &Store, character: i64) -> Option<Rating> {
     let mut rating: Rating =
         serde_json::from_value(store.meta(&format!("pilot_rating:v1:{character}"))?).ok()?;
     rating.score = solo_score(rating.solo_kills, rating.solo_losses);
+    if let Some(cached) = cached_activity(store, character) {
+        rating.recent = cached.activity;
+    }
     (rating.character_id == character).then_some(rating)
 }
 
@@ -154,6 +281,85 @@ pub fn cached_character(store: &Store, character: i64) -> Option<Rating> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn blob_counts_all_exclusive_large_fleet_buckets() {
+        let mut value = stats(100, 1, 30);
+        value["labels"] = json!({"#:25+":{"shipsDestroyed":40},"#:50+":{"shipsDestroyed":30},"#:100+":{"shipsDestroyed":10}});
+        let rating = Rating::from_stats(&value, 123).unwrap();
+        assert_eq!(rating.large_group_fraction, Some(0.8));
+        assert_eq!(rating.group_marker(), Some("БЛОБ"));
+        value["labels"]["#:1000+"] = json!({"shipsDestroyed":30});
+        assert_eq!(
+            Rating::from_stats(&value, 123)
+                .unwrap()
+                .large_group_fraction,
+            None
+        );
+    }
+    #[test]
+    fn recent_activity_requires_matching_pvp_participation_and_ages_without_network() {
+        let now = 1_800_000_000;
+        let row = |age: i64, count: usize| json!({"killmail_time":chrono::DateTime::from_timestamp(now-age,0).unwrap().to_rfc3339(),"victim":{"character_id":456},"attackers":(0..count).map(|i|json!({"character_id":123+i})).collect::<Vec<_>>(),"zkb":{"npc":false,"solo":false}});
+        let mut npc = row(10, 20);
+        npc["zkb"]["npc"] = json!(true);
+        let mut solo = row(20, 1);
+        solo["zkb"]["solo"] = json!(true);
+        let mut other = row(30, 10);
+        other["attackers"] = json!([{"character_id":999},{"character_id":998}]);
+        let mut victim = row(40, 10);
+        victim["victim"]["character_id"] = json!(123);
+        let mut missing = row(50, 20);
+        missing["killmail_time"] = json!("bad timestamp");
+        let activity = RecentActivity::from_kills(
+            &[
+                row(6 * 3600, 2),
+                row(2 * 86400, 10),
+                row(-10, 30),
+                row(ACTIVITY_WINDOW, 30),
+                npc,
+                solo,
+                other,
+                victim,
+                missing,
+            ],
+            123,
+            now,
+        );
+        assert_eq!(activity.group_at, Some(now - 6 * 3600));
+        assert_eq!(activity.blob_at, Some(now - 2 * 86400));
+        let mut rating = Rating::from_stats(&stats(100, 1, 30), 123).unwrap();
+        rating.recent = activity.clone();
+        assert_eq!(
+            rating.recent_marker(now),
+            Some((ActivityAge::Day, 6 * 3600))
+        );
+        assert_eq!(rating.recent_hint(6 * 3600), "В группе · 6 ч назад");
+        rating.large_group_fraction = Some(0.8);
+        assert_eq!(
+            rating.recent_marker(now),
+            Some((ActivityAge::ThreeDays, 2 * 86400))
+        );
+        assert_eq!(rating.recent_hint(2 * 86400), "В блобе · 2 дн назад");
+        for (age, expected) in [
+            (-1, None),
+            (86399, Some(ActivityAge::Day)),
+            (86400, Some(ActivityAge::ThreeDays)),
+            (259199, Some(ActivityAge::ThreeDays)),
+            (259200, None),
+        ] {
+            rating.recent.blob_at = Some(now - age);
+            assert_eq!(rating.recent_marker(now).map(|(p, _)| p), expected);
+        }
+        let mut old = serde_json::to_value(rating).unwrap();
+        old.as_object_mut().unwrap().remove("recent");
+        assert!(
+            serde_json::from_value::<Rating>(old)
+                .unwrap()
+                .recent
+                .group_at
+                .is_none()
+        );
+    }
     fn stats(kills: u64, wins: u64, losses: u64) -> Value {
         json!({"type":"characterID","id":123,"shipsDestroyed":kills,"shipsLost":losses,"soloKills":wins,"soloLosses":losses})
     }
@@ -161,7 +367,7 @@ mod tests {
     fn group_farming_cannot_inflate_solo_rating_and_absence_is_unknown() {
         let a = Rating::from_stats(&stats(100, 50, 20), 123).unwrap();
         let mut blob = stats(10000, 50, 20);
-        blob["labels"] = json!({"#:10+":{"shipsDestroyed":9500},"#:25+":{"shipsDestroyed":9000}});
+        blob["labels"] = json!({"#:10+":{"shipsDestroyed":500},"#:25+":{"shipsDestroyed":9000}});
         let b = Rating::from_stats(&blob, 123).unwrap();
         assert_eq!(a.score, b.score);
         assert_eq!(b.group_marker(), Some("БЛОБ"));

@@ -571,7 +571,14 @@ impl CombatApp {
                         }
                         self.rating_pilot = pilot;
                         match result {
-                            Ok(rating) => {
+                            Ok(mut rating) => {
+                                if let Some(previous) = self
+                                    .pilot_rating
+                                    .as_ref()
+                                    .filter(|r| r.character_id == rating.character_id)
+                                {
+                                    rating.recent.merge(previous.recent.clone());
+                                }
                                 self.pilot_rating = Some(rating);
                                 self.rating_error = None;
                             }

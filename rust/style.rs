@@ -133,17 +133,38 @@ pub fn pilot_group(ui: &mut Ui, rating: &crate::pilot::Rating) {
             Color32::from_rgb(53, 85, 104),
         )
     };
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 18.), Sense::hover());
+    let recent = rating.recent_marker(chrono::Utc::now().timestamp());
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(width + if recent.is_some() { 12. } else { 0. }, 18.),
+        Sense::hover(),
+    );
     let p = ui.painter();
     p.rect_filled(rect, 4., fill);
     p.rect_stroke(rect, 4., Stroke::new(1., border), StrokeKind::Inside);
     p.text(
-        rect.center(),
+        rect.center() + Vec2::new(if recent.is_some() { 5. } else { 0. }, 0.),
         Align2::CENTER_CENTER,
         label,
         FontId::proportional(9.),
         color,
     );
+    if let Some((period, age)) = recent {
+        let dot = egui::pos2(rect.left() + 10., rect.center().y);
+        let color = match period {
+            crate::pilot::ActivityAge::Day => Color32::from_rgb(116, 205, 118),
+            crate::pilot::ActivityAge::ThreeDays => YELLOW,
+        };
+        p.circle_filled(dot, 4.5, color.gamma_multiply(0.13));
+        p.circle_filled(dot, 3., color);
+        ui.interact(
+            Rect::from_center_size(dot, Vec2::new(14., 18.)),
+            response.id.with("activity"),
+            Sense::hover(),
+        )
+        .on_hover_text(rating.recent_hint(age));
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs(60));
+    }
 }
 pub fn gear(ui: &mut Ui) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(28.), Sense::click());

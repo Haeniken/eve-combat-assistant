@@ -546,8 +546,14 @@ impl Workers {
                         emit(&event_tx, &ctx, Message::SyncDone(result));
                     } else {
                         let started = std::time::Instant::now();
+                        let mut activity_rating = None;
                         if request.settings.pilot_rating {
                             let rating = source.pilot_rating(&request.target.pilot);
+                            activity_rating = rating
+                                .as_ref()
+                                .ok()
+                                .filter(|r| r.group_marker().is_some())
+                                .cloned();
                             trace.event("pilot_rating_end",json!({"error":rating.as_ref().err(),"rating":rating.as_ref().ok()}));
                             emit(
                                 &event_tx,
@@ -559,22 +565,33 @@ impl Workers {
                                 ),
                             );
                         }
-                        if !request.settings.auto_pilot_lookup {
-                            continue;
+                        if request.settings.auto_pilot_lookup {
+                            let result =
+                                source.sync_pilot(&request.target.pilot, ship.unwrap(), &progress);
+                            trace.event("network_end",json!({"error":result.as_ref().err(),"elapsed_ms":started.elapsed().as_millis()}));
+                            emit(
+                                &event_tx,
+                                &ctx,
+                                Message::PilotReady(
+                                    request.generation,
+                                    request.target.ship.clone(),
+                                    request.target.pilot.clone(),
+                                    result,
+                                ),
+                            );
                         }
-                        let result =
-                            source.sync_pilot(&request.target.pilot, ship.unwrap(), &progress);
-                        trace.event("network_end",json!({"error":result.as_ref().err(),"elapsed_ms":started.elapsed().as_millis()}));
-                        emit(
-                            &event_tx,
-                            &ctx,
-                            Message::PilotReady(
-                                request.generation,
-                                request.target.ship,
-                                request.target.pilot,
-                                result,
-                            ),
-                        );
+                        if let Some(mut rating) = activity_rating {
+                            source.recent_participation(&mut rating);
+                            emit(
+                                &event_tx,
+                                &ctx,
+                                Message::PilotRating(
+                                    request.generation,
+                                    request.target.pilot.clone(),
+                                    Ok(rating),
+                                ),
+                            );
+                        }
                     }
                     if let Some(error) = trace.take_error() {
                         emit(&event_tx, &ctx, Message::Status(error));

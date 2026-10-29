@@ -48,6 +48,17 @@ impl UpdateProgress {
     }
 }
 
+#[derive(Clone, Copy)]
+struct RequestPolicy {
+    limit: u64,
+    attempts: u32,
+    timeout_seconds: u64,
+}
+const ACTIVITY_POLICY: RequestPolicy = RequestPolicy {
+    limit: 2 * 1024 * 1024,
+    attempts: 1,
+    timeout_seconds: 8,
+};
 pub struct Sources {
     pub store: Store,
     cancel: Arc<AtomicBool>,
@@ -159,6 +170,29 @@ impl Sources {
         Ok(())
     }
     pub fn request(&mut self, url: &str, body: Option<&Value>, ttl: i64) -> Result<Value, String> {
+        let limit = if url.contains("/history/raw/") {
+            512 * 1024 * 1024
+        } else {
+            100 * 1024 * 1024
+        };
+        self.request_bounded(
+            url,
+            body,
+            ttl,
+            RequestPolicy {
+                limit,
+                attempts: 3,
+                timeout_seconds: 60,
+            },
+        )
+    }
+    fn request_bounded(
+        &mut self,
+        url: &str,
+        body: Option<&Value>,
+        ttl: i64,
+        policy: RequestPolicy,
+    ) -> Result<Value, String> {
         self.check()?;
         let request_id = crate::diagnostics::trace_id("http");
         let safe_url = crate::diagnostics::trace_url(url);
@@ -196,7 +230,7 @@ impl Sources {
             self.wait(wait)?;
             self.last = Instant::now();
         }
-        for attempt in 1..=3_u32 {
+        for attempt in 1..=policy.attempts {
             self.check()?;
             let started = Instant::now();
             self.record(
@@ -211,12 +245,18 @@ impl Sources {
             let result = if let Some(body) = body {
                 self.agent
                     .post(url)
+                    .config()
+                    .timeout_global(Some(Duration::from_secs(policy.timeout_seconds)))
+                    .build()
                     .header("User-Agent", agent)
                     .header("X-Compatibility-Date", "2026-10-27")
                     .send_json(body)
             } else {
                 self.agent
                     .get(url)
+                    .config()
+                    .timeout_global(Some(Duration::from_secs(policy.timeout_seconds)))
+                    .build()
                     .header("User-Agent", agent)
                     .header("Accept-Language", "en")
                     .header("X-Compatibility-Date", "2026-10-27")
@@ -235,7 +275,7 @@ impl Sources {
                         _ => "transport",
                     };
                     self.record("http_error",json!({"request_id":request_id,"attempt":attempt,"category":category,"elapsed_ms":started.elapsed().as_millis()}));
-                    if attempt < 3 {
+                    if attempt < policy.attempts {
                         self.record("http_retry",json!({"request_id":request_id,"attempt":attempt,"seconds":2_u32.pow(attempt)}));
                         self.wait(2_u32.pow(attempt) as f64)?;
                         continue;
@@ -260,7 +300,7 @@ impl Sources {
             }
             self.record("http_headers",json!({"request_id":request_id,"attempt":attempt,"status":status,"headers":headers,"elapsed_ms":started.elapsed().as_millis()}));
             if !(200..300).contains(&status) {
-                if [420, 429, 502, 503, 504].contains(&status) && attempt < 3 {
+                if [420, 429, 502, 503, 504].contains(&status) && attempt < policy.attempts {
                     let seconds = response
                         .headers()
                         .get("retry-after")
@@ -276,11 +316,7 @@ impl Sources {
                 self.record("http_error",json!({"request_id":request_id,"attempt":attempt,"status":status,"category":"status","elapsed_ms":started.elapsed().as_millis()}));
                 return Err(format!("Источник вернул HTTP {status}"));
             }
-            let limit = if url.contains("/history/raw/") {
-                512 * 1024 * 1024
-            } else {
-                100 * 1024 * 1024
-            };
+            let limit = policy.limit;
             let mut raw = Vec::new();
             let track_download = url.contains("/raw/") && self.on_update.is_some();
             let reading = (|| -> std::io::Result<()> {
@@ -460,7 +496,10 @@ impl Sources {
             None,
             3600,
         )?;
-        let rating = crate::pilot::Rating::from_stats(&stats, character)?;
+        let mut rating = crate::pilot::Rating::from_stats(&stats, character)?;
+        if let Some(cached) = crate::pilot::cached_activity(&self.store, character) {
+            rating.recent = cached.activity;
+        }
         self.store.set_meta(
             &format!("pilot_rating:v1:{character}"),
             &serde_json::to_value(&rating).map_err(|e| e.to_string())?,
@@ -470,6 +509,56 @@ impl Sources {
             json!({"character_id":character,"rating":rating}),
         );
         Ok(rating)
+    }
+    pub fn recent_participation(&mut self, rating: &mut crate::pilot::Rating) {
+        let url = format!(
+            "https://zkillboard.com/api/kills/characterID/{}/npc/0/pastSeconds/259200/",
+            rating.character_id
+        );
+        self.recent_participation_at(rating, &url, Utc::now().timestamp());
+    }
+    fn recent_participation_at(&mut self, rating: &mut crate::pilot::Rating, url: &str, now: i64) {
+        use crate::pilot::{ACTIVITY_TTL, ActivityCache, RecentActivity};
+        if rating.group_marker().is_none() {
+            return;
+        }
+        let character = rating.character_id;
+        let cached = crate::pilot::cached_activity(&self.store, character);
+        if let Some(cached) = &cached
+            && (0..ACTIVITY_TTL).contains(&now.saturating_sub(cached.checked_at))
+        {
+            rating.recent = cached.activity.clone();
+            self.record(
+                "pilot_activity_cache_hit",
+                json!({"character_id":character,"activity":rating.recent}),
+            );
+            return;
+        }
+        let mut activity = cached.map(|c| c.activity).unwrap_or_default();
+        self.record("pilot_activity_start",json!({"character_id":character,"period_seconds":crate::pilot::ACTIVITY_WINDOW,"max_pages":1,"max_records":200,"max_body_bytes":ACTIVITY_POLICY.limit,"timeout_seconds":ACTIVITY_POLICY.timeout_seconds,"attempts":1}));
+        let result = self
+            .request_bounded(url, None, 0, ACTIVITY_POLICY)
+            .and_then(|value| {
+                let rows = value
+                    .as_array()
+                    .ok_or("Источник не вернул список недавних боёв")?;
+                let scanned = RecentActivity::from_kills(rows, character, now);
+                Ok((scanned, rows.len()))
+            });
+        if let Ok((found, _)) = &result {
+            activity.merge(found.clone());
+        }
+        rating.recent = activity.clone();
+        // Failures also get an hour cooldown; confirmed timestamps remain valid until they age out.
+        let cache = ActivityCache {
+            character_id: character,
+            checked_at: now,
+            activity,
+        };
+        let saved = self
+            .store
+            .set_meta(&format!("pilot_activity:v1:{character}"), &json!(cache));
+        self.record("pilot_activity_end",json!({"character_id":character,"records":result.as_ref().ok().map(|(_,n)|n),"activity":rating.recent,"error":result.as_ref().err(),"cache_write_error":saved.err()}));
     }
     pub fn sync_pilot(
         &mut self,
@@ -739,6 +828,105 @@ mod tests {
         let path = std::env::temp_dir().join(crate::diagnostics::trace_id("eve-source-test"));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+    #[test]
+    fn recent_activity_is_cached_for_an_hour_and_failure_keeps_confirmed_timestamp() {
+        let directory = temp();
+        let now = Utc::now().timestamp();
+        let rows = json!([{"killmail_time":chrono::DateTime::from_timestamp(now-6*3600,0).unwrap().to_rfc3339(),"victim":{"character_id":456},"attackers":[{"character_id":123},{"character_id":124}],"zkb":{"npc":false,"solo":false}}]);
+        let (url, server) = mock(vec![(200, rows), (503, json!({"error":"unavailable"}))]);
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        source.set_trace(
+            crate::diagnostics::Trace::new(directory.join("debug"))
+                .job(true, json!({"job_id":"activity-test"})),
+        );
+        let mut rating=crate::pilot::Rating::from_stats(&json!({"type":"characterID","id":123,"shipsDestroyed":100,"shipsLost":10,"soloKills":1,"soloLosses":10}),123).unwrap();
+        source
+            .store
+            .set_meta("pilot_rating:v1:123", &json!(rating))
+            .unwrap();
+        source.recent_participation_at(&mut rating, &url, now);
+        assert_eq!(rating.recent.group_at, Some(now - 6 * 3600));
+        assert_eq!(
+            crate::pilot::cached_character(&source.store, 123)
+                .unwrap()
+                .recent
+                .group_at,
+            rating.recent.group_at
+        );
+        source.recent_participation_at(&mut rating, &url, now + 3599);
+        source.recent_participation_at(&mut rating, &url, now + 3600);
+        source.recent_participation_at(&mut rating, &url, now + 3601);
+        assert_eq!(rating.recent.group_at, Some(now - 6 * 3600));
+        let cache = crate::pilot::cached_activity(&source.store, 123).unwrap();
+        assert_eq!(cache.checked_at, now + 3600);
+        rating.kills = 19;
+        source.recent_participation_at(&mut rating, &url, now + 7200);
+        assert_eq!(server.join().unwrap().len(), 2);
+        let log = std::fs::read_to_string(directory.join("debug/fits.jsonl")).unwrap();
+        assert_eq!(
+            log.lines()
+                .filter(|l| l.contains("\"kind\":\"http_attempt\""))
+                .count(),
+            2
+        );
+        assert!(!log.contains("http_retry"));
+        assert!(log.contains("pilot_activity_cache_hit"));
+    }
+    #[test]
+    fn oversized_recent_activity_does_not_retry_or_erase_the_rating() {
+        use std::{io::Write, net::TcpListener};
+        let directory = temp();
+        let now = Utc::now().timestamp();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/activity", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = [0; 4096];
+            let _ = stream.read(&mut bytes);
+            let body =
+                json!([{"padding":"x".repeat(ACTIVITY_POLICY.limit as usize+128)}]).to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(body.as_bytes());
+        });
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        source.set_trace(
+            crate::diagnostics::Trace::new(directory.join("debug"))
+                .job(true, json!({"job_id":"activity-limit-test"})),
+        );
+        let mut rating=crate::pilot::Rating::from_stats(&json!({"type":"characterID","id":123,"shipsDestroyed":100,"shipsLost":10,"soloKills":5,"soloLosses":10}),123).unwrap();
+        let score = rating.score;
+        source.recent_participation_at(&mut rating, &url, now);
+        source.recent_participation_at(&mut rating, &url, now + 60);
+        assert!(rating.recent.group_at.is_none());
+        assert_eq!(rating.score, score);
+        assert_eq!(
+            crate::pilot::cached_activity(&source.store, 123)
+                .unwrap()
+                .checked_at,
+            now
+        );
+        server.join().unwrap();
+        let log = std::fs::read_to_string(directory.join("debug/fits.jsonl")).unwrap();
+        assert!(log.contains("body_limit"));
+        assert_eq!(
+            log.lines()
+                .filter(|l| l.contains("\"kind\":\"http_attempt\""))
+                .count(),
+            1
+        );
     }
     #[test]
     fn pilot_rating_uses_cached_identity_and_stats_independently_of_fitting() {
