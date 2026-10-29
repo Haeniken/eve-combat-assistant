@@ -8,7 +8,7 @@ use std::{
 
 const LOG_LIMIT: u64 = 4 * 1024 * 1024;
 const SNAPSHOT_LIMIT: u64 = 64 * 1024 * 1024;
-const SNAPSHOT_COUNT: usize = 80;
+const SNAPSHOT_COUNT: usize = 512;
 
 pub struct DebugLog {
     directory: PathBuf,

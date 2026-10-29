@@ -1575,6 +1575,15 @@ fn bundled_database_is_read_only_deduplicated_and_separate_from_user_records() {
     assert!(store.seed_error.is_none(), "{:?}", store.seed_error);
     assert_eq!(store.global_ships().unwrap(), vec![587]);
     assert_eq!(store.archive_count("20261027"), 2);
+    assert_eq!(
+        store
+            .ingest_archive(&[first.clone(), second.clone()], false)
+            .unwrap(),
+        0
+    );
+    assert_eq!(store.local_global_count(587).unwrap(), 0);
+    assert_eq!(store.global_mails(587).unwrap().len(), 2);
+
     store.ingest(std::slice::from_ref(&first)).unwrap(); // personal-only duplicate must not mask seed global data
     assert_eq!(store.global_mails(587).unwrap().len(), 2);
     store.ingest_global(&[first]).unwrap();

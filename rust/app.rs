@@ -336,7 +336,7 @@ impl CombatApp {
             distance: None,
             angular: 0.,
         };
-        let _ = self.workers.network.send(NetworkRequest {
+        let _ = self.workers.update.send(NetworkRequest {
             generation: self.generation,
             queued_at: Instant::now(),
             settings,

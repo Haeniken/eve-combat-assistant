@@ -628,8 +628,8 @@ impl Sources {
         let totals = totals
             .as_object()
             .ok_or("Некорректный указатель дневного архива")?;
-        let (mut date, mut count, mut failed) = (start, 0, Vec::new());
-        while date <= end {
+        let (mut date, mut count, mut failed) = (end, 0, Vec::new());
+        while date >= start {
             self.check()?;
             let stamp = date.format("%Y%m%d").to_string();
             self.update_progress.current_day = Some(date.format("%d.%m.%Y").to_string());
@@ -641,7 +641,7 @@ impl Sources {
             self.record("archive_day",json!({"day":stamp,"expected":expected,"local_or_bundled":covered,"download":expected>0 && (force || covered!=expected)}));
             if expected == 0 || !force && covered == expected {
                 self.finish_day();
-                date += TimeDelta::days(1);
+                date -= TimeDelta::days(1);
                 continue;
             }
             progress(format!(
@@ -658,7 +658,7 @@ impl Sources {
                     self.record("archive_day_error", json!({"day":stamp,"error":error}));
                     failed.push(stamp);
                     self.finish_day();
-                    date += TimeDelta::days(1);
+                    date -= TimeDelta::days(1);
                     continue;
                 }
             };
@@ -698,7 +698,7 @@ impl Sources {
             }
             self.update_progress.phase = "Сохранение данных".into();
             self.publish_update();
-            let inserted = self.store.ingest_global(&mails)?;
+            let inserted = self.store.ingest_archive(&mails, force)?;
             count += inserted;
             self.update_progress.inserted = count;
             self.store.set_meta(
@@ -710,7 +710,7 @@ impl Sources {
                 failed.push(stamp);
             }
             self.finish_day();
-            date += TimeDelta::days(1);
+            date -= TimeDelta::days(1);
         }
         self.record(
             "archive_complete",
@@ -1027,6 +1027,32 @@ mod tests {
         }
         drop(source);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn archive_visits_newest_days_first_and_does_not_reload_unchanged_days() {
+        let directory = temp();
+        let row = |id, day| json!({"killmail_id":id,"killmail_time":format!("2026-10-{day}T12:00:00Z"),"victim":{"ship_type_id":587,"items":[]},"attackers":[]});
+        let (base, server) = mock(vec![
+            (200, json!({"20261026":1,"20261027":1})),
+            (200, json!({"2":row(2,27)})),
+            (200, json!({"1":row(1,26)})),
+        ]);
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        source.archive_base = format!("{base}/history");
+        source
+            .archive(
+                NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 10, 27).unwrap(),
+                &|_| {},
+            )
+            .unwrap();
+        let requests = server.join().unwrap();
+        assert!(requests[1].contains("raw/20261027"));
+        assert!(requests[2].contains("raw/20261026"));
     }
     #[test]
     fn archive_update_covers_all_hulls_and_only_downloads_new_or_changed_days() {

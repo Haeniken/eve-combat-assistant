@@ -172,7 +172,9 @@ impl Window<'_> {
                             match *self.tab {
                                 0 => appearance(ui, draft),
                                 1 => response.error = own_fit(ui, draft),
-                                2 => target(ui, draft, self.catalog),
+                                2 => {
+                                    target(ui, draft, self.catalog);
+                                }
                                 3 => {
                                     response.action =
                                         screen(ui, draft, self.screen_state, self.ocr_status)
@@ -469,23 +471,60 @@ fn own_fit(ui: &mut Ui, draft: &mut Settings) -> Option<String> {
     error
 }
 
-fn target(ui: &mut Ui, draft: &mut Settings, catalog: &Catalog) {
+fn target(ui: &mut Ui, draft: &mut Settings, catalog: &Catalog) -> egui::Response {
     section(ui, "КОРАБЛЬ");
-    egui::ComboBox::from_id_salt("target_ship")
+    let query_id = ui.make_persistent_id("target_ship_query");
+    let popup = egui::ComboBox::from_id_salt("target_ship")
         .selected_text(&draft.ship)
         .width(ui.available_width())
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show_ui(ui, |ui| {
-            ui.text_edit_singleline(&mut draft.ship);
-            let filter = draft.ship.to_lowercase();
+            let previous = ui.data_mut(|data| data.get_temp::<String>(query_id));
+            let mut query = previous.clone().unwrap_or_default();
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut query)
+                    .id(query_id)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Название корабля…"),
+            );
+            if previous.is_none() {
+                edit.request_focus();
+            }
+            ui.data_mut(|data| data.insert_temp(query_id, query.clone()));
+            let filter = query.trim().to_lowercase();
+            let matches: Vec<_> = catalog
+                .ships
+                .iter()
+                .filter(|(_, name)| name.to_lowercase().contains(&filter))
+                .collect();
+            if (edit.has_focus() || edit.lost_focus())
+                && ui.input(|input| input.key_pressed(egui::Key::Enter))
+            {
+                let chosen = matches
+                    .iter()
+                    .find(|(_, name)| name.eq_ignore_ascii_case(query.trim()))
+                    .or_else(|| {
+                        if matches.len() == 1 {
+                            matches.first()
+                        } else {
+                            None
+                        }
+                    });
+                if let Some((_, name)) = chosen {
+                    draft.ship = name.clone();
+                    ui.close();
+                } else {
+                    edit.request_focus();
+                }
+            }
             egui::ScrollArea::vertical()
+                .id_salt("target_ship_results")
                 .max_height(180.)
                 .show(ui, |ui| {
-                    for (_, name) in catalog
-                        .ships
-                        .iter()
-                        .filter(|(_, name)| name.to_lowercase().contains(&filter))
-                        .take(30)
-                    {
+                    if matches.is_empty() {
+                        style::caption(ui, "Корабль не найден");
+                    }
+                    for (_, name) in matches {
                         if ui.selectable_label(*name == draft.ship, name).clicked() {
                             draft.ship = name.clone();
                             ui.close();
@@ -493,6 +532,9 @@ fn target(ui: &mut Ui, draft: &mut Settings, catalog: &Catalog) {
                     }
                 });
         });
+    if popup.inner.is_none() {
+        ui.data_mut(|data| data.remove::<String>(query_id));
+    }
     style::caption(ui, "Введите название, чтобы найти корпус в каталоге.");
     section(ui, "ПИЛОТ");
     ui.label("Пилот — необязательно");
@@ -502,6 +544,7 @@ fn target(ui: &mut Ui, draft: &mut Settings, catalog: &Catalog) {
         ui,
         "Основные варианты берутся с диска. Фит пилота добавляется сверху после загрузки.",
     );
+    popup.response
 }
 
 fn screen(
@@ -1156,4 +1199,93 @@ fn load_skills(path: &Path) -> Result<Value, String> {
         return Err("Неверный формат навыков".into());
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn ship_search_accepts_typing_and_clicks_without_changing_selection_until_confirmed() {
+        let context = egui::Context::default();
+        let catalog = Catalog::load().unwrap();
+        let mut draft = Settings {
+            ship: "Drake Navy Issue".into(),
+            ..Default::default()
+        };
+        let mut time = 0.;
+        let mut combo_id = egui::Id::NULL;
+        let mut query_id = egui::Id::NULL;
+        let mut frame = |draft: &mut Settings, events: Vec<egui::Event>| {
+            time += 0.1;
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    time: Some(time),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(650., 480.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    query_id = ui.make_persistent_id("target_ship_query");
+                    combo_id = target(ui, draft, &catalog).id;
+                },
+            );
+            output.textures_delta.clear();
+            (combo_id, query_id)
+        };
+        let (combo, query) = frame(&mut draft, vec![]);
+        let button = context.read_response(combo).unwrap().rect.center();
+        let click = |pos, pressed| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        frame(&mut draft, click(button, true));
+        frame(&mut draft, click(button, false));
+        frame(&mut draft, vec![egui::Event::Text("Gnosis".into())]);
+        assert_eq!(draft.ship, "Drake Navy Issue");
+        assert_eq!(
+            context
+                .data_mut(|data| data.get_temp::<String>(query))
+                .as_deref(),
+            Some("Gnosis")
+        );
+        let field = context.read_response(query).unwrap().rect.center();
+        frame(&mut draft, click(field, true));
+        frame(&mut draft, click(field, false));
+        assert!(egui::ComboBox::is_open(&context, combo));
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut draft, vec![key(egui::Key::Enter)]);
+        frame(&mut draft, vec![]);
+        assert_eq!(draft.ship, "Gnosis");
+        assert!(!egui::ComboBox::is_open(&context, combo));
+        frame(&mut draft, click(button, true));
+        frame(&mut draft, click(button, false));
+        frame(&mut draft, vec![egui::Event::Paste("unknown hull".into())]);
+        assert_eq!(draft.ship, "Gnosis");
+        assert_eq!(
+            context
+                .data_mut(|data| data.get_temp::<String>(query))
+                .as_deref(),
+            Some("unknown hull")
+        );
+        frame(&mut draft, vec![key(egui::Key::Escape)]);
+        frame(&mut draft, vec![]);
+        assert_eq!(draft.ship, "Gnosis");
+        assert!(!egui::ComboBox::is_open(&context, combo));
+    }
 }

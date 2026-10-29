@@ -206,6 +206,29 @@ impl Store {
         }
         Ok(count)
     }
+    /// Normal archive updates only add records absent from the read-only starter snapshot.
+    pub fn ingest_archive(&mut self, mails: &[Value], force: bool) -> Result<usize, String> {
+        if force || self.seed.is_none() {
+            return self.ingest_global(mails);
+        }
+        let fresh = {
+            let mut present = self
+                .db
+                .prepare("SELECT 1 FROM bundled.killmails WHERE id=?")
+                .map_err(|error| error.to_string())?;
+            let mut fresh = Vec::new();
+            for mail in mails {
+                if !present
+                    .exists([id(mail, "killmail_id")])
+                    .map_err(|error| error.to_string())?
+                {
+                    fresh.push(mail.clone());
+                }
+            }
+            fresh
+        };
+        self.ingest_global(&fresh)
+    }
     pub fn global_mails(&self, ship: i32) -> Result<Vec<Value>, String> {
         let sql = if self.seed.is_some() {
             "SELECT raw,compressed FROM (SELECT k.id,k.happened,k.raw,1 AS compressed FROM main.killmails k JOIN main.global_membership g ON g.id=k.id WHERE k.ship=?1 UNION ALL SELECT k.id,k.happened,k.raw,0 AS compressed FROM bundled.killmails k WHERE k.ship=?1 AND NOT EXISTS(SELECT 1 FROM main.global_membership g JOIN main.killmails m ON m.id=g.id WHERE g.id=k.id)) ORDER BY happened DESC,id DESC"

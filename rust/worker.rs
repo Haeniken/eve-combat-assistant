@@ -1,4 +1,4 @@
-//! Три постоянных потока: расчёт, сеть и OCR. UI получает только сообщения.
+//! Постоянные потоки расчёта, сети пилотов, обновления базы и OCR. UI получает сообщения.
 
 use crate::{
     engine::{Catalog, Engine},
@@ -16,11 +16,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::{Arc, atomic::AtomicBool, mpsc},
     thread,
     time::Duration,
 };
@@ -117,6 +113,7 @@ pub struct Workers {
     pub trace: crate::diagnostics::Trace,
     pub compute: mpsc::Sender<AnalysisRequest>,
     pub network: mpsc::Sender<NetworkRequest>,
+    pub update: mpsc::Sender<NetworkRequest>,
     pub ocr: mpsc::Sender<OcrRequest>,
     pub cancel: Arc<AtomicBool>,
 }
@@ -386,6 +383,7 @@ impl Workers {
         let fit_trace = crate::diagnostics::Trace::new(debug_directory.clone());
         let (compute, compute_rx) = mpsc::channel::<AnalysisRequest>();
         let (network, network_rx) = mpsc::channel::<NetworkRequest>();
+        let (update, update_rx) = mpsc::channel::<NetworkRequest>();
         let (ocr, ocr_rx) = mpsc::channel::<OcrRequest>();
         let cancel = Arc::new(AtomicBool::new(false));
         {
@@ -469,7 +467,9 @@ impl Workers {
                 }
             });
         }
-        {
+        // Archive downloads must never occupy the selected pilot's network queue.
+        for network_rx in [network_rx, update_rx] {
+            let directory = directory.clone();
             let event_tx = event_tx.clone();
             let ctx = ctx.clone();
             let cancel = cancel.clone();
@@ -499,9 +499,6 @@ impl Workers {
                             continue;
                         }
                     };
-                    if !request.global {
-                        cancel.store(false, Ordering::Relaxed);
-                    }
                     let job_cancel = if request.global {
                         cancel.clone()
                     } else {
@@ -824,6 +821,7 @@ impl Workers {
             trace: fit_trace,
             compute,
             network,
+            update,
             ocr,
             cancel,
         }
