@@ -40,6 +40,7 @@ pub enum Message {
     FitReady(String, Result<crate::fit_plan::Plan, String>),
     Analyzed(u64, AnalysisPhase, Result<Box<Matchup>, String>),
     Status(String),
+    PilotLookup(u64, crate::pilot_lookup::Event),
     PilotReady(u64, String, String, Result<(), String>),
     PilotStatus(u64, String, String, String),
     PilotRating(u64, String, Result<crate::pilot::Rating, String>),
@@ -114,6 +115,7 @@ pub struct Workers {
     pub compute: mpsc::Sender<AnalysisRequest>,
     pub network: mpsc::Sender<NetworkRequest>,
     pub update: mpsc::Sender<NetworkRequest>,
+    pub lookup: mpsc::Sender<crate::pilot_lookup::Request>,
     pub ocr: mpsc::Sender<OcrRequest>,
     pub cancel: Arc<AtomicBool>,
 }
@@ -384,6 +386,7 @@ impl Workers {
         let (compute, compute_rx) = mpsc::channel::<AnalysisRequest>();
         let (network, network_rx) = mpsc::channel::<NetworkRequest>();
         let (update, update_rx) = mpsc::channel::<NetworkRequest>();
+        let (lookup, lookup_rx) = mpsc::channel::<crate::pilot_lookup::Request>();
         let (ocr, ocr_rx) = mpsc::channel::<OcrRequest>();
         let cancel = Arc::new(AtomicBool::new(false));
         {
@@ -599,6 +602,7 @@ impl Workers {
         {
             let event_tx = event_tx.clone();
             let ctx = ctx.clone();
+            let catalog = catalog.clone();
             thread::spawn(move || {
                 platform::low_priority();
                 let mut debug = crate::diagnostics::DebugLog::new(debug_directory);
@@ -659,7 +663,7 @@ impl Workers {
                             selected_retries.clear();
                             card_document = ocr::Document::default();
                             last_state.clear();
-                            continue;
+                            cached = None;
                         }
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -817,11 +821,69 @@ impl Workers {
                 }
             });
         }
+        {
+            let dir = directory.clone();
+            let catalog = catalog.clone();
+            let ctx = ctx.clone();
+            let event_tx = event_tx.clone();
+            let trace = fit_trace.clone();
+            thread::spawn(move || {
+                use crate::pilot_lookup::Event;
+                use std::sync::atomic::Ordering;
+                platform::low_priority();
+                while let Ok(mut request) = lookup_rx.recv() {
+                    while let Ok(next) = lookup_rx.try_recv() {
+                        request = next;
+                    }
+                    if request.cancel.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    let trace = trace.job(request.debug, json!({"job":"quick_pilot_lookup","lookup_generation":request.generation,"job_id":crate::diagnostics::trace_id("lookup")}));
+                    let send = |event| {
+                        emit(
+                            &event_tx,
+                            &ctx,
+                            Message::PilotLookup(request.generation, event),
+                        )
+                    };
+                    let store = match Store::open(&dir) {
+                        Ok(store) => store,
+                        Err(error) => {
+                            send(Event::Profile(Err(error)));
+                            continue;
+                        }
+                    };
+                    let mut source = Sources::new(store, request.cancel.clone(), catalog.clone());
+                    source.set_trace(trace.clone());
+                    source.limit_interactive(Duration::from_secs(25));
+                    let profile = source.lookup_profile(&request.name);
+                    trace.event("quick_lookup_profile_ready", json!({"character_id":profile.as_ref().ok().map(|p|p.rating.character_id),"error":profile.as_ref().err()}));
+                    send(Event::Profile(profile.clone()));
+                    let Ok(mut profile) = profile else {
+                        continue;
+                    };
+                    if request.cancel.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    source.limit_interactive(Duration::from_secs(25));
+                    let loss = source.lookup_latest_loss(profile.rating.character_id);
+                    trace.event("quick_lookup_loss_ready", json!({"killmail_id":loss.as_ref().ok().and_then(|l|l.as_ref()).map(|l|l.killmail_id),"error":loss.as_ref().err()}));
+                    send(Event::Loss(loss));
+                    if request.cancel.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    source.limit_interactive(Duration::from_secs(8));
+                    source.recent_participation(&mut profile.rating);
+                    send(Event::Activity(profile.rating));
+                }
+            });
+        }
         Self {
             trace: fit_trace,
             compute,
             network,
             update,
+            lookup,
             ocr,
             cancel,
         }

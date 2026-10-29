@@ -59,6 +59,7 @@ pub struct CombatApp {
     tx: mpsc::Sender<Message>,
     profile: crate::account::Profile,
     fit_state: crate::settings_ui::FitState,
+    pilot_lookup: crate::pilot_lookup::State,
     account_busy: bool,
     own_ship_busy: bool,
     next_ship_check: Instant,
@@ -198,6 +199,7 @@ impl CombatApp {
             draft: args.open_settings.then(|| settings.clone()),
             profile: crate::account::Profile::load(&directory),
             fit_state: Default::default(),
+            pilot_lookup: Default::default(),
             account_busy: false,
             own_ship_busy: false,
             next_ship_check: Instant::now(),
@@ -427,6 +429,18 @@ impl CombatApp {
         self.recalculate();
         Ok(())
     }
+    fn reset_to_ocr(&mut self) {
+        self.pilot_lookup.clear();
+        self.clear_target_view();
+        self.settings.pilot.clear();
+        self.settings.ocr = true;
+        self.selected = 0;
+        self.configure_ocr();
+        self.status = "Цель сброшена · OCR включён".into();
+        if let Err(error) = self.settings.save(&self.directory) {
+            self.status = error;
+        }
+    }
     fn clear_target_view(&mut self) {
         self.target = None;
         self.matchup = None;
@@ -563,6 +577,9 @@ impl CombatApp {
                             Err(e) => self.status = e,
                         }
                     }
+                }
+                Message::PilotLookup(generation, event) => {
+                    self.pilot_lookup.apply(generation, event)
                 }
                 Message::Status(text) => self.status = text,
                 Message::PilotRating(generation, pilot, result) => {
@@ -727,7 +744,8 @@ impl CombatApp {
             }
         }
     }
-    fn header(&mut self, ui: &mut egui::Ui) {
+    fn header(&mut self, ui: &mut egui::Ui) -> egui::Rect {
+        let mut search_anchor = egui::Rect::NOTHING;
         ui.horizontal(|ui| {
             ui.image((self.app_icon.id(), Vec2::splat(22.)));
             let response = ui.add(
@@ -749,13 +767,60 @@ impl CombatApp {
                 if style::gear(ui).clicked() {
                     self.open_settings();
                 }
+                let search = style::search(ui, self.pilot_lookup.expanded)
+                    .on_hover_text("Поиск пилота · Ctrl+V");
+                search_anchor = search.rect;
+                if search.clicked() {
+                    self.pilot_lookup.toggle();
+                }
             });
         });
         style::separator(ui);
+        search_anchor
     }
     fn overlay(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = 4.;
-        self.header(ui);
+        if !self.args.demo
+            && self.draft.is_none()
+            && self.details.is_none()
+            && !self.selecting
+            && !self.capturing
+            && ui.input_mut(|input| {
+                let pressed = input.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        egui::Event::Key {
+                            key: egui::Key::Escape,
+                            pressed: true,
+                            repeat: false,
+                            ..
+                        }
+                    )
+                });
+                pressed && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+            })
+        {
+            self.reset_to_ocr();
+        }
+        let anchor = self.header(ui);
+        let lookup_allowed =
+            self.draft.is_none() && self.details.is_none() && !self.selecting && !self.capturing;
+        match crate::pilot_lookup::popup(ui, &mut self.pilot_lookup, anchor, lookup_allowed) {
+            Some(crate::pilot_lookup::Action::Submit) => {
+                match self.pilot_lookup.start(self.settings.ocr_debug) {
+                    Ok(request) => {
+                        if self.workers.lookup.send(request).is_err() {
+                            self.pilot_lookup.profile_pending = false;
+                            self.pilot_lookup.loss_pending = false;
+                            self.pilot_lookup.error = Some("Поток поиска недоступен".into());
+                        }
+                    }
+                    Err(error) => self.pilot_lookup.error = Some(error),
+                }
+            }
+            Some(crate::pilot_lookup::Action::OpenFit(eft)) => self.details = Some(eft),
+            None => {}
+        }
         let advice = self
             .matchup
             .as_ref()
@@ -1756,6 +1821,7 @@ impl eframe::App for CombatApp {
 }
 impl Drop for CombatApp {
     fn drop(&mut self) {
+        self.pilot_lookup.clear();
         self.account_cancel.store(true, Ordering::Relaxed);
         self.workers.cancel.store(true, Ordering::Relaxed);
         let _ = self.settings.save(&self.directory);
@@ -1910,6 +1976,143 @@ pub(crate) fn selection_rectangle(
 mod manual_target_tests {
     use super::*;
     use clap::Parser;
+    #[test]
+    fn lookup_is_independent_and_escape_clears_once_then_rescans_with_fresh_epoch() {
+        let directory =
+            std::env::temp_dir().join(crate::diagnostics::trace_id("lookup-reset-test"));
+        std::fs::create_dir_all(&directory).unwrap();
+        let settings = Settings {
+            ocr: false,
+            pilot: "Combat Pilot".into(),
+            region: Some([0, 0, 350, 130]),
+            own_fit: include_str!("../resources/example-tristan.eft").into(),
+            ..Default::default()
+        };
+        settings.save(&directory).unwrap();
+        let context = egui::Context::default();
+        let cc = eframe::CreationContext::_new_kittest(context.clone());
+        let mut app = CombatApp::new(&cc, Args::parse_from(["test"]), directory.clone());
+        let (lookup, requests) = mpsc::channel();
+        app.workers.lookup = lookup;
+        let (ocr, ocr_requests) = mpsc::channel();
+        app.workers.ocr = ocr;
+        let (compute, analyses) = mpsc::channel();
+        app.workers.compute = compute;
+        let combat = Target {
+            pilot: "Combat Pilot".into(),
+            ship: "Rifter".into(),
+            distance: Some(1500.),
+            angular: 0.,
+        };
+        app.target = Some(combat.clone());
+        app.generation = 77;
+        app.gate.feed(Some(combat.clone()));
+        app.gate.feed(Some(combat.clone()));
+        let epoch = app.ocr_epoch;
+        let mut field = egui::Id::NULL;
+        let mut frame = |app: &mut CombatApp, events: Vec<egui::Event>| {
+            let mut out = context.run_ui(
+                egui::RawInput {
+                    events,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(440., 1000.),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    field = egui::Id::unique("pilot_lookup_input");
+                    app.overlay(ui);
+                },
+            );
+            out.textures_delta.clear();
+            field
+        };
+        frame(&mut app, vec![]);
+        assert!(!app.pilot_lookup.expanded);
+        assert!(context.memory(|m| m.focused()).is_none());
+        frame(&mut app, vec![egui::Event::Paste("Example Pilot".into())]);
+        let request = requests
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(request.name, "Example Pilot");
+        assert_eq!(app.target.as_ref().unwrap().pilot, "Combat Pilot");
+        assert_eq!(app.generation, 77);
+        assert!(!app.settings.ocr);
+        let rating=crate::pilot::Rating::from_stats(&json!({"type":"characterID","id":123,"soloKills":100,"soloLosses":20,"shipsDestroyed":1000,"shipsLost":200}),123).unwrap();
+        app.tx
+            .send(Message::PilotLookup(
+                request.generation,
+                crate::pilot_lookup::Event::Profile(Ok(crate::pilot_lookup::Profile {
+                    name: "Example Pilot".into(),
+                    rating,
+                })),
+            ))
+            .unwrap();
+        app.messages(&context);
+        assert!(app.pilot_lookup.profile.is_some());
+        assert_eq!(app.generation, 77);
+        assert_eq!(app.target.as_ref().unwrap().pilot, "Combat Pilot");
+        let esc = |repeat| egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![esc(false)]);
+        assert!(
+            app.target.is_none() && app.matchup.is_none() && app.pilot_lookup.profile.is_none()
+        );
+        assert!(app.pilot_lookup.input.is_empty() && app.settings.pilot.is_empty());
+        assert!(request.cancel.load(Ordering::Relaxed));
+        assert!(app.settings.ocr && app.ocr_epoch > epoch);
+        assert_eq!(app.settings.target_hold_seconds, 60);
+        assert_eq!(app.settings.own_fit, settings.own_fit);
+        assert!(
+            !app.gate
+                .expire(Instant::now() + std::time::Duration::from_secs(61), 60)
+        );
+        let OcrRequest::Configure(config) = ocr_requests.try_recv().unwrap() else {
+            panic!("Expected OCR restart")
+        };
+        assert!(config.enabled && config.settings.ocr);
+        assert_eq!(config.epoch, app.ocr_epoch);
+        let generation = app.generation;
+        frame(&mut app, vec![esc(true)]);
+        frame(&mut app, vec![]);
+        assert_eq!(app.generation, generation);
+        assert!(ocr_requests.try_recv().is_err());
+        app.tx
+            .send(Message::Ocr(
+                epoch,
+                Ok(Some(combat.clone())),
+                Some(combat.pilot.clone()),
+            ))
+            .unwrap();
+        app.tx
+            .send(Message::PilotLookup(
+                request.generation,
+                crate::pilot_lookup::Event::Profile(Err("stale".into())),
+            ))
+            .unwrap();
+        app.messages(&context);
+        assert!(app.target.is_none() && app.pilot_lookup.error.is_none());
+        for _ in 0..2 {
+            app.tx
+                .send(Message::Ocr(
+                    app.ocr_epoch,
+                    Ok(Some(combat.clone())),
+                    Some(combat.pilot.clone()),
+                ))
+                .unwrap();
+        }
+        app.messages(&context);
+        assert_eq!(app.target.as_ref().unwrap().pilot, "Combat Pilot");
+        assert_eq!(analyses.try_recv().unwrap().target.pilot, "Combat Pilot");
+        drop(app);
+        let _ = std::fs::remove_dir_all(directory);
+    }
     #[test]
     fn saving_manual_target_enqueues_analysis_keeps_fit_and_ignores_stale_ocr() {
         let directory =

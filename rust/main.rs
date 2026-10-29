@@ -11,6 +11,7 @@ mod fits;
 mod model;
 mod ocr;
 mod pilot;
+mod pilot_lookup;
 mod platform;
 mod seed;
 mod settings_ui;

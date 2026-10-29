@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const LOG_LIMIT: u64 = 4 * 1024 * 1024;
+const LOG_LIMIT: u64 = 20 * 1024 * 1024;
 const SNAPSHOT_LIMIT: u64 = 64 * 1024 * 1024;
 const SNAPSHOT_COUNT: usize = 512;
 

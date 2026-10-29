@@ -69,6 +69,7 @@ pub struct Sources {
     archive_base: String,
     update_progress: UpdateProgress,
     on_update: Option<Box<dyn Fn(UpdateProgress) + Send>>,
+    interactive_deadline: Option<Instant>,
 }
 impl Sources {
     pub fn refresh_statistics(
@@ -119,6 +120,7 @@ impl Sources {
             archive_base: "https://r2z2.zkillboard.com/history".into(),
             update_progress: UpdateProgress::default(),
             on_update: None,
+            interactive_deadline: None,
         }
     }
     pub fn set_trace(&mut self, trace: crate::diagnostics::Trace) {
@@ -154,7 +156,16 @@ impl Sources {
             trace.event(kind, fields);
         }
     }
+    pub fn limit_interactive(&mut self, budget: Duration) {
+        self.interactive_deadline = Some(Instant::now() + budget);
+    }
     fn check(&self) -> Result<(), String> {
+        if self
+            .interactive_deadline
+            .is_some_and(|end| Instant::now() >= end)
+        {
+            return Err("Время поиска истекло. Повторите запрос".into());
+        }
         if self.cancel.load(Ordering::Relaxed) {
             Err("Обновление остановлено".into())
         } else {
@@ -180,9 +191,21 @@ impl Sources {
             body,
             ttl,
             RequestPolicy {
-                limit,
-                attempts: 3,
-                timeout_seconds: 60,
+                limit: if self.interactive_deadline.is_some() {
+                    4 * 1024 * 1024
+                } else {
+                    limit
+                },
+                attempts: if self.interactive_deadline.is_some() {
+                    1
+                } else {
+                    3
+                },
+                timeout_seconds: if self.interactive_deadline.is_some() {
+                    8
+                } else {
+                    60
+                },
             },
         )
     }
@@ -242,11 +265,16 @@ impl Sources {
                 env!("CARGO_PKG_VERSION"),
                 " (https://github.com/Haeniken/eve-combat-assistant)"
             );
+            let timeout = Duration::from_secs(policy.timeout_seconds);
+            let timeout = self
+                .interactive_deadline
+                .map(|end| timeout.min(end.saturating_duration_since(Instant::now())))
+                .unwrap_or(timeout);
             let result = if let Some(body) = body {
                 self.agent
                     .post(url)
                     .config()
-                    .timeout_global(Some(Duration::from_secs(policy.timeout_seconds)))
+                    .timeout_global(Some(timeout))
                     .build()
                     .header("User-Agent", agent)
                     .header("X-Compatibility-Date", "2026-10-27")
@@ -255,7 +283,7 @@ impl Sources {
                 self.agent
                     .get(url)
                     .config()
-                    .timeout_global(Some(Duration::from_secs(policy.timeout_seconds)))
+                    .timeout_global(Some(timeout))
                     .build()
                     .header("User-Agent", agent)
                     .header("Accept-Language", "en")
@@ -476,6 +504,13 @@ impl Sources {
             .map(|r| id(r, "id"))
             .filter(|id| *id > 0);
         if let Some(character) = character {
+            if let Some(row) = array(&resolved["characters"])
+                .iter()
+                .find(|row| id(row, "id") == character)
+            {
+                self.store
+                    .set_meta(&format!("character_name:{character}"), &row["name"])?;
+            }
             self.store.set_meta(
                 &format!("character:{}", name.to_lowercase()),
                 &json!(character),
@@ -556,6 +591,63 @@ impl Sources {
             .store
             .set_meta(&format!("pilot_activity:v1:{character}"), &json!(cache));
         self.record("pilot_activity_end",json!({"character_id":character,"records":result.as_ref().ok().map(|(_,n)|n),"activity":rating.recent,"error":result.as_ref().err(),"cache_write_error":saved.err()}));
+    }
+    pub fn lookup_profile(&mut self, name: &str) -> Result<crate::pilot_lookup::Profile, String> {
+        let character = self.resolve_pilot(name)?.ok_or("Пилот не найден в ESI")?;
+        let name = self
+            .store
+            .meta(&format!("character_name:{character}"))
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_else(|| name.to_string());
+        let rating = self.character_rating(character)?;
+        Ok(crate::pilot_lookup::Profile { name, rating })
+    }
+    pub fn lookup_latest_loss(
+        &mut self,
+        character: i64,
+    ) -> Result<Option<crate::pilot_lookup::Loss>, String> {
+        self.lookup_latest_loss_at(
+            character,
+            &format!("https://zkillboard.com/api/losses/characterID/{character}/npc/0/"),
+        )
+    }
+    fn lookup_latest_loss_at(
+        &mut self,
+        character: i64,
+        url: &str,
+    ) -> Result<Option<crate::pilot_lookup::Loss>, String> {
+        let value = self.request(url, None, 3600)?;
+        let rows = value.as_array().ok_or("Источник не вернул список потерь")?;
+        let mut rows: Vec<_> = rows.iter().take(200).collect();
+        rows.sort_by_key(|row| std::cmp::Reverse(id(row, "killmail_id")));
+        for row in rows {
+            self.check()?;
+            if row["zkb"]["npc"] == true {
+                continue;
+            }
+            let mail = self.complete(row)?;
+            if id(&mail["victim"], "character_id") != character
+                || !array(&mail["attackers"])
+                    .iter()
+                    .any(|a| id(a, "character_id") > 0 && id(a, "character_id") != character)
+                || mail["zkb"]["npc"] == true
+            {
+                continue;
+            }
+            let fit = crate::fits::normalize(&mail, &self.catalog);
+            return Ok(Some(crate::pilot_lookup::Loss {
+                killmail_id: id(&mail, "killmail_id"),
+                happened: s(&mail, "killmail_time").to_string(),
+                ship: self
+                    .catalog
+                    .esi_item_name(id(&mail["victim"], "ship_type_id") as i32)?,
+                description: fit
+                    .as_ref()
+                    .map(|fit| crate::fits::describe(fit, &self.catalog).0),
+                eft: fit.as_ref().map(|fit| crate::fits::eft(fit, &self.catalog)),
+            }));
+        }
+        Ok(None)
     }
     pub fn sync_pilot(
         &mut self,
@@ -947,6 +1039,105 @@ mod tests {
                 .count(),
             1
         );
+    }
+    #[test]
+    fn quick_lookup_uses_lifetime_cached_rating_without_a_hull() {
+        let directory = temp();
+        let store = Store::open_with_seed(&directory, None).unwrap();
+        store
+            .set_meta("character:example pilot", &json!(123))
+            .unwrap();
+        store
+            .set_meta("character_name:123", &json!("Example Pilot"))
+            .unwrap();
+        store.cache("https://zkillboard.com/api/stats/characterID/123/", &json!({"type":"characterID","id":123,"shipsDestroyed":1000,"shipsLost":30,"soloKills":70,"soloLosses":30}),3600).unwrap();
+        let mut source = Sources::new(
+            store,
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        source.limit_interactive(Duration::from_secs(1));
+        let profile = source.lookup_profile("example pilot").unwrap();
+        assert_eq!(profile.name, "Example Pilot");
+        assert_eq!(profile.rating.character_id, 123);
+        assert_eq!(profile.rating.solo_kills, 70);
+        assert!(profile.rating.score.is_some());
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn quick_lookup_last_pvp_loss_accepts_any_hull_and_fleet_without_date_filter() {
+        let directory = temp();
+        let row = |km, character, npc, attackers, ship, items| json!({"killmail_id":km,"killmail_time":"2020-01-01T00:00:00Z","victim":{"character_id":character,"ship_type_id":ship,"items":items},"attackers":attackers,"zkb":{"npc":npc}});
+        let mut fleet = Vec::new();
+        for id in 200..230 {
+            fleet.push(json!({"character_id":id}));
+        }
+        let rows = json!([
+            row(4, 123, true, json!([]), 587, json!([])),
+            row(3, 456, false, json!([{"character_id":200}]), 587, json!([])),
+            row(1, 123, false, json!([{"character_id":200}]), 587, json!([])),
+            row(
+                2,
+                123,
+                false,
+                json!(fleet),
+                33153,
+                json!([{"item_type_id":25715,"flag":27,"quantity_destroyed":1}])
+            )
+        ]);
+        let (url, server) = mock(vec![(200, rows)]);
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        source.limit_interactive(Duration::from_secs(8));
+        let loss = source.lookup_latest_loss_at(123, &url).unwrap().unwrap();
+        assert_eq!(loss.killmail_id, 2);
+        assert_eq!(loss.ship, "Drake Navy Issue");
+        assert!(
+            loss.eft
+                .unwrap()
+                .contains("Heavy Assault Missile Launcher II")
+        );
+        assert_eq!(
+            source
+                .lookup_latest_loss_at(123, &url)
+                .unwrap()
+                .unwrap()
+                .killmail_id,
+            2
+        );
+        assert_eq!(server.join().unwrap().len(), 1);
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn quick_lookup_keeps_latest_loss_even_without_modules_and_deadline_stops_requests() {
+        let directory = temp();
+        let (url, server) = mock(vec![(
+            200,
+            json!([{"killmail_id":3,"killmail_time":"2026-01-01T00:00:00Z","victim":{"character_id":123,"ship_type_id":587,"items":[]},"attackers":[{"character_id":200}],"zkb":{"npc":false}}]),
+        )]);
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        let loss = source.lookup_latest_loss_at(123, &url).unwrap().unwrap();
+        assert_eq!(loss.ship, "Rifter");
+        assert!(loss.eft.is_none());
+        source.limit_interactive(Duration::ZERO);
+        assert!(
+            source
+                .lookup_latest_loss_at(123, &url)
+                .unwrap_err()
+                .contains("Время поиска")
+        );
+        assert_eq!(server.join().unwrap().len(), 1);
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn pilot_rating_uses_cached_identity_and_stats_independently_of_fitting() {

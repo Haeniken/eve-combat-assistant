@@ -194,6 +194,24 @@ pub fn pilot_group(ui: &mut Ui, rating: &crate::pilot::Rating) {
             .request_repaint_after(std::time::Duration::from_secs(60));
     }
 }
+pub fn search(ui: &mut Ui, active: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(24.), Sense::click());
+    let color = if response.hovered() {
+        TEXT
+    } else if active {
+        CYAN
+    } else {
+        MUTED
+    };
+    let center = rect.center() - Vec2::splat(1.5);
+    ui.painter()
+        .circle_stroke(center, 5.5, Stroke::new(1.4, color));
+    ui.painter().line_segment(
+        [center + Vec2::splat(4.), center + Vec2::splat(9.)],
+        Stroke::new(1.4, color),
+    );
+    response
+}
 pub fn gear(ui: &mut Ui) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(28.), Sense::click());
     let p = ui.painter();
