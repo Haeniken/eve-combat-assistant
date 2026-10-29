@@ -19,6 +19,7 @@ pub enum Action {
     Cancel,
     CheckScreen,
     OpenDebugFolder,
+    CheckPilotInput,
     SelectRegion,
     SelectTargetsRegion,
     Sync,
@@ -472,6 +473,11 @@ fn own_fit(ui: &mut Ui, draft: &mut Settings) -> Option<String> {
 }
 
 fn target(ui: &mut Ui, draft: &mut Settings, catalog: &Catalog) -> egui::Response {
+    ui.horizontal(|ui| {
+        ui.label("Источник цели");
+        ui.radio_value(&mut draft.ocr, true, "Экран");
+        ui.radio_value(&mut draft.ocr, false, "Вручную");
+    });
     section(ui, "КОРАБЛЬ");
     let query_id = ui.make_persistent_id("target_ship_query");
     let popup = egui::ComboBox::from_id_salt("target_ship")
@@ -512,6 +518,7 @@ fn target(ui: &mut Ui, draft: &mut Settings, catalog: &Catalog) -> egui::Respons
                     });
                 if let Some((_, name)) = chosen {
                     draft.ship = name.clone();
+                    draft.ocr = false;
                     ui.close();
                 } else {
                     edit.request_focus();
@@ -527,6 +534,7 @@ fn target(ui: &mut Ui, draft: &mut Settings, catalog: &Catalog) -> egui::Respons
                     for (_, name) in matches {
                         if ui.selectable_label(*name == draft.ship, name).clicked() {
                             draft.ship = name.clone();
+                            draft.ocr = false;
                             ui.close();
                         }
                     }
@@ -538,11 +546,20 @@ fn target(ui: &mut Ui, draft: &mut Settings, catalog: &Catalog) -> egui::Respons
     style::caption(ui, "Введите название, чтобы найти корпус в каталоге.");
     section(ui, "ПИЛОТ");
     ui.label("Пилот — необязательно");
-    ui.add(egui::TextEdit::singleline(&mut draft.pilot).desired_width(f32::INFINITY));
+    if ui
+        .add(
+            egui::TextEdit::singleline(&mut draft.pilot)
+                .id(ui.make_persistent_id("target_pilot"))
+                .desired_width(f32::INFINITY),
+        )
+        .changed()
+    {
+        draft.ocr = false;
+    }
     ui.add_space(10.);
     style::caption(
         ui,
-        "Основные варианты берутся с диска. Фит пилота добавляется сверху после загрузки.",
+        "После сохранения ручной цели расчёт начнётся по локальной базе. Фит пилота добавится после загрузки.",
     );
     popup.response
 }
@@ -636,9 +653,18 @@ fn screen(
             .on_hover_text(status);
     });
     ui.horizontal_wrapped(|ui| {
-        ui.checkbox(&mut draft.ocr_debug, "Подробная диагностика").on_hover_text("Снимки, OCR, фиты, кеш и трассировка запросов. До 80 снимков / 64 МиБ; журналы имеют ограничение размера.");
+        ui.checkbox(&mut draft.ocr_debug, "Подробная диагностика").on_hover_text("Снимки, OCR, фиты, кеш и трассировка запросов. До 512 снимков / 64 МиБ; журналы имеют ограничение размера.");
         if ui.button("Открыть папку").clicked() {
             action = Some(Action::OpenDebugFolder);
+        }
+        if ui
+            .add_enabled(
+                draft.ocr_debug,
+                egui::Button::new("Проверить перенос ника из EVE"),
+            )
+            .clicked()
+        {
+            action = Some(Action::CheckPilotInput);
         }
     });
     if state.busy {
@@ -1210,6 +1236,7 @@ mod tests {
         let catalog = Catalog::load().unwrap();
         let mut draft = Settings {
             ship: "Drake Navy Issue".into(),
+            ocr: true,
             ..Default::default()
         };
         let mut time = 0.;
@@ -1272,6 +1299,7 @@ mod tests {
         frame(&mut draft, vec![key(egui::Key::Enter)]);
         frame(&mut draft, vec![]);
         assert_eq!(draft.ship, "Gnosis");
+        assert!(!draft.ocr);
         assert!(!egui::ComboBox::is_open(&context, combo));
         frame(&mut draft, click(button, true));
         frame(&mut draft, click(button, false));

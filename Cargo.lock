@@ -927,7 +927,7 @@ dependencies = [
 
 [[package]]
 name = "eve-combat-assistant"
-version = "0.3.12+local.3"
+version = "0.3.12+local.4"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -939,6 +939,7 @@ dependencies = [
  "getrandom 0.3.4",
  "image",
  "jsonwebtoken",
+ "raw-window-handle",
  "rusqlite",
  "serde",
  "serde_json",
@@ -948,6 +949,7 @@ dependencies = [
  "url",
  "webbrowser",
  "windows",
+ "windows-core",
  "windows-sys 0.61.2",
 ]
 

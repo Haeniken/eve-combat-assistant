@@ -152,7 +152,11 @@ impl CombatApp {
         cc.egui_ctx.set_global_style(style);
         cc.egui_ctx.set_zoom_factor(settings.scale / 100.);
         #[cfg(windows)]
-        let tray = crate::tray::Tray::new(tx.clone(), cc.egui_ctx.clone()).ok();
+        let tray = if cc.winit_window().is_some() {
+            crate::tray::Tray::new(tx.clone(), cc.egui_ctx.clone()).ok()
+        } else {
+            None
+        };
         #[cfg(windows)]
         if tray.is_none() {
             settings.click_through = false;
@@ -1131,7 +1135,11 @@ impl CombatApp {
             .as_ref()
             .and_then(|m| m.own.as_ref())
             .map(|v| s(&v["hull"], "name"))
-            .unwrap_or("НЕ ВЫБРАН");
+            .unwrap_or(if self.settings.own_fit.trim().is_empty() {
+                "НЕ ВЫБРАН"
+            } else {
+                "ЗАГРУЖЕН"
+            });
         let status = if self.pilot_status.is_empty() {
             self.status.clone()
         } else {
@@ -1301,6 +1309,23 @@ impl CombatApp {
         }
         use crate::settings_ui::Action;
         match response.action {
+            Some(Action::CheckPilotInput) => {
+                let result = std::env::current_exe()
+                    .map_err(|error| error.to_string())
+                    .and_then(|exe| {
+                        std::process::Command::new(exe)
+                            .arg("--pilot-input-test")
+                            .arg("--data-dir")
+                            .arg(&self.directory)
+                            .spawn()
+                            .map(|_| ())
+                            .map_err(|error| error.to_string())
+                    });
+                if let Err(error) = result {
+                    self.status = error;
+                }
+                self.draft = Some(draft);
+            }
             Some(Action::OpenDebugFolder) => {
                 let path = self.directory.join("debug");
                 let result = std::fs::create_dir_all(&path)
@@ -1896,4 +1921,76 @@ pub(crate) fn selection_rectangle(
         right - left,
         bottom - top,
     ])
+}
+
+#[cfg(test)]
+mod manual_target_tests {
+    use super::*;
+    use clap::Parser;
+    #[test]
+    fn saving_manual_target_enqueues_analysis_keeps_fit_and_ignores_stale_ocr() {
+        let directory =
+            std::env::temp_dir().join(crate::diagnostics::trace_id("manual-target-test"));
+        std::fs::create_dir_all(&directory).unwrap();
+        let settings = Settings {
+            ocr: true,
+            region: Some([0, 0, 350, 130]),
+            own_fit: include_str!("../resources/example-tristan.eft").into(),
+            ..Default::default()
+        };
+        settings.save(&directory).unwrap();
+        let context = egui::Context::default();
+        let cc = eframe::CreationContext::_new_kittest(context.clone());
+        let args = Args::parse_from(["test"]);
+        let mut app = CombatApp::new(&cc, args, directory.clone());
+        let (compute, requests) = mpsc::channel();
+        app.workers.compute = compute;
+        app.configure_ocr();
+        assert!(app.target.is_none());
+        let previous_epoch = app.ocr_epoch;
+        let mut manual = app.settings.clone();
+        manual.ship = "Drake Navy Issue".into();
+        manual.pilot = "haeniken".into();
+        manual.ocr = false;
+        app.apply(manual.clone()).unwrap();
+        let request = requests
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(request.phase, AnalysisPhase::Local);
+        assert_eq!(request.target.ship, "Drake Navy Issue");
+        assert_eq!(request.target.pilot, "haeniken");
+        assert_eq!(request.settings.own_fit, manual.own_fit);
+        let saved = Settings::load(&directory);
+        assert!(!saved.ocr);
+        assert_eq!(saved.pilot, "haeniken");
+        let impostor = Target {
+            pilot: "Other Pilot".into(),
+            ship: "Rifter".into(),
+            distance: Some(1000.),
+            angular: 0.,
+        };
+        app.tx
+            .send(Message::Ocr(
+                previous_epoch,
+                Ok(Some(impostor)),
+                Some("Other Pilot".into()),
+            ))
+            .unwrap();
+        app.messages(&context);
+        assert_eq!(app.target.as_ref().unwrap().pilot, "haeniken");
+        assert!(
+            !app.gate
+                .expire(Instant::now() + std::time::Duration::from_secs(61), 60)
+        );
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| app.overlay(ui));
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,egui::epaint::Shape::Text(text) if text.galley.job.text.contains("МОЙ ФИТ / ЗАГРУЖЕН"))));
+        output.textures_delta.clear();
+        let mut automatic = manual;
+        automatic.ocr = true;
+        app.apply(automatic).unwrap();
+        assert!(app.target.is_none());
+        assert!(requests.try_recv().is_err());
+        drop(app);
+        let _ = std::fs::remove_dir_all(directory);
+    }
 }

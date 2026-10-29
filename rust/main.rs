@@ -11,6 +11,7 @@ mod fits;
 mod model;
 mod ocr;
 mod pilot;
+mod pilot_input;
 mod platform;
 mod seed;
 mod settings_ui;
@@ -34,6 +35,8 @@ use std::path::PathBuf;
 pub struct Args {
     #[arg(long)]
     demo: bool,
+    #[arg(long, hide = true)]
+    pilot_input_test: bool,
     #[arg(long)]
     data_dir: Option<PathBuf>,
     #[arg(long)]
@@ -84,6 +87,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     std::fs::create_dir_all(&directory)?;
+    if args.pilot_input_test {
+        return pilot_input::run(directory.join("debug")).map_err(Into::into);
+    }
     if let Some(path) = &args.prepare_seed {
         seed::prepare(path, &directory)?;
         return Ok(());
