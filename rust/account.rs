@@ -393,13 +393,37 @@ pub fn items_to_eft(
         String::new(),
     ];
     for prefix in ["LoSlot", "MedSlot", "HiSlot", "RigSlot", "SubSystemSlot"] {
-        let mut rack: Vec<_> = items
+        let mut rack: std::collections::BTreeMap<&str, Vec<&Value>> =
+            std::collections::BTreeMap::new();
+        for item in items
             .iter()
             .filter(|item| s(item, "flag").starts_with(prefix))
-            .collect();
-        rack.sort_by_key(|item| s(item, "flag"));
-        for item in rack {
-            lines.push(catalog.esi_item_name(id(item, "type_id") as i32)?);
+        {
+            rack.entry(s(item, "flag")).or_default().push(item);
+        }
+        for (flag, slot) in rack {
+            let mut modules = Vec::new();
+            let mut charges = std::collections::BTreeSet::new();
+            for item in slot {
+                let tid = id(item, "type_id") as i32;
+                if catalog.esi_item_category(tid)? == 8 {
+                    charges.insert(tid);
+                } else {
+                    modules.push(tid);
+                }
+            }
+            if modules.len() != 1 || charges.len() > 1 {
+                return Err(format!(
+                    "Неоднозначные предметы ESI в {flag}: модулей {}, типов заряда {}",
+                    modules.len(),
+                    charges.len()
+                ));
+            }
+            let mut line = catalog.esi_item_name(modules[0])?;
+            if let Some(charge) = charges.first() {
+                line += &format!(", {}", catalog.esi_item_name(*charge)?);
+            }
+            lines.push(line);
         }
         lines.push(String::new());
     }

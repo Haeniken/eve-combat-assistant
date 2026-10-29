@@ -616,8 +616,8 @@ fn weapon_reach_selects_legal_long_ammo_and_keeps_fit_bonuses() {
     let utility=engine.evaluate(json!({"raw_fit":"[Tristan, Utility]\nAuto Targeting System I\nTracking Computer II, Tracking Speed Script\n\nHobgoblin II x5"})).unwrap();
     let reach = crate::fit_metrics::weapon_range(&utility, &mut engine, &c);
     assert!(
-        reach["max_range_m"].is_null() && reach["sources"].as_array().unwrap().is_empty(),
-        "no drone or utility reach"
+        reach["kind"] == "drones" && reach["sources"].as_array().unwrap().is_empty(),
+        "drone control range is separate from utility modules"
     );
 }
 
@@ -1810,4 +1810,218 @@ fn space_labels_do_not_override_a_valid_target_card_and_small_unique_prefixes_re
                 .unwrap();
         assert_eq!(target.ship, fixture["ship"].as_str().unwrap());
     }
+}
+
+#[test]
+fn disappeared_buzzard_keeps_last_fit_and_ignores_single_corrupted_name() {
+    use std::time::{Duration, Instant};
+    let start = Instant::now();
+    let t = ocr::Target {
+        pilot: "Mozza C Rella".into(),
+        ship: "Buzzard".into(),
+        distance: Some(8512.),
+        angular: 0.,
+    };
+    let mut g = Gate::default();
+    assert_eq!(
+        g.observe_at(Some(t.clone()), Some(&t.pilot), start, 60),
+        None
+    );
+    assert_eq!(
+        g.observe_at(None, Some(&t.pilot), start + Duration::from_secs(2), 60),
+        Some(Some(t.clone()))
+    );
+    assert_eq!(
+        g.observe_at(None, Some("Mn 77 a"), start + Duration::from_secs(4), 60),
+        None
+    );
+    assert_eq!(
+        g.observe_at(None, None, start + Duration::from_secs(59), 60),
+        None
+    );
+    assert!(!g.expire(start + Duration::from_secs(61), 60));
+    assert!(g.expire(start + Duration::from_secs(62), 60));
+    assert!(!g.expire(start + Duration::from_secs(63), 60));
+    g.observe_at(Some(t.clone()), Some(&t.pilot), start, 60);
+    g.observe_at(Some(t.clone()), Some(&t.pilot), start, 60);
+    assert_eq!(g.observe_at(None, Some("Other Pilot"), start, 60), None);
+    assert_eq!(
+        g.observe_at(None, Some("Other Pilot"), start, 60),
+        Some(None)
+    );
+    let mut g = Gate::default();
+    g.observe_at(Some(t.clone()), None, start, 0);
+    g.observe_at(Some(t), None, start, 0);
+    assert_eq!(g.observe_at(None, None, start, 0), Some(None));
+}
+
+#[test]
+fn wrapped_card_names_are_complete_and_keep_columns_separate() {
+    use ocr::{Document, TextLine, Word};
+    let row = |text: &str, x: f32, y: f32, w: f32| TextLine {
+        text: text.into(),
+        words: vec![Word {
+            text: text.into(),
+            x,
+            y,
+            width: w,
+            height: 20.,
+        }],
+    };
+    let c = catalog();
+    let cards = Document {
+        lines: vec![
+            row("Charlot", 977., 185., 81.),
+            row("theHarlot [IAC]", 934., 213., 160.),
+            row("Tornado*", 963., 243., 103.),
+            row("54 KM", 985., 271., 65.),
+        ],
+    };
+    let t = ocr::identify_with_retries("Chariot theHartot\n54 km", &[], &cards, &c).unwrap();
+    assert_eq!(t.pilot, "Charlot theHarlot");
+    assert_eq!(t.ship, "Tornado");
+    assert!(ocr::identify_card("Charlot", &cards, &c).is_err());
+    let cards = Document {
+        lines: vec![
+            row("Zacharias", 763., 185., 107.),
+            row("Zachanassian, [", 723., 213., 175.),
+            row("Zarmazd*", 763., 243., 109.),
+            row("Nessa Varrow", 937., 185., 161.),
+            row("Machariel*", 957., 243., 117.),
+        ],
+    };
+    let t = ocr::identify_with_retries("Zacharias Zachanassian\n22 km", &[], &cards, &c).unwrap();
+    assert_eq!(t.pilot, "Zacharias Zachanassian");
+    assert_eq!(t.ship, "Zarmazd");
+    assert!(ocr::identify_card("Zacharias Varrow", &cards, &c).is_err());
+    let selected = Document {
+        lines: vec![TextLine {
+            text: "• Exo9".into(),
+            words: vec![
+                Word {
+                    text: "•".into(),
+                    x: 181.,
+                    y: 31.,
+                    width: 29.,
+                    height: 20.,
+                },
+                Word {
+                    text: "Exo9".into(),
+                    x: 272.,
+                    y: 27.,
+                    width: 53.,
+                    height: 20.,
+                },
+            ],
+        }],
+    };
+    assert_eq!(
+        ocr::selected_pilot(&ocr::selected_document(&selected).text()).as_deref(),
+        Some("Exo9")
+    );
+}
+
+#[test]
+fn esi_loaded_charges_stay_with_their_modules_and_cargo_is_preserved() {
+    let c = catalog();
+    let module = tid(&c, "Sensor Booster II");
+    let script = tid(&c, "Scan Resolution Script");
+    let gun = tid(&c, "Light Entropic Disintegrator II");
+    let ammo = tid(&c, "Mystic S");
+    let items = vec![
+        json!({"flag":"MedSlot0","type_id":script,"quantity":1}),
+        json!({"flag":"MedSlot0","type_id":module,"quantity":1}),
+        json!({"flag":"HiSlot0","type_id":gun,"quantity":1}),
+        json!({"flag":"HiSlot0","type_id":ammo,"quantity":100}),
+        json!({"flag":"Cargo","type_id":ammo,"quantity":485}),
+    ];
+    let eft =
+        crate::account::items_to_eft(c.ship_id("Kikimora").unwrap(), "Loaded", &items, &c).unwrap();
+    assert!(eft.contains("Sensor Booster II, Scan Resolution Script"));
+    assert!(eft.contains("Light Entropic Disintegrator II, Mystic S"));
+    assert!(eft.contains("Mystic S x485"));
+    let r = Engine::default().evaluate(json!({"raw_fit":eft})).unwrap();
+    assert_eq!(crate::model::array(&r["fit"]["modules"]).len(), 2);
+    assert!(
+        crate::model::array(&r["fit"]["modules"])
+            .iter()
+            .all(|m| !m["charge"].is_null())
+    );
+    let mut reverse = items.clone();
+    reverse.reverse();
+    assert!(
+        crate::account::items_to_eft(49710, "Loaded", &reverse, &c)
+            .unwrap()
+            .contains("Sensor Booster II, Scan Resolution Script")
+    );
+    let mut ambiguous = items;
+    ambiguous.push(json!({"flag":"MedSlot0","type_id":module,"quantity":1}));
+    assert!(
+        crate::account::items_to_eft(49710, "Loaded", &ambiguous, &c)
+            .unwrap_err()
+            .contains("MedSlot0")
+    );
+}
+
+#[test]
+fn drone_control_range_uses_all_v_skills_and_fitted_range_modules() {
+    let c = catalog();
+    let mut engine = Engine::default();
+    let bare=engine.evaluate(json!({"raw_fit":"[Myrmidon, Drones]\nDrone Damage Amplifier II\n\nHammerhead II x5","skill_level":5})).unwrap();
+    let reach = crate::fit_metrics::weapon_range(&bare, &mut engine, &c);
+    assert_eq!(reach["kind"], "drones");
+    assert!((crate::model::n(&reach, "max_range_m") - 60000.).abs() < 1.);
+    // Launched drones need not appear in the loss; the damage amplifier still identifies a drone fit.
+    let missing=engine.evaluate(json!({"raw_fit":"[Myrmidon, Drones absent from loss]\nDrone Damage Amplifier II","skill_level":5})).unwrap();
+    assert!(crate::fit_metrics::drone_build(&missing, &c));
+    assert_eq!(
+        crate::fit_metrics::weapon_range(&missing, &mut engine, &c)["max_range_m"],
+        60000.
+    );
+    let linked=engine.evaluate(json!({"raw_fit":"[Myrmidon, Drones]\nDrone Link Augmentor II\n\nHammerhead II x5","skill_level":5})).unwrap();
+    let reach = crate::fit_metrics::weapon_range(&linked, &mut engine, &c);
+    assert!(
+        (crate::model::n(&reach, "max_range_m") - 84000.).abs() < 1.,
+        "{reach}"
+    );
+}
+
+#[test]
+fn stable_right_name_prevents_truncated_card_from_resetting_current_target() {
+    use std::time::{Duration, Instant};
+    let now = Instant::now();
+    let mut gate = Gate::default();
+    let mut target = ocr::Target {
+        pilot: "Nessa Varrow".into(),
+        ship: "Machariel".into(),
+        distance: Some(11000.),
+        angular: 0.,
+    };
+    gate.observe_at(Some(target.clone()), Some("Nessa Varrow"), now, 60);
+    gate.observe_at(Some(target.clone()), Some("Nessa Varrow"), now, 60);
+    target.pilot = "Nessa Varr".into();
+    assert!(
+        gate.observe_at(Some(target), Some("Nessa Varrow"), now, 60)
+            .is_none()
+    );
+    assert!(
+        gate.observe_at(None, None, now + Duration::from_secs(1), 60)
+            .is_none()
+    );
+    assert!(!gate.expire(now + Duration::from_secs(60), 60));
+    assert!(gate.expire(now + Duration::from_secs(61), 60));
+}
+
+#[test]
+fn drone_fit_without_recovered_drones_is_not_grouped_with_unarmed_losses() {
+    let c = catalog();
+    let base = json!({"ship_type_id":24700,"modules":[],"drones":[]});
+    let mut amplified = base.clone();
+    amplified["modules"] = json!([{"type_id":tid(&c,"Drone Damage Amplifier II")}]);
+    let mut launched = base.clone();
+    launched["drones"] = json!([{"type_id":tid(&c,"Hammerhead II")}]);
+    let (title, key) = fits::describe(&amplified, &c);
+    assert!(title.starts_with("Drones /"));
+    assert_ne!(key, fits::describe(&base, &c).1);
+    assert_eq!(key, fits::describe(&launched, &c).1);
 }

@@ -1,4 +1,4 @@
-//! Static fitting information. No target motion, external tackle or drone reach.
+//! Static fitting information. No target motion or external tackle.
 use crate::{
     engine::{Catalog, Engine},
     fits::family,
@@ -92,9 +92,26 @@ fn reach(module: &Value, hull_radius: f64) -> Option<Value> {
     )
 }
 
+/// Combat drones or a drone damage amplifier identify an otherwise unarmed drone fit.
+pub fn drone_build(result: &Value, catalog: &Catalog) -> bool {
+    !array(&result["modules"]).iter().any(weapon)
+        && (array(&result["fit"]["drones"])
+            .iter()
+            .any(|d| damage(catalog.get(id(d, "type_id") as i32)) > 0.)
+            || array(&result["modules"])
+                .iter()
+                .any(|m| n(&m["attributes"], "droneDamageBonus") > 0.))
+}
+
 /// Evaluate every published compatible damaging charge with the complete fit.
 /// Identical fitted guns share each ammo trial; cargo is deliberately not a limit.
 pub fn weapon_range(result: &Value, engine: &mut Engine, catalog: &Catalog) -> Value {
+    if drone_build(result, catalog) {
+        let range = n(&result["summary"]["drones"], "range") * 1000.;
+        return json!({"kind":"drones","label":if range>0. {format!("до {:.1} км",range/1000.).replace('.',",")} else {"—".into()},
+            "max_range_m":if range>0. {Some(range)} else {None},"approximate":false,"sources":[],"ammo_trials":0,"errors":[],
+            "hint":"Дальность управления дронами по корпусу и модулям выбранного фита, навыки V. Уже атакующие дроны могут продолжать преследование за этой границей."});
+    }
     let radius = n(&result["hull"]["attributes"], "radius");
     let mut best: BTreeMap<i64, Value> = BTreeMap::new();
     let mut types: BTreeMap<i64, Vec<i64>> = BTreeMap::new();

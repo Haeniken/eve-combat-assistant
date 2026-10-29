@@ -663,63 +663,47 @@ impl CombatApp {
                 }
                 Message::Ocr(epoch, result, observed_pilot) => {
                     if epoch == self.ocr_epoch {
-                        match result {
-                            Ok(target) => {
-                                self.ocr_status = if target.is_some() {
-                                    "OCR работает: цель распознана"
-                                } else {
-                                    "OCR работает: цель не найдена"
+                        self.ocr_status = match &result {
+                            Ok(Some(_)) => "OCR работает: цель распознана".into(),
+                            Ok(None) => "OCR работает: цель не найдена".into(),
+                            Err(error) => format!(
+                                "OCR: {error} · повтор через {:.1} сек.",
+                                self.settings.ocr_interval
+                            ),
+                        };
+                        let now = Instant::now();
+                        let hold = self.settings.target_hold_seconds;
+                        let before = if self.settings.ocr_debug {
+                            self.gate.diagnostic(now, hold)
+                        } else {
+                            Value::Null
+                        };
+                        let target = result.as_ref().ok().cloned().flatten();
+                        let change = self.gate.observe_at(
+                            target.clone(),
+                            observed_pilot.as_deref(),
+                            now,
+                            hold,
+                        );
+                        self.workers.trace.job(self.settings.ocr_debug,json!({"job":"target_tracking","epoch":epoch}))
+                            .event("target_tracking",json!({"input_target":target,"observed_pilot":observed_pilot,"ocr_error":result.as_ref().err(),"decision":match &change {Some(Some(_))=>"target",Some(None)=>"clear",None=>if self.gate.remaining(now,hold).is_some(){"hold"}else{"unchanged_or_pending"}},"before":before,"after":self.gate.diagnostic(now,hold)}));
+                        if let Some(change) = change {
+                            if change
+                                .as_ref()
+                                .zip(self.target.as_ref())
+                                .is_some_and(|(a, b)| a.identity() == b.identity())
+                            {
+                                self.target = change.clone();
+                                if let Some(m) = &mut self.matchup {
+                                    m.target = change.unwrap();
                                 }
-                                .into();
-                                if let Some(change) = self.gate.feed_at(
-                                    target,
-                                    Instant::now(),
-                                    self.settings.target_hold_seconds,
-                                ) {
-                                    if change
-                                        .as_ref()
-                                        .zip(self.target.as_ref())
-                                        .is_some_and(|(a, b)| a.identity() == b.identity())
-                                    {
-                                        self.target = change.clone();
-                                        if let Some(m) = &mut self.matchup {
-                                            m.target = change.unwrap();
-                                        }
-                                    } else {
-                                        self.target = change;
-                                        self.matchup = None;
-                                        self.generation += 1;
-                                        if self.target.is_some() {
-                                            self.recalculate();
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                self.ocr_status = format!(
-                                    "OCR: {e} · повтор через {:.1} сек.",
-                                    self.settings.ocr_interval
-                                );
-                                let changed = observed_pilot
-                                    .as_ref()
-                                    .zip(self.target.as_ref())
-                                    .is_some_and(|(pilot, current)| {
-                                        crate::ocr::clearly_different_pilot(pilot, &current.pilot)
-                                    });
-                                if changed {
-                                    self.gate = Gate::default();
-                                    self.clear_target_view();
-                                } else if self
-                                    .gate
-                                    .feed_at(
-                                        None,
-                                        Instant::now(),
-                                        self.settings.target_hold_seconds,
-                                    )
-                                    .is_some()
-                                {
-                                    self.clear_target_view();
-                                }
+                            } else if change.is_none() {
+                                self.clear_target_view();
+                            } else {
+                                self.target = change;
+                                self.matchup = None;
+                                self.generation += 1;
+                                self.recalculate();
                             }
                         }
                     }
@@ -782,10 +766,16 @@ impl CombatApp {
         let comparison_error = diagnostic
             .and_then(|r| r["comparison_error"].as_str())
             .map(str::to_owned);
+        let drone_build = diagnostic.is_some_and(|r| r["weapon_range"]["kind"] == "drones");
         let incoming_label = diagnostic
             .and_then(|r| r["incoming"]["label"].as_str())
             .unwrap_or("—")
             .to_string();
+        let incoming_label = if drone_build {
+            "ДРОНЫ".to_string()
+        } else {
+            incoming_label
+        };
         let incoming_hint = diagnostic
             .and_then(|r| r["incoming"]["hint"].as_str())
             .unwrap_or("Выберите вариант фита")
@@ -927,6 +917,8 @@ impl CombatApp {
                             .is_some_and(|m| m.own.is_none() && !m.failures.is_empty())
                     {
                         "ПРОВЕРЬ СВОЙ ФИТ"
+                    } else if drone_build {
+                        "ДРОНОВАЯ СБОРКА"
                     } else if comparison_error.is_some() {
                         "РАСЧЁТ НЕДОСТУПЕН"
                     } else if own && self.matchup.as_ref().is_some_and(|m| m.variants.is_empty()) {
@@ -943,7 +935,9 @@ impl CombatApp {
             ui.label(RichText::new("—").size(30.).color(CYAN));
             style::caption(
                 ui,
-                if let Some(error) = &comparison_error {
+                if drone_build {
+                    "Резисты, скорость и дальность управления дронами доступны"
+                } else if let Some(error) = &comparison_error {
                     error
                 } else if own
                     && self
@@ -980,7 +974,7 @@ impl CombatApp {
             .spacing([10., 8.])
             .show(ui, |ui| {
                 style::caption(ui, "ЕГО УРОН");
-                let percentages=diagnostic.and_then(|r|serde_json::from_value::<[f64;4]>(r["incoming"]["percentages"].clone()).ok());
+                let percentages=diagnostic.filter(|_| !drone_build).and_then(|r|serde_json::from_value::<[f64;4]>(r["incoming"]["percentages"].clone()).ok());
                 ui.scope(|ui|style::damage_mix(ui,percentages,&incoming_label)).response.on_hover_text(&incoming_hint);
                 ui.end_row();
                 style::caption(ui, "ТВОЙ ЗАРЯД");
@@ -1020,7 +1014,12 @@ impl CombatApp {
             style::speed_comparison(&mut cols[1], &fitted_speed, &own_speed);
         });
         if !approximation_hint.is_empty() {
-            style::abyssal_alert(ui, &approximation_hint);
+            style::abyssal_alert(
+                ui,
+                own_result.is_some_and(|r| !array(&r["approximations"]).is_empty()),
+                diagnostic.is_some_and(|r| !array(&r["approximations"]).is_empty()),
+                &approximation_hint,
+            );
         }
         ui.add_space(4.);
         if let Some(m) = &self.matchup
@@ -1560,10 +1559,15 @@ impl eframe::App for CombatApp {
                     .max(std::time::Duration::from_secs(1)),
             );
         }
-        if self
-            .gate
-            .expire(Instant::now(), self.settings.target_hold_seconds)
-        {
+        let now = Instant::now();
+        if self.gate.expire(now, self.settings.target_hold_seconds) {
+            self.workers
+                .trace
+                .job(self.settings.ocr_debug, json!({"job":"target_tracking"}))
+                .event(
+                    "target_hold_expired",
+                    json!({"target":self.target,"hold_seconds":self.settings.target_hold_seconds}),
+                );
             self.clear_target_view();
         }
         if self

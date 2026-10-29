@@ -519,9 +519,6 @@ impl Sources {
     }
     fn recent_participation_at(&mut self, rating: &mut crate::pilot::Rating, url: &str, now: i64) {
         use crate::pilot::{ACTIVITY_TTL, ActivityCache, RecentActivity};
-        if rating.group_marker().is_none() {
-            return;
-        }
         let character = rating.character_id;
         let cached = crate::pilot::cached_activity(&self.store, character);
         if let Some(cached) = &cached
@@ -864,8 +861,6 @@ mod tests {
         assert_eq!(rating.recent.group_at, Some(now - 6 * 3600));
         let cache = crate::pilot::cached_activity(&source.store, 123).unwrap();
         assert_eq!(cache.checked_at, now + 3600);
-        rating.kills = 19;
-        source.recent_participation_at(&mut rating, &url, now + 7200);
         assert_eq!(server.join().unwrap().len(), 2);
         let log = std::fs::read_to_string(directory.join("debug/fits.jsonl")).unwrap();
         assert_eq!(
@@ -876,6 +871,31 @@ mod tests {
         );
         assert!(!log.contains("http_retry"));
         assert!(log.contains("pilot_activity_cache_hit"));
+    }
+    #[test]
+    fn recent_solo_activity_uses_one_cached_request_without_a_group_marker() {
+        let directory = temp();
+        let now = Utc::now().timestamp();
+        let rows = json!([{"killmail_time":chrono::DateTime::from_timestamp(now-300,0).unwrap().to_rfc3339(),"victim":{"character_id":456},"attackers":[{"character_id":123}],"zkb":{"solo":true,"npc":false}}]);
+        let (url, server) = mock(vec![(200, rows)]);
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        let mut rating=crate::pilot::Rating::from_stats(&json!({"type":"characterID","id":123,"shipsDestroyed":100,"shipsLost":30,"soloKills":70,"soloLosses":20}),123).unwrap();
+        assert!(rating.group_marker().is_none());
+        source.recent_participation_at(&mut rating, &url, now);
+        assert_eq!(rating.recent.solo_at, Some(now - 300));
+        source.recent_participation_at(&mut rating, &url, now + 3599);
+        assert_eq!(server.join().unwrap().len(), 1);
+        assert_eq!(
+            crate::pilot::cached_activity(&source.store, 123)
+                .unwrap()
+                .activity
+                .solo_at,
+            Some(now - 300)
+        );
     }
     #[test]
     fn oversized_recent_activity_does_not_retry_or_erase_the_rating() {

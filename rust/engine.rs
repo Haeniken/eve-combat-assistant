@@ -443,6 +443,16 @@ impl Catalog {
             .map(|item| item.name().to_string())
             .ok_or_else(|| format!("Неизвестный предмет ESI: type_id={id}"))
     }
+    pub fn esi_item_category(&self, id: i32) -> Result<i64, String> {
+        if let Some(category) = self.get(id)["category"].as_i64() {
+            return Ok(category);
+        }
+        static_data()?
+            .sde
+            .get_type(id)
+            .map(|item| i64::from(item.category_id()))
+            .ok_or_else(|| format!("Неизвестный предмет ESI: type_id={id}"))
+    }
 }
 #[derive(Default)]
 pub struct Engine {
@@ -518,6 +528,14 @@ mod resistance_regressions {
         assert_eq!(estimated["summary"], standard["summary"]);
         assert!(crate::model::array(&standard["warnings"]).is_empty());
         let catalog = Catalog::load().unwrap();
+        let exported = crate::fits::eft(&estimated["fit"], &catalog);
+        for estimate in crate::model::array(&estimated["approximations"]) {
+            assert!(
+                exported
+                    .lines()
+                    .any(|line| line.split(',').next() == estimate["original_name"].as_str())
+            );
+        }
         let incoming = crate::tactics::incoming_summary(&estimated, &estimated["fit"], &catalog);
         assert!(incoming["percentages"].is_array() && incoming["uncertain"] == true);
         let own = engine

@@ -132,8 +132,15 @@ pub fn describe(fit: &Value, catalog: &Catalog) -> (String, String) {
                 .or_default() += 1;
         }
     }
-    if families.is_empty() && !array(&fit["drones"]).is_empty() {
+    if families.is_empty()
+        && (!array(&fit["drones"]).is_empty()
+            || types
+                .iter()
+                .any(|t| n(&t["attributes"], "droneDamageBonus") > 0.))
+    {
         families.insert("Drones");
+        // A loss can omit launched drones. Keep drone fits separate from genuinely unarmed fits.
+        weapons.insert("Drones".into(), 1);
     }
     let prop = if names.iter().any(|x| x.contains("microwarpdrive")) {
         "MWD"

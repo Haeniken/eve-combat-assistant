@@ -160,7 +160,7 @@ impl AnalysisCore {
             .meta(&format!("global_revision:{ship}"))
             .unwrap_or(json!(0));
         let key = format!(
-            "population:v3-sde3503375:{}",
+            "population:v4-sde3503375:{}",
             fits::hash(
                 &json!([
                     ship,

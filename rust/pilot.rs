@@ -16,6 +16,8 @@ pub enum ActivityAge {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RecentActivity {
+    #[serde(default)]
+    pub solo_at: Option<i64>,
     pub group_at: Option<i64>,
     pub blob_at: Option<i64>,
 }
@@ -38,7 +40,6 @@ impl RecentActivity {
             };
             if !(0..ACTIVITY_WINDOW).contains(&now.saturating_sub(at))
                 || row["zkb"]["npc"] == true
-                || row["zkb"]["solo"] == true
                 || id(&row["victim"], "character_id") == character
             {
                 continue;
@@ -55,7 +56,14 @@ impl RecentActivity {
                 .iter()
                 .filter_map(Value::as_str)
                 .collect();
-            if labels.contains(&"npc") || labels.contains(&"solo") || labels.contains(&"padding") {
+            if labels.contains(&"npc") || labels.contains(&"padding") {
+                continue;
+            }
+            let solo = row["zkb"]["solo"] == true || labels.contains(&"solo");
+            if solo {
+                if players.len() == 1 && id(&row["victim"], "character_id") > 0 {
+                    activity.solo_at = Some(activity.solo_at.unwrap_or(at).max(at));
+                }
                 continue;
             }
             // Current zKillboard labels are exclusive attacker-count buckets.
@@ -81,7 +89,13 @@ impl RecentActivity {
         }
         activity
     }
+    pub fn solo_within_day(&self, now: i64) -> bool {
+        self.solo_at
+            .and_then(|at| now.checked_sub(at))
+            .is_some_and(|age| (0..86400).contains(&age))
+    }
     pub fn merge(&mut self, other: Self) {
+        self.solo_at = self.solo_at.into_iter().chain(other.solo_at).max();
         self.group_at = self.group_at.into_iter().chain(other.group_at).max();
         self.blob_at = self.blob_at.into_iter().chain(other.blob_at).max();
     }
@@ -281,6 +295,43 @@ pub fn cached_character(store: &Store, character: i64) -> Option<Rating> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn solo_activity_requires_confirmed_player_kill_and_expires_after_a_day() {
+        let now = 1_800_000_000;
+        let solo = |age| json!({"killmail_time":chrono::DateTime::from_timestamp(now-age,0).unwrap().to_rfc3339(),"victim":{"character_id":456},"attackers":[{"character_id":123}],"zkb":{"solo":true,"npc":false}});
+        let valid = solo(3600);
+        let mut npc = solo(1);
+        npc["zkb"]["npc"] = json!(true);
+        let mut other = solo(2);
+        other["attackers"] = json!([{"character_id":999}]);
+        let mut group = solo(3);
+        group["attackers"] = json!([{"character_id":123},{"character_id":999}]);
+        let mut loss = solo(4);
+        loss["victim"]["character_id"] = json!(123);
+        let mut structure = solo(5);
+        structure["victim"]["character_id"] = json!(0);
+        let mut padding = solo(6);
+        padding["zkb"]["labels"] = json!(["solo", "padding"]);
+        let mut found = RecentActivity::from_kills(
+            &[valid, npc, other, group, loss, structure, padding, solo(-1)],
+            123,
+            now,
+        );
+        assert_eq!(found.solo_at, Some(now - 3600));
+        assert!(found.group_at.is_none() && found.blob_at.is_none());
+        assert!(found.solo_within_day(now));
+        assert!(found.solo_within_day(now + 82799));
+        assert!(!found.solo_within_day(now + 82800));
+        let mut labelled = solo(100);
+        labelled["zkb"].as_object_mut().unwrap().remove("solo");
+        labelled["zkb"]["labels"] = json!(["pvp", "solo"]);
+        found.merge(RecentActivity::from_kills(&[labelled], 123, now));
+        assert_eq!(found.solo_at, Some(now - 100));
+        let legacy: RecentActivity =
+            serde_json::from_value(json!({"group_at":now-200,"blob_at":null})).unwrap();
+        assert!(legacy.solo_at.is_none());
+        assert_eq!(legacy.group_at, Some(now - 200));
+    }
     #[test]
     fn blob_counts_all_exclusive_large_fleet_buckets() {
         let mut value = stats(100, 1, 30);

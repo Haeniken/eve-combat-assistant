@@ -58,12 +58,35 @@ pub fn rating_color(rating: Option<&crate::pilot::Rating>) -> Color32 {
         .map(|i| colors[i])
         .unwrap_or(MUTED)
 }
+/// Slow breathing light, repainted only while the active indicator is visible.
+fn activity_pulse(ui: &Ui, rect: Rect) -> f32 {
+    if !ui.is_rect_visible(rect) {
+        return 0.;
+    }
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(50));
+    let phase = ui.input(|input| input.time).rem_euclid(3.6) / 3.6;
+    (0.5 - 0.5 * (phase * std::f64::consts::TAU).cos()) as f32
+}
 pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &str) {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(58., 58.), Sense::hover());
     let center = rect.center();
     let color = rating_color(rating);
+    let pulse = rating
+        .filter(|r| r.recent.solo_within_day(chrono::Utc::now().timestamp()))
+        .map(|_| activity_pulse(ui, rect));
+    let glow = pulse
+        .map(|v| color.gamma_multiply(0.76 + 0.24 * v))
+        .unwrap_or(color);
     let tier = rating.and_then(|r| r.tier());
     let p = ui.painter();
+    if let Some(pulse) = pulse {
+        p.circle_stroke(
+            center,
+            28.,
+            Stroke::new(1.2, color.gamma_multiply(0.06 + 0.16 * pulse)),
+        );
+    }
     p.circle_filled(center, 24., Color32::from_rgb(9, 22, 30));
     p.circle_stroke(center, 21., Stroke::new(0.7, LINE));
     for segment in 0..6 {
@@ -75,7 +98,7 @@ pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &
             })
             .collect();
         let stroke = if tier.is_some_and(|tier| segment <= tier) {
-            color
+            glow
         } else {
             LINE
         };
@@ -96,7 +119,7 @@ pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &
             .map(|s| s.to_string())
             .unwrap_or_else(|| "—".into()),
         FontId::proportional(16.),
-        color,
+        glow,
     );
     response.on_hover_text(
         rating
@@ -154,8 +177,13 @@ pub fn pilot_group(ui: &mut Ui, rating: &crate::pilot::Rating) {
             crate::pilot::ActivityAge::Day => Color32::from_rgb(116, 205, 118),
             crate::pilot::ActivityAge::ThreeDays => YELLOW,
         };
-        p.circle_filled(dot, 4.5, color.gamma_multiply(0.13));
-        p.circle_filled(dot, 3., color);
+        let pulse = activity_pulse(ui, rect);
+        p.circle_filled(
+            dot,
+            4.8 + 1.2 * pulse,
+            color.gamma_multiply(0.10 + 0.16 * pulse),
+        );
+        p.circle_filled(dot, 3., color.gamma_multiply(0.84 + 0.16 * pulse));
         ui.interact(
             Rect::from_center_size(dot, Vec2::new(14., 18.)),
             response.id.with("activity"),
@@ -445,7 +473,12 @@ pub fn range_ruler(
             Stroke::new(1.5, AMBER),
         );
         let label = format!(
-            "ОРУЖИЕ {}",
+            "{} {}",
+            if weapon["kind"] == "drones" {
+                "ДРОНЫ"
+            } else {
+                "ОРУЖИЕ"
+            },
             weapon["label"]
                 .as_str()
                 .unwrap_or("—")
@@ -576,17 +609,22 @@ fn resistance_holes(values: [f64; 4], base: Option<[f64; 4]>) -> ([bool; 4], boo
     }
 }
 
-pub fn abyssal_alert(ui: &mut Ui, details: &str) {
+pub fn abyssal_alert(ui: &mut Ui, own: bool, enemy: bool, details: &str) {
+    let label = match (own, enemy) {
+        (true, true) => "!  Abyssal в обоих фитах: оценка не точна",
+        (true, false) => "!  Abyssal в твоём фите: оценка не точна",
+        _ => "!  Abyssal у противника: оценка не точна",
+    };
     egui::Frame::new()
         .fill(AMBER.gamma_multiply(0.08))
         .stroke(Stroke::new(1., AMBER.gamma_multiply(0.65)))
         .inner_margin(7.)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new("!  Присутствуют Abyssal модули, оценка не точна").size(11.).color(AMBER));
+            ui.label(RichText::new(label).size(11.).color(AMBER));
         })
         .response
-        .on_hover_text(format!("Исходный модуль и параметры мутации не указаны в публичной потере. Для расчёта подставлен обычный аналог T2 того же размера; для семейств без T2 — существующий обычный аналог.\n{details}"));
+        .on_hover_text(format!("Исходный модуль и параметры мутации неизвестны. Для расчёта подставлен обычный аналог T2 того же размера; для семейств без T2 — существующий обычный аналог.\n{details}"));
 }
 
 pub fn resistance(ui: &mut Ui, values: [f64; 4], base: Option<[f64; 4]>) {
@@ -631,6 +669,50 @@ pub fn resistance(ui: &mut Ui, values: [f64; 4], base: Option<[f64; 4]>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_confirmed_recent_activity_animates_without_changing_layout() {
+        fn render(
+            rating: &crate::pilot::Rating,
+            time: f64,
+        ) -> (Vec<egui::epaint::ClippedShape>, Rect) {
+            let context = egui::Context::default();
+            let mut rect = Rect::NOTHING;
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    time: Some(time),
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(440., 150.))),
+                    ..Default::default()
+                },
+                |ui| {
+                    pilot_rating(ui, Some(rating), "");
+                    pilot_group(ui, rating);
+                    rect = ui.min_rect();
+                },
+            );
+            output.textures_delta.clear();
+            (output.shapes, rect)
+        }
+        let now = chrono::Utc::now().timestamp();
+        let mut rating=crate::pilot::Rating::from_stats(&serde_json::json!({"type":"characterID","id":123,"shipsDestroyed":100,"shipsLost":30,"soloKills":70,"soloLosses":20}),123).unwrap();
+        assert_eq!(render(&rating, 0.), render(&rating, 1.8));
+        rating.recent.solo_at = Some(now - 3600);
+        let low = render(&rating, 0.);
+        let high = render(&rating, 1.8);
+        assert_ne!(low.0, high.0);
+        assert_eq!(low.1, high.1);
+        rating.recent.solo_at = Some(now - 86401);
+        assert_eq!(render(&rating, 0.), render(&rating, 1.8));
+        rating.group_fraction = Some(1.);
+        for age in [3600, 2 * 86400] {
+            rating.recent.group_at = Some(now - age);
+            let low = render(&rating, 0.);
+            let high = render(&rating, 1.8);
+            assert_ne!(low.0, high.0);
+            assert_eq!(low.1, high.1);
+        }
+        rating.recent.group_at = Some(now - 259201);
+        assert_eq!(render(&rating, 0.), render(&rating, 1.8));
+    }
     #[test]
     fn holes_distinguish_fitted_minima_from_base_ties_and_uniform_layers() {
         assert_eq!(

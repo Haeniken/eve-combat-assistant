@@ -104,11 +104,21 @@ pub fn selected_document(raw: &Document) -> Document {
     });
     let mut header = None;
     for line in &ordered {
-        if status_line(&line.text) || read_distance(&line.text).is_some() {
+        if status_line(&line.text)
+            || read_distance(&line.text).is_some()
+            || line.text.contains(['(', ')'])
+        {
             continue;
         }
         let mut words = line.words.clone();
         words.sort_by(|a, b| a.x.total_cmp(&b.x));
+        // Speech/ship icons may be emitted as separate OCR words before the name.
+        // They are not a nickname and must not turn the real name into a rank suffix.
+        let first_name = words
+            .iter()
+            .position(|word| word.text.chars().any(char::is_alphanumeric))
+            .unwrap_or(words.len());
+        words.drain(..first_name);
         let height = words.iter().map(|w| w.height).fold(0_f32, f32::max);
         for index in 1..words.len() {
             let gap = words[index].x - (words[index - 1].x + words[index - 1].width);
@@ -160,6 +170,23 @@ pub fn selected_document(raw: &Document) -> Document {
 }
 pub fn selected_text(raw: &Document, retries: &[RetryRead]) -> String {
     let mut text = selected_document(raw).text();
+    if let Some(original) = selected_pilot(&text).filter(|p| p.chars().count() <= 6) {
+        let mut votes = std::collections::BTreeMap::<String, (String, usize)>::new();
+        for name in retries
+            .iter()
+            .filter(|r| r.method.starts_with("nickname_") && r.error.is_none())
+            .filter_map(|r| selected_pilot(&r.text))
+        {
+            if !clearly_different_pilot(&original, &name) {
+                let entry = votes.entry(normalized_pilot(&name)).or_insert((name, 0));
+                entry.1 += 1;
+            }
+        }
+        let agreed: Vec<_> = votes.values().filter(|(_, count)| *count >= 2).collect();
+        if let [name] = agreed.as_slice() {
+            text = text.replacen(&original, &name.0, 1);
+        }
+    }
     if read_distance(&text).is_none() {
         let mut distances: Vec<_> = retries
             .iter()
@@ -187,6 +214,7 @@ pub fn selected_pilot(text: &str) -> Option<String> {
             .trim()
             .trim_start_matches("Pilot:")
             .trim_start_matches("Пилот:")
+            .trim_start_matches(['•', '·', '●', '▪', '■'])
             .trim();
         let lower = candidate.to_lowercase();
         if candidate.is_empty()
@@ -232,6 +260,15 @@ pub fn identify_card(
         return Err("В EVE не выбран объект. Выберите пилота в правой панели".into());
     }
     let pilot = selected_pilot(selected).ok_or("В правой области не найден ник. Выделите строку ника вместе с расстоянием, без заголовков других окон")?;
+    let names = card_pilot_names(cards, catalog);
+    if names
+        .iter()
+        .any(|name| normalized_pilot(name).starts_with(&format!("{} ", normalized_pilot(&pilot))))
+    {
+        return Err(format!(
+            "Ник «{pilot}» прочитан не полностью: имя на карточке перенесено"
+        ));
+    }
     let anchors = nickname_anchors(&pilot, cards);
     if anchors.is_empty() {
         return Err(format!(
@@ -297,7 +334,11 @@ fn single_line_nickname_anchors(pilot: &str, cards: &Document) -> Vec<(f32, f32,
         for start in 0..line.words.len() {
             for end in start + 1..=line.words.len().min(start + 8) {
                 let words = &line.words[start..end];
-                if words.iter().skip(1).any(|w| w.text.starts_with('[')) {
+                if words
+                    .iter()
+                    .skip(1)
+                    .any(|w| w.text.starts_with('[') || w.text.ends_with(']'))
+                {
                     continue;
                 }
                 let candidate = words
@@ -320,7 +361,7 @@ fn single_line_nickname_anchors(pilot: &str, cards: &Document) -> Vec<(f32, f32,
                         continue;
                     }
                     if let Some(next) = line.words.get(end) {
-                        if next.text.starts_with('[') {
+                        if next.text.starts_with('[') || next.text.ends_with(']') {
                             right = right.max(next.x + next.width);
                             height = height.max(next.height);
                         } else if next.x - right < height * 1.5 {
@@ -719,11 +760,73 @@ pub fn read_distance(text: &str) -> Option<f64> {
 #[derive(Default)]
 pub struct Gate {
     current: Option<Target>,
-    candidate: Option<(String, String)>,
+    candidate: Option<Target>,
     count: usize,
     missing_since: Option<std::time::Instant>,
+    selection_candidate: Option<(String, usize)>,
 }
 impl Gate {
+    /// A failed card read is a missing observation, not proof of a different target.
+    pub fn observe_at(
+        &mut self,
+        target: Option<Target>,
+        observed: Option<&str>,
+        now: std::time::Instant,
+        hold_seconds: u32,
+    ) -> Option<Option<Target>> {
+        if let Some(mut target) = target {
+            self.selection_candidate = None;
+            if let Some(current) = &self.current
+                && current.ship == target.ship
+                && observed.is_some_and(|pilot| {
+                    normalized_pilot(pilot) == normalized_pilot(&current.pilot)
+                })
+                && normalized_pilot(&current.pilot).starts_with(&normalized_pilot(&target.pilot))
+            {
+                target.pilot = current.pilot.clone();
+            }
+            return self.feed_at(Some(target), now, hold_seconds);
+        }
+        if hold_seconds > 0
+            && self.current.is_none()
+            && let Some(candidate) = self.candidate.clone()
+            && observed
+                .is_some_and(|pilot| normalized_pilot(pilot) == normalized_pilot(&candidate.pilot))
+        {
+            // One complete card plus the same Selected Item on the next frame confirms
+            // the last known target even if the ship has already warped away.
+            let change = self.feed_at(Some(candidate), now, hold_seconds);
+            if self.current.is_some() {
+                self.missing_since = Some(now);
+            }
+            return change;
+        }
+        let changed = observed
+            .zip(self.current.as_ref())
+            .filter(|(pilot, current)| clearly_different_pilot(pilot, &current.pilot));
+        if let Some((pilot, _)) = changed {
+            let name = normalized_pilot(pilot);
+            let count = match &self.selection_candidate {
+                Some((previous, count)) if previous == &name => count + 1,
+                _ => 1,
+            };
+            self.selection_candidate = Some((name, count));
+            if count >= 2 {
+                self.current = None;
+                self.candidate = None;
+                self.count = 0;
+                self.missing_since = None;
+                self.selection_candidate = None;
+                return Some(None);
+            }
+        } else {
+            self.selection_candidate = None;
+        }
+        self.feed_at(None, now, hold_seconds)
+    }
+    pub fn diagnostic(&self, now: std::time::Instant, hold_seconds: u32) -> serde_json::Value {
+        serde_json::json!({"current":self.current,"candidate":self.candidate,"confirmations":self.count,"selection_candidate":self.selection_candidate,"hold_seconds":hold_seconds,"remaining_ms":self.remaining(now,hold_seconds).map(|d|d.as_millis())})
+    }
     // Старую цель снимаем сразу, новую подтверждаем двумя одинаковыми наблюдениями.
     #[cfg(test)]
     pub fn feed(&mut self, target: Option<Target>) -> Option<Option<Target>> {
@@ -747,6 +850,7 @@ impl Gate {
             self.missing_since = None;
             self.candidate = None;
             self.count = 0;
+            self.selection_candidate = None;
             return self.current.take().is_some();
         }
         false
@@ -765,6 +869,8 @@ impl Gate {
             let changed = self.current.take().is_some();
             self.candidate = None;
             self.count = 0;
+            self.missing_since = None;
+            self.selection_candidate = None;
             return if changed { Some(None) } else { None };
         };
         self.missing_since = None;
@@ -778,13 +884,16 @@ impl Gate {
             return if changed { Some(Some(target)) } else { None };
         }
         let cleared = self.current.take().is_some();
-        let key = (target.ship.clone(), target.pilot.clone());
-        if self.candidate.as_ref() == Some(&key) {
+        if self
+            .candidate
+            .as_ref()
+            .is_some_and(|candidate| candidate.identity() == target.identity())
+        {
             self.count += 1
         } else {
-            self.candidate = Some(key);
             self.count = 1;
         }
+        self.candidate = Some(target.clone());
         if self.count >= 2 {
             self.current = Some(target.clone());
             Some(Some(target))
@@ -939,7 +1048,15 @@ fn normalized_pilot(text: &str) -> String {
 fn card_header_text(text: &str) -> String {
     // A tiny bright object between words is often emitted as a bullet. Keep
     // genuine apostrophes; only OCR's non-name bullet glyphs become spacing.
-    text.replace(['•', '·', '●'], " ")
+    let text = text.split('[').next().unwrap_or(text);
+    let mut words: Vec<_> = text.split_whitespace().collect();
+    if words.last().is_some_and(|word| word.ends_with(']')) {
+        words.pop();
+    }
+    words
+        .join(" ")
+        .trim_end_matches(',')
+        .replace(['•', '·', '●'], " ")
 }
 fn nickname_distance(a: &str, b: &str) -> usize {
     let b: Vec<_> = b.chars().collect();
@@ -957,7 +1074,7 @@ fn nickname_distance(a: &str, b: &str) -> usize {
     }
     row[b.len()]
 }
-fn card_pilot_names(cards: &Document) -> Vec<String> {
+fn card_pilot_fragments(cards: &Document) -> Vec<String> {
     let mut names = Vec::new();
     for line in &cards.lines {
         for start in 0..line.words.len() {
@@ -965,6 +1082,12 @@ fn card_pilot_names(cards: &Document) -> Vec<String> {
                 let words = &line.words[start..end];
                 let height = words.iter().map(|w| w.height).fold(0_f32, f32::max);
                 if height <= 0. || words.iter().any(|w| !w.x.is_finite() || !w.y.is_finite()) {
+                    continue;
+                }
+                if words
+                    .windows(2)
+                    .any(|pair| pair[1].x - (pair[0].x + pair[0].width) > height * 1.5)
+                {
                     continue;
                 }
                 let left = words[0].x;
@@ -975,7 +1098,8 @@ fn card_pilot_names(cards: &Document) -> Vec<String> {
                     continue;
                 }
                 if end < line.words.len()
-                    && !line.words[end].text.starts_with('[')
+                    && !(line.words[end].text.starts_with('[')
+                        || line.words[end].text.ends_with(']'))
                     && line.words[end].x - right < height * 1.5
                 {
                     continue;
@@ -991,6 +1115,47 @@ fn card_pilot_names(cards: &Document) -> Vec<String> {
             }
         }
     }
+    names.sort_by_key(|name| normalized_pilot(name));
+    names.dedup_by(|a, b| normalized_pilot(a) == normalized_pilot(b));
+    names
+}
+fn card_pilot_names(cards: &Document, catalog: &Catalog) -> Vec<String> {
+    let fragments = card_pilot_fragments(cards);
+    let mut wrapped = Vec::new();
+    for first in &fragments {
+        if catalog.ship_id(first).is_some() {
+            continue;
+        }
+        for second in &fragments {
+            if first == second || catalog.ship_id(second).is_some() {
+                continue;
+            }
+            let first_anchors = single_line_nickname_anchors(first, cards);
+            let second_anchors = single_line_nickname_anchors(second, cards);
+            let paired = first_anchors.iter().any(|(x, y, h)| {
+                second_anchors.iter().any(|(nx, ny, nh)| {
+                    let height = h.max(*nh);
+                    h.min(*nh) >= height * 0.77
+                        && ny - y >= height * 0.7
+                        && ny - y <= height * 1.8
+                        && (nx - x).abs() <= height * 2.5
+                        && !hulls_at_anchor(cards, catalog, *nx, *ny, *nh).is_empty()
+                })
+            });
+            if paired {
+                wrapped.push(format!("{first} {second}"));
+            }
+        }
+    }
+    let mut names: Vec<_> = fragments
+        .into_iter()
+        .filter(|part| {
+            !wrapped.iter().any(|full| {
+                full.starts_with(&format!("{part} ")) || full.ends_with(&format!(" {part}"))
+            })
+        })
+        .collect();
+    names.extend(wrapped);
     names.sort_by_key(|name| normalized_pilot(name));
     names.dedup_by(|a, b| normalized_pilot(a) == normalized_pilot(b));
     names
@@ -1055,7 +1220,7 @@ pub fn identify_with_retries(
     }
     if let Some(name) = closest_pilot(
         &pilot,
-        card_pilot_names(cards)
+        card_pilot_names(cards, catalog)
             .into_iter()
             .filter(|name| identify_card(name, cards, catalog).is_ok())
             .collect(),
@@ -1125,10 +1290,20 @@ fn confirm_card_name(
         .filter_map(|r| selected_pilot(&r.text))
         .collect();
     let first = candidates.first()?;
-    if reads.len() < 2
-        || !reads
+    let confirmed = if pilot.chars().count() <= 6 {
+        reads
             .iter()
-            .all(|p| normalized_pilot(p) == normalized_pilot(&pilot))
+            .filter(|p| normalized_pilot(p) == normalized_pilot(&pilot))
+            .count()
+            >= 2
+            && reads.iter().all(|p| !clearly_different_pilot(p, &pilot))
+    } else {
+        reads.len() >= 2
+            && reads
+                .iter()
+                .all(|p| normalized_pilot(p) == normalized_pilot(&pilot))
+    };
+    if !confirmed
         || !candidates
             .iter()
             .all(|c| same_card(first, c) && c.target.ship == first.target.ship)
@@ -1193,6 +1368,31 @@ pub fn identify_images(
         retries.push(read);
     }
     retries.push(RetryRead{angle_degrees:None,method:"cards_candidates".into(),rect:[0,0,cards_image.width(),cards_image.height()],text:serde_json::json!(fuzzy.iter().map(|c|serde_json::json!({"pilot":c.target.pilot,"ship":c.target.ship,"anchor":c.anchor})).collect::<Vec<_>>()).to_string(),error:None});
+    let original_names = card_pilot_names(cards, catalog);
+    fuzzy.retain(|c| {
+        !original_names.iter().any(|name| {
+            normalized_pilot(name).starts_with(&format!("{} ", normalized_pilot(&c.target.pilot)))
+        })
+    });
+    if let Some(first) = fuzzy.first()
+        && fuzzy
+            .iter()
+            .all(|c| same_card(first, c) && c.target.ship == first.target.ship)
+    {
+        let mut counts = std::collections::BTreeMap::<String, usize>::new();
+        for c in &fuzzy {
+            *counts.entry(normalized_pilot(&c.target.pilot)).or_default() += 1;
+        }
+        let max = counts.values().copied().max().unwrap_or(0);
+        let winners: Vec<_> = counts
+            .iter()
+            .filter(|(_, count)| **count == max)
+            .map(|(name, _)| name.clone())
+            .collect();
+        if let [winner] = winners.as_slice() {
+            fuzzy.retain(|c| normalized_pilot(&c.target.pilot) == *winner);
+        }
+    }
     let mut targets = if exact.is_empty() {
         if let Some(note) = confirm_card_name(&mut fuzzy, &text, retries) {
             retries.push(RetryRead {
@@ -1250,6 +1450,13 @@ pub fn identify_capture(
         && !retries.iter().any(|r| r.method.starts_with("distance_"))
     {
         retries.extend(crate::platform::distance_retry_texts(
+            image, &clean, language,
+        ));
+    }
+    if selected_pilot(&clean.text()).is_some_and(|p| p.chars().count() <= 6)
+        && !retries.iter().any(|r| r.method.starts_with("nickname_"))
+    {
+        retries.extend(crate::platform::selected_retry_texts(
             image, &clean, language,
         ));
     }
