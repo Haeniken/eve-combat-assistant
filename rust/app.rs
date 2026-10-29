@@ -53,6 +53,7 @@ pub struct CombatApp {
     target: Option<Target>,
     matchup: Option<Matchup>,
     selected: usize,
+    selected_loss: Option<fits::Variant>,
     generation: u64,
     workers: Workers,
     rx: mpsc::Receiver<Message>,
@@ -214,6 +215,7 @@ impl CombatApp {
             target,
             matchup: None,
             selected: 0,
+            selected_loss: None,
             generation: 0,
             workers,
             rx,
@@ -276,11 +278,15 @@ impl CombatApp {
                 queued_at: Instant::now(),
                 settings: self.settings.clone(),
                 target: target.clone(),
+                selected_loss: self.selected_loss.clone(),
             });
         }
     }
     fn request_pilot(&mut self) {
-        if !(self.settings.auto_pilot_lookup || self.settings.pilot_rating) || self.args.demo {
+        if self.selected_loss.is_some()
+            || !(self.settings.auto_pilot_lookup || self.settings.pilot_rating)
+            || self.args.demo
+        {
             return;
         }
         if let Some(target) = self.target.clone()
@@ -395,6 +401,59 @@ impl CombatApp {
         }
     }
     fn apply(&mut self, draft: Settings) -> Result<(), String> {
+        let selected_loss = if !draft.ocr
+            && self
+                .target
+                .as_ref()
+                .is_some_and(|t| t.ship == draft.ship && t.pilot == draft.pilot)
+        {
+            self.selected_loss.clone()
+        } else {
+            None
+        };
+        self.apply_with_loss(draft, selected_loss)
+    }
+    fn select_lookup_loss(
+        &mut self,
+        profile: crate::pilot_lookup::Profile,
+        loss: crate::pilot_lookup::Loss,
+    ) -> Result<(), String> {
+        let variant = loss.fit.map(|fit| {
+            let (title, key) = fits::describe(&fit, &self.catalog);
+            fits::Variant {
+                title,
+                key,
+                fit,
+                count: 0,
+                percent: None,
+                personal: true,
+                examples: vec![
+                    json!({"killmail_id":loss.killmail_id,"killmail_time":loss.happened}),
+                ],
+            }
+        });
+        let mut settings = self.settings.clone();
+        settings.ship = loss.ship;
+        settings.pilot = profile.name.clone();
+        settings.ocr = false;
+        self.apply_with_loss(settings, variant)?;
+        self.pilot_lookup.expanded = false;
+        self.rating_pilot = profile.name;
+        self.pilot_rating = Some(profile.rating);
+        self.rating_error = None;
+        self.pilot_status = if self.selected_loss.is_some() {
+            "Выбрана PvP-потеря пилота"
+        } else {
+            "В выбранной потере не указаны модули; показаны общие сборки"
+        }
+        .into();
+        Ok(())
+    }
+    fn apply_with_loss(
+        &mut self,
+        draft: Settings,
+        selected_loss: Option<fits::Variant>,
+    ) -> Result<(), String> {
         if self.catalog.ship_id(&draft.ship).is_none() {
             return Err("Выбери известный тип корабля".into());
         }
@@ -417,6 +476,8 @@ impl CombatApp {
         self.settings = draft;
         self.settings.save(&self.directory)?;
         self.draft = None;
+        self.selected_loss = selected_loss;
+        self.selected = 0;
         self.screen_state = Default::default();
         self.target = Some(Target {
             ship: self.settings.ship.clone(),
@@ -442,6 +503,7 @@ impl CombatApp {
         }
     }
     fn clear_target_view(&mut self) {
+        self.selected_loss = None;
         self.target = None;
         self.matchup = None;
         self.generation += 1;
@@ -819,6 +881,12 @@ impl CombatApp {
                 }
             }
             Some(crate::pilot_lookup::Action::OpenFit(eft)) => self.details = Some(eft),
+            Some(crate::pilot_lookup::Action::SelectLoss(profile, loss)) => {
+                if let Err(error) = self.select_lookup_loss(*profile, *loss) {
+                    self.pilot_lookup.error = Some(error);
+                    self.pilot_lookup.expanded = true;
+                }
+            }
             None => {}
         }
         let advice = self
@@ -1190,6 +1258,13 @@ impl CombatApp {
             self.details = Some(value);
         }
         if let Some(key) = exclude {
+            if self
+                .selected_loss
+                .as_ref()
+                .is_some_and(|v| fits::fingerprint(&v.fit) == key)
+            {
+                self.selected_loss = None;
+            }
             self.settings.excluded.push(key);
             let _ = self.settings.save(&self.directory);
             self.recalculate();
@@ -1976,6 +2051,117 @@ pub(crate) fn selection_rectangle(
 mod manual_target_tests {
     use super::*;
     use clap::Parser;
+    #[test]
+    fn clicking_lookup_loss_selects_exact_fit_and_blocks_old_replies_until_escape() {
+        let directory =
+            std::env::temp_dir().join(crate::diagnostics::trace_id("lookup-select-test"));
+        std::fs::create_dir_all(&directory).unwrap();
+        let settings = Settings {
+            ocr: true,
+            region: Some([0, 0, 350, 130]),
+            own_fit: include_str!("../resources/example-tristan.eft").into(),
+            ..Default::default()
+        };
+        settings.save(&directory).unwrap();
+        let context = egui::Context::default();
+        let cc = eframe::CreationContext::_new_kittest(context.clone());
+        let mut app = CombatApp::new(&cc, Args::parse_from(["test"]), directory.clone());
+        let (compute, requests) = mpsc::channel();
+        app.workers.compute = compute;
+        let (network, network_requests) = mpsc::channel();
+        app.workers.network = network;
+        let fit = json!({"ship_type_id":33153,"modules":[{"type_id":25715,"slot":{"type":"High","index":0},"state":"Active"}],"drones":[]});
+        let rating=crate::pilot::Rating::from_stats(&json!({"type":"characterID","id":123,"soloKills":100,"soloLosses":20,"shipsDestroyed":1000,"shipsLost":200}),123).unwrap();
+        app.pilot_lookup.profile = Some(crate::pilot_lookup::Profile {
+            name: "Example Pilot".into(),
+            rating,
+        });
+        app.pilot_lookup.loss = Some(crate::pilot_lookup::Loss {
+            killmail_id: 999,
+            happened: "2020-01-01T12:00:00Z".into(),
+            ship: "Drake Navy Issue".into(),
+            description: Some("Missiles".into()),
+            eft: Some(fits::eft(&fit, &app.catalog)),
+            fit: Some(fit.clone()),
+        });
+        app.pilot_lookup.expanded = true;
+        let old_epoch = app.ocr_epoch;
+        let old_generation = app.generation;
+        let render = |app: &mut CombatApp, events: Vec<egui::Event>| {
+            let mut out = context.run_ui(
+                egui::RawInput {
+                    events,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(440., 1000.),
+                    )),
+                    ..Default::default()
+                },
+                |ui| app.overlay(ui),
+            );
+            out.textures_delta.clear();
+        };
+        render(&mut app, vec![]);
+        render(&mut app, vec![]);
+        let id = egui::Id::unique("pilot_lookup_input").with("loss");
+        let point = context.read_response(id).unwrap().rect.center();
+        for pressed in [true, false] {
+            render(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        let request = requests
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(request.target.pilot, "Example Pilot");
+        assert_eq!(request.target.ship, "Drake Navy Issue");
+        assert_eq!(request.selected_loss.as_ref().unwrap().fit, fit);
+        assert!(!app.settings.ocr && !app.pilot_lookup.expanded);
+        assert!(app.details.is_none());
+        assert_eq!(app.settings.own_fit, settings.own_fit);
+        assert_eq!(app.rating_pilot, "Example Pilot");
+        assert!(app.ocr_epoch > old_epoch);
+        app.tx
+            .send(Message::Analyzed(
+                old_generation,
+                AnalysisPhase::Local,
+                Err("old analysis".into()),
+            ))
+            .unwrap();
+        app.tx
+            .send(Message::Ocr(
+                old_epoch,
+                Ok(Some(Target {
+                    ship: "Rifter".into(),
+                    pilot: "Old Pilot".into(),
+                    distance: None,
+                    angular: 0.,
+                })),
+                Some("Old Pilot".into()),
+            ))
+            .unwrap();
+        app.messages(&context);
+        assert_eq!(app.target.as_ref().unwrap().pilot, "Example Pilot");
+        app.request_pilot();
+        assert!(network_requests.try_recv().is_err());
+        app.apply(app.settings.clone()).unwrap();
+        assert_eq!(requests.try_recv().unwrap().selected_loss.unwrap().fit, fit);
+        assert_eq!(app.pilot_rating.as_ref().unwrap().character_id, 123);
+        app.reset_to_ocr();
+        assert!(app.selected_loss.is_none() && app.target.is_none());
+        assert!(app.settings.ocr);
+        drop(app);
+        let _ = std::fs::remove_dir_all(directory);
+    }
     #[test]
     fn lookup_is_independent_and_escape_clears_once_then_rescans_with_fresh_epoch() {
         let directory =

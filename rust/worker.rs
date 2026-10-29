@@ -3,7 +3,7 @@
 use crate::{
     engine::{Catalog, Engine},
     fits::{self, Population, Variant},
-    model::Settings,
+    model::{Settings, id},
     ocr::{self, Target},
     platform,
     sources::Sources,
@@ -69,6 +69,7 @@ pub struct AnalysisRequest {
     pub queued_at: std::time::Instant,
     pub settings: Settings,
     pub target: Target,
+    pub selected_loss: Option<Variant>,
 }
 pub struct NetworkRequest {
     pub generation: u64,
@@ -204,7 +205,10 @@ impl AnalysisCore {
         };
         trace.event("popular_ready",json!({"ship_id":ship,"cache":cache_source,"report":pop.report,"variants":pop.variants.iter().map(|v|json!({"key":v.key,"count":v.count,"percent":v.percent})).collect::<Vec<_>>() }));
         let mut variants = pop.variants.clone();
-        if request.phase != AnalysisPhase::Local && !target.pilot.is_empty() {
+        if request.selected_loss.is_none()
+            && request.phase != AnalysisPhase::Local
+            && !target.pilot.is_empty()
+        {
             let character = self
                 .store
                 .meta(&format!("character:{}", target.pilot.to_lowercase()))
@@ -227,6 +231,16 @@ impl AnalysisCore {
                     json!({"reason":"no_character_id_for_name"}),
                 );
             }
+        }
+        if let Some(selected) = &request.selected_loss {
+            if id(&selected.fit, "ship_type_id") != ship as i64 {
+                return Err("Корпус выбранной потери не совпадает с целью".into());
+            }
+            variants.insert(0, selected.clone());
+            trace.event(
+                "selected_loss_ready",
+                json!({"variant_key":selected.key,"hull_id":ship,"examples":selected.examples}),
+            );
         }
         let mut failures = Vec::new();
         let own = if settings.own_fit.trim().is_empty() {
@@ -422,7 +436,8 @@ impl Workers {
                         &ctx,
                         Message::Analyzed(request.generation, request.phase, result.map(Box::new)),
                     );
-                    if request.settings.pilot_rating
+                    if request.selected_loss.is_none()
+                        && request.settings.pilot_rating
                         && let Some(rating) =
                             crate::pilot::cached(&core.store, &request.target.pilot)
                     {
@@ -437,6 +452,7 @@ impl Workers {
                         );
                     }
                     if request.phase == AnalysisPhase::Local
+                        && request.selected_loss.is_none()
                         && !request.target.pilot.is_empty()
                         && core
                             .store
@@ -929,6 +945,64 @@ mod tests {
         assert!(next_network_request(&rx, &mut pending).is_none());
     }
     #[test]
+    fn selected_loss_is_calculated_without_population_or_pilot_period_match() {
+        let dir = std::env::temp_dir().join(crate::diagnostics::trace_id("chosen-loss-test"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let catalog = Catalog::load().unwrap();
+        let fit = json!({"ship_type_id":33153,"modules":[{"type_id":25715,"slot":{"type":"High","index":0},"state":"Active"}],"drones":[]});
+        let (title, key) = fits::describe(&fit, &catalog);
+        let selected = Variant {
+            title,
+            key,
+            fit: fit.clone(),
+            count: 0,
+            percent: None,
+            personal: true,
+            examples: vec![json!({"killmail_id":999,"killmail_time":"2020-01-01T12:00:00Z"})],
+        };
+        let mut core = AnalysisCore {
+            store: Store::open_with_seed(&dir, None).unwrap(),
+            engine: Engine::default(),
+            catalog,
+            cache: HashMap::new(),
+            trace: crate::diagnostics::Trace::new(dir.join("debug")),
+        };
+        let mut request = AnalysisRequest {
+            generation: 1,
+            phase: AnalysisPhase::Local,
+            parent_generation: None,
+            selected_loss: Some(selected),
+            queued_at: std::time::Instant::now(),
+            settings: Settings {
+                own_fit: include_str!("../resources/example-tristan.eft").into(),
+                pilot_days: 1,
+                days: 1,
+                ..Default::default()
+            },
+            target: Target {
+                ship: "Drake Navy Issue".into(),
+                pilot: "Example Pilot".into(),
+                distance: None,
+                angular: 0.,
+            },
+        };
+        let result = core.analyze(&request).unwrap();
+        assert_eq!(result.pop.total, 0);
+        assert_eq!(result.variants.len(), 1);
+        assert_eq!(result.variants[0].fit, fit);
+        assert!(result.variants[0].personal);
+        let computed = result.results[0].as_ref().unwrap();
+        assert_eq!(computed["hull"]["id"], 33153);
+        assert!(computed["incoming"]["percentages"].is_array());
+        assert!(result.own.is_some());
+        request.phase = AnalysisPhase::CachedPilot;
+        assert_eq!(core.analyze(&request).unwrap().variants[0].fit, fit);
+        request.target.ship = "Rifter".into();
+        assert!(core.analyze(&request).is_err());
+        drop(core);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
     fn distance_change_reuses_population_and_dogma_results() {
         let dir = std::env::temp_dir().join(format!(
             "eve-combat-warm-{}-{}",
@@ -954,6 +1028,7 @@ mod tests {
             generation: 1,
             phase: AnalysisPhase::Local,
             parent_generation: None,
+            selected_loss: None,
             queued_at: std::time::Instant::now(),
             settings,
             target: Target {
@@ -1094,6 +1169,7 @@ mod local_first_tests {
                 generation: 1,
                 phase: AnalysisPhase::Local,
                 parent_generation: None,
+                selected_loss: None,
                 queued_at: std::time::Instant::now(),
                 target: Target {
                     ship: "Rifter".into(),
@@ -1158,6 +1234,7 @@ pub fn diagnose(
         generation: 1,
         phase: AnalysisPhase::Local,
         parent_generation: None,
+        selected_loss: None,
         queued_at: std::time::Instant::now(),
         target: Target {
             ship: ship.into(),

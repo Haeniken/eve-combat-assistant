@@ -645,6 +645,7 @@ impl Sources {
                     .as_ref()
                     .map(|fit| crate::fits::describe(fit, &self.catalog).0),
                 eft: fit.as_ref().map(|fit| crate::fits::eft(fit, &self.catalog)),
+                fit,
             }));
         }
         Ok(None)

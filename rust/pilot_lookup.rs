@@ -18,6 +18,7 @@ pub struct Loss {
     pub ship: String,
     pub description: Option<String>,
     pub eft: Option<String>,
+    pub fit: Option<serde_json::Value>,
 }
 pub struct Request {
     pub generation: u64,
@@ -129,6 +130,17 @@ impl State {
 pub enum Action {
     Submit,
     OpenFit(String),
+    SelectLoss(Box<Profile>, Box<Loss>),
+}
+
+pub fn local_time(value: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|time| {
+            time.with_timezone(&chrono::Local)
+                .format("%d.%m.%Y %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|_| "—".into())
 }
 
 /// Consume paste only in the main window, including while its search field is hidden.
@@ -279,16 +291,46 @@ pub fn popup(
                             } else if let Some(error) = &state.loss_error {
                                 ui.colored_label(style::AMBER, error);
                             } else if let Some(loss) = &state.loss {
-                                ui.label(RichText::new(&loss.ship).size(18.).color(style::TEXT));
-                                if let Some(description) = &loss.description {
-                                    ui.label(
-                                        RichText::new(description).size(11.).color(style::MUTED),
+                                let card = egui::Frame::NONE
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            RichText::new(&loss.ship).size(18.).color(style::TEXT),
+                                        );
+                                        if let Some(description) = &loss.description {
+                                            ui.label(
+                                                RichText::new(description)
+                                                    .size(11.)
+                                                    .color(style::MUTED),
+                                            );
+                                        }
+                                        style::caption(ui, &local_time(&loss.happened));
+                                    })
+                                    .response;
+                                let card = ui
+                                    .interact(card.rect, id.with("loss"), egui::Sense::click())
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                                if card.hovered() {
+                                    ui.painter().hline(
+                                        card.rect.x_range(),
+                                        card.rect.bottom(),
+                                        egui::Stroke::new(1., style::CYAN),
                                     );
                                 }
-                                style::caption(ui, &loss.happened);
+                                if card.clicked() {
+                                    action = Some(Action::SelectLoss(
+                                        Box::new(profile.clone()),
+                                        Box::new(loss.clone()),
+                                    ));
+                                }
                                 ui.horizontal(|ui| {
+                                    if ui.link("В помощник").clicked() {
+                                        action = Some(Action::SelectLoss(
+                                            Box::new(profile.clone()),
+                                            Box::new(loss.clone()),
+                                        ));
+                                    }
                                     if let Some(eft) = &loss.eft {
-                                        if ui.link("Открыть сборку").clicked() {
+                                        if ui.link("EFT").clicked() {
                                             action = Some(Action::OpenFit(eft.clone()));
                                         }
                                     } else {
@@ -321,6 +363,9 @@ pub fn popup(
     if submit {
         action = Some(Action::Submit);
     }
+    if matches!(action, Some(Action::SelectLoss(..))) {
+        state.expanded = false;
+    }
     action
 }
 
@@ -335,6 +380,17 @@ mod tests {
             repeat: false,
             modifiers,
         }
+    }
+    #[test]
+    fn loss_time_is_local_formatted_and_equivalent_offsets_match() {
+        let formatted = local_time("2026-10-18T17:52:57Z");
+        assert_eq!(formatted, local_time("2026-10-18T20:52:57+03:00"));
+        assert_eq!(formatted.len(), 19);
+        for (index, character) in [(2, '.'), (5, '.'), (10, ' '), (13, ':'), (16, ':')] {
+            assert_eq!(formatted.chars().nth(index), Some(character));
+        }
+        assert!(!formatted.contains('T') && !formatted.ends_with('Z'));
+        assert_eq!(local_time("invalid"), "—");
     }
     #[test]
     fn lookup_enter_and_paste_replace_name_cancel_previous_and_ignore_stale_result() {
