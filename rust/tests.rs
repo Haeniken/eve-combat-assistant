@@ -510,6 +510,57 @@ fn own_speed_uses_real_skill_map_instead_of_enemy_v() {
 }
 
 #[test]
+fn outgoing_damage_mix_matches_the_recommended_charge_instead_of_the_loaded_charge() {
+    let c = catalog();
+    let mut engine = Engine::default();
+    let settings = Settings::default();
+    let own = engine
+        .evaluate(json!({"raw_fit":include_str!("../tests/fixtures/kikimora-ammo.eft")}))
+        .unwrap();
+    let enemy=engine.evaluate(json!({"raw_fit":"[Rifter, Enemy]\n200mm AutoCannon II, Barrage S\n1MN Afterburner II"})).unwrap();
+    let advice = tactics::advise(&own, &enemy, &mut engine, &c, &settings, None, 0.).unwrap();
+    let charge = tid(&c, &advice.ammo);
+    let mut fitted = own["fit"].clone();
+    for m in fitted["modules"].as_array_mut().unwrap() {
+        if tactics::compatible(c.get(crate::model::id(m, "type_id") as i32), c.get(charge)) {
+            m["charge"] = json!({"type_id":charge});
+        }
+    }
+    let expected = engine
+        .evaluate(settings.own_request(fitted, false))
+        .unwrap();
+    let mix = tactics::incoming_summary(&expected, &expected["fit"], &c);
+    let actual = advice.outgoing_percentages.unwrap();
+    for (i, value) in actual.iter().enumerate() {
+        assert!((value - mix["percentages"][i].as_f64().unwrap()).abs() < 0.0001);
+    }
+    assert!((actual.iter().sum::<f64>() - 100.).abs() < 0.0001);
+}
+
+#[test]
+fn tactical_ruler_scale_covers_actual_advised_and_weapon_ranges() {
+    for (current, desired, weapon) in [
+        (Some(12000.), Some((20000., 40000.)), Some(35300.)),
+        (None, None, None),
+        (Some(30.), Some((500., 1000.)), None),
+        (Some(1e12), None, Some(90000.)),
+        (Some(f64::NAN), None, None),
+    ] {
+        let (upper, step) = crate::style::range_axis(current, desired, weapon);
+        assert!(upper.is_finite() && step > 0.);
+        assert_eq!(upper, step * 5.);
+        for value in current
+            .into_iter()
+            .chain(weapon)
+            .chain(desired.into_iter().flat_map(|(a, b)| [a, b]))
+            .filter(|v| v.is_finite())
+        {
+            assert!(upper >= value);
+        }
+    }
+}
+
+#[test]
 fn weapon_reach_selects_legal_long_ammo_and_keeps_fit_bonuses() {
     let c = catalog();
     let mut engine = Engine::default();

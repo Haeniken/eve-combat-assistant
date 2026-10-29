@@ -517,6 +517,7 @@ pub struct Advice {
     pub neut: String,
     pub speed: String,
     pub reason: String,
+    pub outgoing_percentages: Option<[f64; 4]>,
     pub own_dps: f64,
     pub enemy_dps: f64,
 }
@@ -773,6 +774,15 @@ pub fn advise(
     } else {
         "Рабочая дистанция твоего оружия и меньше входящего урона"
     };
+    let mut outgoing_mix = [0.; 4];
+    for weapon in &profile.weapons {
+        for (i, value) in outgoing_mix.iter_mut().enumerate() {
+            *value += weapon.damage[i] * weapon.dps / sum(&weapon.damage).max(1.);
+        }
+    }
+    let outgoing_total = sum(&outgoing_mix);
+    let outgoing_percentages =
+        (outgoing_total > 0.).then(|| outgoing_mix.map(|v| v / outgoing_total * 100.));
     Ok(Advice {
         action: action.into(),
         low,
@@ -787,6 +797,7 @@ pub fn advise(
         },
         speed: speed.into(),
         reason: reason.into(),
+        outgoing_percentages,
         own_dps: profile.applied(&enemy_profile, best.1, angular),
         enemy_dps: enemy_profile.applied(profile, best.1, angular),
     })

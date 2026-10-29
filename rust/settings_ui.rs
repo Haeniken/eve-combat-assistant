@@ -37,6 +37,7 @@ pub struct Response {
 pub struct Window<'a> {
     pub catalog: &'a Catalog,
     pub tab: &'a mut usize,
+    pub dirty: bool,
     pub status: &'a str,
     pub cache_status: &'a str,
     pub sync_progress: Option<&'a crate::sources::UpdateProgress>,
@@ -60,8 +61,8 @@ pub struct FitState {
 impl Window<'_> {
     pub fn show(&mut self, ui: &mut Ui, draft: &mut Settings) -> Response {
         let mut response = Response::default();
-        let save_shortcut = ui.ctx().input_mut(|input| {
-            input.consume_shortcut(&egui::KeyboardShortcut::new(
+        let save_shortcut = ui.ctx().input_mut(|i| {
+            i.consume_shortcut(&egui::KeyboardShortcut::new(
                 egui::Modifiers::CTRL,
                 egui::Key::Enter,
             ))
@@ -69,104 +70,326 @@ impl Window<'_> {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(Color32::from_rgb(9, 19, 29))
-                    .inner_margin(24.),
+                    .fill(Color32::from_rgb(9, 21, 30))
+                    .inner_margin(0.),
             )
             .show(ui, |ui| {
-                ui.label(RichText::new("НАСТРОЙКИ").size(22.).color(CYAN));
-                ui.add_space(8.);
-                ui.horizontal_wrapped(|ui| {
-                    for (index, title) in [
-                        "Вид",
-                        "Мой корабль",
-                        "Цель",
-                        "Экран",
-                        "Данные",
-                        "Фит",
-                        "EVE SSO",
-                    ]
-                    .iter()
-                    .enumerate()
-                    {
-                        if ui.selectable_label(*self.tab == index, *title).clicked() {
-                            *self.tab = index;
-                        }
-                    }
-                });
-                style::separator(ui);
-
-                // Нижняя строка с кнопками остаётся доступна и при большом масштабе.
-                let height = (ui.available_height() - 105.).max(100.);
-                egui::ScrollArea::vertical()
-                    .id_salt("settings_scroll")
-                    .max_height(height)
-                    .show(ui, |ui| match *self.tab {
-                        0 => appearance(ui, draft),
-                        1 => response.error = own_fit(ui, draft),
-                        2 => target(ui, draft, self.catalog),
-                        3 => {
-                            response.action = screen(ui, draft, self.screen_state, self.ocr_status)
-                        }
-                        4 => {
-                            response.action = data(
-                                ui,
-                                draft,
-                                self.syncing,
-                                self.cancel_sync,
-                                self.cache_status,
-                                self.sync_progress,
-                            )
-                        }
-                        5 => {
-                            response.action =
-                                fit_plan(ui, draft, self.catalog, self.fit_state, self.fit_busy)
-                        }
-                        _ => {
-                            response.action =
-                                account(ui, draft, self.profile, self.catalog, self.account_busy)
-                        }
-                    });
-                ui.add_space(10.);
-                style::separator(ui);
-                ui.label(RichText::new(self.status).size(11.).color(MUTED));
-                ui.horizontal(|ui| {
-                    if ui.button("Сохранить").on_hover_text("Ctrl+Enter").clicked() || save_shortcut
-                    {
-                        response.action = Some(Action::Save);
-                    }
-                    if ui.button("Отмена").clicked() {
-                        response.action = Some(Action::Cancel);
-                    }
-                });
-                if let Some(error) = &response.error {
-                    ui.label(RichText::new(error).color(AMBER));
+                ui.spacing_mut().item_spacing = egui::vec2(8., 5.);
+                ui.spacing_mut().button_padding = egui::vec2(10., 6.);
+                ui.spacing_mut().interact_size.y = 28.;
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.));
+                let visuals = &mut ui.style_mut().visuals;
+                visuals.extreme_bg_color = Color32::from_rgb(10, 29, 40);
+                for widget in [
+                    &mut visuals.widgets.inactive,
+                    &mut visuals.widgets.noninteractive,
+                ] {
+                    widget.bg_fill = Color32::from_rgb(13, 32, 44);
+                    widget.weak_bg_fill = Color32::from_rgb(13, 32, 44);
+                    widget.bg_stroke = egui::Stroke::new(1., style::LINE);
+                    widget.corner_radius = egui::CornerRadius::same(2);
                 }
+                let bounds = ui.max_rect();
+                let header = 64.;
+                let footer = 58.;
+                let nav = if bounds.width() < 600. { 112. } else { 150. };
+                let top = egui::Rect::from_min_max(
+                    bounds.min,
+                    bounds.left_top() + egui::vec2(bounds.width(), header),
+                );
+                ui.scope_builder(
+                    egui::UiBuilder::new().max_rect(top.shrink2(egui::vec2(20., 10.))),
+                    |ui| {
+                        ui.label(RichText::new("НАСТРОЙКИ").size(21.).color(CYAN));
+                        style::caption(ui, "EVE COMBAT ASSISTANT");
+                    },
+                );
+                ui.painter().hline(
+                    bounds.x_range(),
+                    bounds.top() + header,
+                    egui::Stroke::new(1., style::LINE),
+                );
+                let side = egui::Rect::from_min_max(
+                    bounds.left_top() + egui::vec2(0., header),
+                    egui::pos2(bounds.left() + nav, bounds.bottom() - footer),
+                );
+                ui.painter()
+                    .rect_filled(side, 0., Color32::from_rgb(10, 25, 35));
+                ui.painter().vline(
+                    side.right(),
+                    side.y_range(),
+                    egui::Stroke::new(1., style::LINE),
+                );
+                ui.scope_builder(
+                    egui::UiBuilder::new().max_rect(side.shrink2(egui::vec2(9., 16.))),
+                    |ui| {
+                        ui.set_clip_rect(side.intersect(ui.clip_rect()));
+                        egui::ScrollArea::vertical()
+                            .id_salt("settings-nav")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                for (i, title) in [
+                                    "Вид",
+                                    "Мой корабль",
+                                    "Цель",
+                                    "Экран",
+                                    "Данные",
+                                    "Фит",
+                                    "EVE SSO",
+                                ]
+                                .iter()
+                                .enumerate()
+                                {
+                                    if style::settings_nav(ui, i, title, *self.tab == i).clicked() {
+                                        *self.tab = i;
+                                    }
+                                }
+                            });
+                    },
+                );
+                let body = egui::Rect::from_min_max(
+                    bounds.left_top() + egui::vec2(nav + 20., header + 14.),
+                    bounds.right_bottom() - egui::vec2(20., footer + 12.),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
+                    ui.set_clip_rect(body.intersect(ui.clip_rect()));
+                    egui::ScrollArea::vertical()
+                        .id_salt(("settings_scroll", *self.tab))
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            let (title, subtitle) = match *self.tab {
+                                0 => ("Внешний вид", "Размер, прозрачность и поведение оверлея"),
+                                1 => ("Мой корабль", "Фит, заряды и навыки для расчёта"),
+                                2 => ("Цель", "Ручной выбор корабля и пилота"),
+                                3 => ("Распознавание", "Области экрана и диагностика"),
+                                4 => ("Данные", "Локальная база и правила отбора сборок"),
+                                5 => ("Фит", "Импланты, бустеры и подготовка к вылету"),
+                                _ => ("Персонаж EVE", "Навыки, корабль и сохранённые фиты"),
+                            };
+                            ui.label(RichText::new(title).size(20.).color(style::TEXT));
+                            style::caption(ui, subtitle);
+                            style::separator(ui);
+                            match *self.tab {
+                                0 => appearance(ui, draft),
+                                1 => response.error = own_fit(ui, draft),
+                                2 => target(ui, draft, self.catalog),
+                                3 => {
+                                    response.action =
+                                        screen(ui, draft, self.screen_state, self.ocr_status)
+                                }
+                                4 => {
+                                    response.action = data(
+                                        ui,
+                                        draft,
+                                        self.syncing,
+                                        self.cancel_sync,
+                                        self.cache_status,
+                                        self.sync_progress,
+                                    )
+                                }
+                                5 => {
+                                    response.action = fit_plan(
+                                        ui,
+                                        draft,
+                                        self.catalog,
+                                        self.fit_state,
+                                        self.fit_busy,
+                                    )
+                                }
+                                _ => {
+                                    response.action = account(
+                                        ui,
+                                        draft,
+                                        self.profile,
+                                        self.catalog,
+                                        self.account_busy,
+                                    )
+                                }
+                            }
+                        });
+                });
+                let bottom = egui::Rect::from_min_max(
+                    egui::pos2(bounds.left(), bounds.bottom() - footer),
+                    bounds.max,
+                );
+                ui.painter()
+                    .rect_filled(bottom, 0., Color32::from_rgb(10, 25, 35));
+                ui.painter().hline(
+                    bottom.x_range(),
+                    bottom.top(),
+                    egui::Stroke::new(1., style::LINE),
+                );
+                ui.scope_builder(
+                    egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(
+                        egui::pos2(body.left(), bottom.top() + 8.),
+                        bottom.right_bottom() - egui::vec2(20., 8.),
+                    )),
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add_sized(
+                                            [108., 28.],
+                                            egui::Button::new(
+                                                RichText::new("Сохранить").color(CYAN),
+                                            )
+                                            .fill(Color32::from_rgb(22, 58, 72)),
+                                        )
+                                        .clicked()
+                                        || save_shortcut
+                                    {
+                                        response.action = Some(Action::Save);
+                                    }
+                                    if ui
+                                        .add_sized([85., 28.], egui::Button::new("Отмена"))
+                                        .clicked()
+                                    {
+                                        response.action = Some(Action::Cancel);
+                                    }
+                                    let (message, color) = if let Some(e) = &response.error {
+                                        (e.as_str(), AMBER)
+                                    } else if self.dirty {
+                                        ("Изменения не сохранены", MUTED)
+                                    } else {
+                                        ("Нет изменений", MUTED)
+                                    };
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(ui.available_width(), 28.),
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(message).size(10.).color(color),
+                                                )
+                                                .truncate(),
+                                            )
+                                            .on_hover_text(
+                                                response.error.as_deref().unwrap_or(self.status),
+                                            );
+                                        },
+                                    );
+                                },
+                            );
+                        });
+                        ui.label(
+                            RichText::new("Ctrl+Enter — сохранить")
+                                .size(9.)
+                                .color(MUTED),
+                        );
+                    },
+                );
             });
         response
     }
 }
+fn section(ui: &mut Ui, title: &str) {
+    ui.add_space(3.);
+    style::heading(ui, title);
+    style::separator(ui);
+}
+fn setting_row(ui: &mut Ui, label: &str, control: impl FnOnce(&mut Ui)) {
+    if ui.available_width() >= 420. {
+        ui.horizontal(|ui| {
+            let label_width = ui.available_width() * 0.43;
+            ui.allocate_ui_with_layout(
+                egui::vec2(label_width, 28.),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_min_width(label_width);
+                    ui.label(label);
+                },
+            );
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 28.),
+                egui::Layout::left_to_right(egui::Align::Center),
+                control,
+            );
+        });
+    } else {
+        ui.label(label);
+        control(ui);
+    }
+}
 
-fn appearance(ui: &mut Ui, draft: &mut Settings) {
-    ui.add(egui::Slider::new(&mut draft.background, 0.0..=100.).text("Непрозрачность фона, %"));
-    ui.add(egui::Slider::new(&mut draft.opacity, 20.0..=100.).text("Непрозрачность окна, %"));
-    ui.add(
-        egui::Slider::new(&mut draft.scale, 75.0..=175.)
-            .step_by(5.)
-            .text("Масштаб интерфейса, %"),
+fn slider(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    step: f64,
+) {
+    setting_row(ui, label, |ui| {
+        ui.spacing_mut().slider_width = (ui.available_width() - 70.).max(60.);
+        ui.visuals_mut().widgets.inactive.fg_stroke = egui::Stroke::new(1., CYAN);
+        ui.visuals_mut().selection.bg_fill = Color32::from_rgb(70, 139, 158);
+        ui.add(
+            egui::Slider::new(value, range)
+                .suffix(suffix)
+                .step_by(step)
+                .handle_shape(egui::style::HandleShape::Circle)
+                .trailing_fill(true),
+        );
+    });
+}
+fn number<N: egui::emath::Numeric>(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut N,
+    range: std::ops::RangeInclusive<N>,
+    suffix: &str,
+) {
+    ui.label(RichText::new(label).size(11.));
+    ui.add_sized(
+        [ui.available_width(), 28.],
+        egui::DragValue::new(value).range(range).suffix(suffix),
     );
-    ui.add_space(8.);
+}
+fn appearance(ui: &mut Ui, draft: &mut Settings) {
+    section(ui, "ОФОРМЛЕНИЕ");
+    slider(
+        ui,
+        "Непрозрачность фона",
+        &mut draft.background,
+        0.0..=100.,
+        "%",
+        1.,
+    );
+    slider(
+        ui,
+        "Непрозрачность окна",
+        &mut draft.opacity,
+        20.0..=100.,
+        "%",
+        1.,
+    );
+    slider(
+        ui,
+        "Масштаб интерфейса",
+        &mut draft.scale,
+        75.0..=175.,
+        "%",
+        5.,
+    );
     style::caption(
         ui,
-        "Фон 0% — прозрачная подложка. Окно 100% — чёткие текст и иконки.",
+        "Изменения вида сразу видны в оверлее. «Отмена» вернёт прежний вид.",
     );
+    section(ui, "РАЗМЕР ОКНА");
+    slider(
+        ui,
+        "Ширина оверлея",
+        &mut draft.width,
+        380.0..=700.,
+        " px",
+        10.,
+    );
+    section(ui, "ПОВЕДЕНИЕ");
     ui.checkbox(&mut draft.on_top, "Держать поверх игры");
     ui.checkbox(&mut draft.click_through, "Пропускать клики в игру");
     style::caption(ui, "Настройки доступны через значок в системном трее.");
-    ui.add(
-        egui::Slider::new(&mut draft.width, 380.0..=700.)
-            .step_by(10.)
-            .text("Ширина оверлея"),
-    );
 }
 
 fn own_fit(ui: &mut Ui, draft: &mut Settings) -> Option<String> {
@@ -175,15 +398,7 @@ fn own_fit(ui: &mut Ui, draft: &mut Settings) -> Option<String> {
         ui,
         "Вставь фит из EVE / Pyfa, включая заряды и боеприпасы в трюме.",
     );
-    ui.add(
-        egui::TextEdit::multiline(&mut draft.own_fit)
-            .id(egui::Id::unique("own_fit_editor"))
-            .code_editor()
-            .desired_width(f32::INFINITY)
-            .desired_rows(13)
-            .hint_text("[Tristan, Solo]\n…"),
-    );
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui.button("Вставить из буфера").clicked() {
             // Кнопка заменяет весь фит и сообщает об ошибке системного буфера.
             // Она не зависит от положения курсора или раскладки клавиатуры.
@@ -208,8 +423,29 @@ fn own_fit(ui: &mut Ui, draft: &mut Settings) -> Option<String> {
             draft.own_fit = include_str!("../resources/example-tristan.eft").into();
         }
     });
-    ui.add(egui::Slider::new(&mut draft.skill_level, 0..=5).text("Уровень навыков"));
-    ui.horizontal(|ui| {
+    egui::ScrollArea::vertical()
+        .id_salt("eft-editor")
+        .max_height(180.)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut draft.own_fit)
+                    .id(egui::Id::unique("own_fit_editor"))
+                    .code_editor()
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(10)
+                    .hint_text("[Tristan, Solo]\n…"),
+            );
+        });
+    section(ui, "НАВЫКИ");
+    setting_row(ui, "Уровень всех навыков", |ui| {
+        ui.spacing_mut().slider_width = (ui.available_width() - 65.).max(60.);
+        ui.add_enabled(
+            draft.skills.is_none(),
+            egui::Slider::new(&mut draft.skill_level, 0..=5),
+        );
+    });
+    ui.horizontal_wrapped(|ui| {
         if ui.button("Импорт навыков JSON").clicked()
             && let Some(path) = platform::choose_file()
         {
@@ -234,26 +470,33 @@ fn own_fit(ui: &mut Ui, draft: &mut Settings) -> Option<String> {
 }
 
 fn target(ui: &mut Ui, draft: &mut Settings, catalog: &Catalog) {
-    ui.label("Тип корабля");
-    ui.text_edit_singleline(&mut draft.ship);
-    let filter = draft.ship.to_lowercase();
-    egui::ScrollArea::vertical()
-        .id_salt("ships")
-        .max_height(180.)
-        .show(ui, |ui| {
-            for (_, name) in catalog
-                .ships
-                .iter()
-                .filter(|(_, name)| name.to_lowercase().contains(&filter))
-                .take(30)
-            {
-                if ui.selectable_label(*name == draft.ship, name).clicked() {
-                    draft.ship = name.clone();
-                }
-            }
+    section(ui, "КОРАБЛЬ");
+    egui::ComboBox::from_id_salt("target_ship")
+        .selected_text(&draft.ship)
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            ui.text_edit_singleline(&mut draft.ship);
+            let filter = draft.ship.to_lowercase();
+            egui::ScrollArea::vertical()
+                .max_height(180.)
+                .show(ui, |ui| {
+                    for (_, name) in catalog
+                        .ships
+                        .iter()
+                        .filter(|(_, name)| name.to_lowercase().contains(&filter))
+                        .take(30)
+                    {
+                        if ui.selectable_label(*name == draft.ship, name).clicked() {
+                            draft.ship = name.clone();
+                            ui.close();
+                        }
+                    }
+                });
         });
+    style::caption(ui, "Введите название, чтобы найти корпус в каталоге.");
+    section(ui, "ПИЛОТ");
     ui.label("Пилот — необязательно");
-    ui.text_edit_singleline(&mut draft.pilot);
+    ui.add(egui::TextEdit::singleline(&mut draft.pilot).desired_width(f32::INFINITY));
     ui.add_space(10.);
     style::caption(
         ui,
@@ -267,200 +510,205 @@ fn screen(
     state: &mut ScreenState,
     status: &str,
 ) -> Option<Action> {
-    ui.label(status);
-    ui.checkbox(&mut draft.ocr, "Читать выбранную цель с экрана");
+    let mut action = None;
+    ui.checkbox(&mut draft.ocr, "Распознавать выбранную цель с экрана");
     ui.checkbox(
         &mut draft.pause_outside_eve,
-        "Приостанавливать вне активного окна EVE",
+        "Пауза, когда окно EVE неактивно",
     );
-    ui.add(
-        egui::Slider::new(&mut draft.ocr_interval, 0.5..=5.)
-            .step_by(0.5)
-            .text("Интервал чтения, сек."),
-    );
-    style::caption(
-        ui,
-        "Неизменившаяся область не отправляется на повторное OCR.",
-    );
-    ui.horizontal(|ui| {
-        ui.label("Хранить исчезнувшую цель");
-        ui.add(
-            egui::DragValue::new(&mut draft.target_hold_seconds)
-                .range(0..=600)
-                .suffix(" сек."),
-        );
+    setting_row(ui, "Интервал чтения", |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add(
+                egui::DragValue::new(&mut draft.ocr_interval)
+                    .range(0.5..=5.)
+                    .speed(0.5)
+                    .suffix(" сек."),
+            );
+        });
+    });
+    setting_row(ui, "Хранить исчезнувшую цель", |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add(
+                egui::DragValue::new(&mut draft.target_hold_seconds)
+                    .range(0..=600)
+                    .suffix(" сек."),
+            );
+        });
     });
     style::caption(
         ui,
-        "0 — сбрасывать сразу. При смене цели старые данные снимаются без задержки.",
+        "При смене цели старые данные снимаются сразу. 0 — сбрасывать без задержки.",
     );
-    let mut action = ui
-        .button("Выделить панель текущего выбора — справа")
-        .clicked()
-        .then_some(Action::SelectRegion);
-    if let Some(region) = &mut draft.region {
-        ui.label("Координаты в пикселях");
-        ui.horizontal(|ui| {
-            for (index, title) in ["X", "Y", "Ширина", "Высота"].iter().enumerate() {
-                ui.label(*title);
-                ui.add(egui::DragValue::new(&mut region[index]).speed(1.));
-            }
-        });
+    section(ui, "ОБЛАСТИ ЭКРАНА");
+    for (title, rect, kind) in [
+        ("Текущий выбор — справа", draft.region, Action::SelectRegion),
+        (
+            "Карточки целей — слева",
+            draft.targets_region,
+            Action::SelectTargetsRegion,
+        ),
+    ] {
+        egui::Frame::new()
+            .fill(Color32::from_rgb(11, 29, 40))
+            .stroke(egui::Stroke::new(1., style::LINE))
+            .inner_margin(8.)
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(title);
+                        style::caption(
+                            ui,
+                            &rect
+                                .map(|r| {
+                                    format!("X {} · Y {} · {} × {} px", r[0], r[1], r[2], r[3])
+                                })
+                                .unwrap_or_else(|| "Область не выбрана".into()),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Выделить").clicked() {
+                            action = Some(kind);
+                        }
+                    });
+                });
+            });
     }
-    style::separator(ui);
-    if ui
-        .button("Выделить карточки захваченных целей — слева")
-        .clicked()
-    {
-        action = Some(Action::SelectTargetsRegion);
-    }
-    if let Some(region) = &mut draft.targets_region {
-        ui.label("Область ников и названий корпусов");
-        ui.horizontal(|ui| {
-            for (index, title) in ["X", "Y", "Ширина", "Высота"].iter().enumerate() {
-                ui.label(*title);
-                ui.add(egui::DragValue::new(&mut region[index]).speed(1.));
-            }
-        });
-        if ui.small_button("Отключить вторую область").clicked() {
-            draft.targets_region = None;
+    ui.collapsing("Координаты и язык",|ui| {
+        for (name,region) in [("Текущий выбор",&mut draft.region),("Карточки",&mut draft.targets_region)] {
+            if let Some(rect)=region {ui.label(name);ui.horizontal_wrapped(|ui| {for (i,label) in ["X","Y","Ширина","Высота"].iter().enumerate(){ui.label(*label);ui.add(egui::DragValue::new(&mut rect[i]));}});}
         }
-    }
-    egui::ComboBox::from_id_salt("ocr_lang")
-        .selected_text(if draft.language == "rus" {
-            "Русский"
-        } else {
-            "English"
-        })
-        .show_ui(ui, |ui| {
-            ui.selectable_value(&mut draft.language, "eng".into(), "English");
-            ui.selectable_value(&mut draft.language, "rus".into(), "Русский");
-        });
-    style::caption(
-        ui,
-        "Справа читается ник текущего выбора. Если корпус там не виден, выделите слева всю полосу ников и названий корпусов, например Orca*. Звёздочка необязательна; обрезанное имя должно однозначно совпадать с каталогом. Позиции карточек могут меняться; изображения и анимированные кольца в область включать не нужно.",
-    );
-    style::separator(ui);
-    ui.checkbox(
-        &mut draft.ocr_debug,
-        "Подробная диагностика: OCR, фиты, кеш и HTTP-запросы",
-    );
-    style::caption(
-        ui,
-        "Журнал включает координаты, язык, паузы, время обработки, текст, позиции слов и результат выбора корпуса. До 80 снимков / 64 МиБ; OCR и фиты имеют отдельные наборы из 4 журналов по 4 МиБ. Настройка применяется после сохранения; ручная проверка использует галочку сразу.",
-    );
-    if ui.button("Открыть папку диагностики").clicked() {
-        action = Some(Action::OpenDebugFolder);
-    }
-    if ui
-        .add_enabled(!state.busy, egui::Button::new("Проверить области сейчас"))
-        .clicked()
-    {
-        action = Some(Action::CheckScreen);
-    }
-    style::caption(
-        ui,
-        "Проверка использует координаты и язык выше без сохранения. Окна помощника на время захвата скрываются. При расширенном логировании снимки также сохраняются в папку диагностики.",
-    );
+        if draft.targets_region.is_some()&&ui.small_button("Отключить вторую область").clicked(){draft.targets_region=None;}
+        egui::ComboBox::from_id_salt("ocr_lang").selected_text(if draft.language=="rus"{"Русский"}else{"English"}).show_ui(ui,|ui| {ui.selectable_value(&mut draft.language,"eng".into(),"English");ui.selectable_value(&mut draft.language,"rus".into(),"Русский");});
+        style::caption(ui,"Справа — ник выбора. Слева — ники и названия корпусов без анимированных колец. Звёздочка необязательна.");
+    });
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add_enabled(!state.busy, egui::Button::new("Проверить сейчас"))
+            .clicked()
+        {
+            action = Some(Action::CheckScreen);
+        }
+        ui.add(egui::Label::new(RichText::new(status).size(10.).color(MUTED)).truncate())
+            .on_hover_text(status);
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.checkbox(&mut draft.ocr_debug, "Подробная диагностика").on_hover_text("Снимки, OCR, фиты, кеш и трассировка запросов. До 80 снимков / 64 МиБ; журналы имеют ограничение размера.");
+        if ui.button("Открыть папку").clicked() {
+            action = Some(Action::OpenDebugFolder);
+        }
+    });
     if state.busy {
         ui.label("Проверка экрана…");
     }
-    if let Some(check) = &state.check {
-        if check.selected.rect != draft.region
-            || check.cards.rect != draft.targets_region
-            || state.language != draft.language
-        {
-            ui.colored_label(AMBER, "Области или язык изменены — повторите проверку.");
-        }
-        if state.scroll_to_result {
-            ui.scroll_to_cursor(Some(egui::Align::TOP));
-            state.scroll_to_result = false;
-        }
-        match &check.result {
-            Ok(target) => {
-                ui.colored_label(CYAN, format!("Найдено: {} · {}", target.pilot, target.ship));
-                let matched = crate::ocr::pilot_match(
-                    &check.selected.parsed_text,
-                    &check.selected.retries,
-                    target,
-                );
-                if let Some(distance) = target.distance {
-                    style::caption(ui, &format!("Дистанция: {distance:.0} м"));
-                } else {
-                    style::caption(ui, "Дистанция: не прочитана");
+    if state.check.is_some() {
+        egui::CollapsingHeader::new("Результат проверки")
+            .open(state.scroll_to_result.then_some(true))
+            .show(ui, |ui| {
+                if let Some(check) = &state.check {
+                    if check.selected.rect != draft.region
+                        || check.cards.rect != draft.targets_region
+                        || state.language != draft.language
+                    {
+                        ui.colored_label(AMBER, "Области или язык изменены — повторите проверку.");
+                    }
+                    if state.scroll_to_result {
+                        ui.scroll_to_cursor(Some(egui::Align::TOP));
+                        state.scroll_to_result = false;
+                    }
+                    match &check.result {
+                        Ok(target) => {
+                            ui.colored_label(
+                                CYAN,
+                                format!("Найдено: {} · {}", target.pilot, target.ship),
+                            );
+                            let matched = crate::ocr::pilot_match(
+                                &check.selected.parsed_text,
+                                &check.selected.retries,
+                                target,
+                            );
+                            if let Some(distance) = target.distance {
+                                style::caption(ui, &format!("Дистанция: {distance:.0} м"));
+                            } else {
+                                style::caption(ui, "Дистанция: не прочитана");
+                            }
+                            if matched.method == "closest" {
+                                style::caption(
+                                    ui,
+                                    &format!(
+                                        "Выбрана ближайшая карточка по нику; различий: {}",
+                                        matched.edit_distance
+                                    ),
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            ui.colored_label(AMBER, error);
+                        }
+                    }
+                    for (index, title, region) in [
+                        (0, "Текущий выбор — справа", &check.selected),
+                        (1, "Карточки — слева", &check.cards),
+                    ] {
+                        ui.label(title);
+                        if let Some(rect) = region.rect {
+                            ui.monospace(format!(
+                                "X={} Y={} · {} × {} px",
+                                rect[0], rect[1], rect[2], rect[3]
+                            ));
+                        } else {
+                            style::caption(ui, "Область не выбрана");
+                        }
+                        if let Some(texture) = &state.textures[index] {
+                            ui.add(
+                                egui::Image::new(texture)
+                                    .max_width(ui.available_width())
+                                    .max_height(220.)
+                                    .shrink_to_fit(),
+                            );
+                        }
+                        for retry in &region.retries {
+                            let label = if retry.method.starts_with("distance_") {
+                                "Повтор дистанции"
+                            } else if retry.method.starts_with("cards_") {
+                                "Повтор карточек"
+                            } else {
+                                "Повтор ника"
+                            };
+                            style::caption(
+                                ui,
+                                &format!(
+                                    "{label} ({}): {}",
+                                    retry.method,
+                                    retry.error.as_ref().unwrap_or(&retry.text)
+                                ),
+                            );
+                        }
+                        if !region.parsed_text.is_empty() && region.parsed_text != region.text {
+                            style::caption(
+                                ui,
+                                &format!("Для сопоставления: {}", region.parsed_text),
+                            );
+                        }
+                        if let Some(error) = &region.error {
+                            ui.colored_label(AMBER, error);
+                        }
+                        if region.rect.is_some() {
+                            let mut text = if region.text.is_empty() {
+                                "(OCR не вернул текст)".into()
+                            } else {
+                                region.text.clone()
+                            };
+                            ui.add(
+                                egui::TextEdit::multiline(&mut text)
+                                    .desired_width(f32::INFINITY)
+                                    .desired_rows(3)
+                                    .interactive(false),
+                            );
+                        }
+                    }
                 }
-                if matched.method == "closest" {
-                    style::caption(
-                        ui,
-                        &format!(
-                            "Выбрана ближайшая карточка по нику; различий: {}",
-                            matched.edit_distance
-                        ),
-                    );
-                }
-            }
-            Err(error) => {
-                ui.colored_label(AMBER, error);
-            }
-        }
-        for (index, title, region) in [
-            (0, "Текущий выбор — справа", &check.selected),
-            (1, "Карточки — слева", &check.cards),
-        ] {
-            ui.label(title);
-            if let Some(rect) = region.rect {
-                ui.monospace(format!(
-                    "X={} Y={} · {} × {} px",
-                    rect[0], rect[1], rect[2], rect[3]
-                ));
-            } else {
-                style::caption(ui, "Область не выбрана");
-            }
-            if let Some(texture) = &state.textures[index] {
-                ui.add(
-                    egui::Image::new(texture)
-                        .max_width(ui.available_width())
-                        .max_height(220.)
-                        .shrink_to_fit(),
-                );
-            }
-            for retry in &region.retries {
-                let label = if retry.method.starts_with("distance_") {
-                    "Повтор дистанции"
-                } else if retry.method.starts_with("cards_") {
-                    "Повтор карточек"
-                } else {
-                    "Повтор ника"
-                };
-                style::caption(
-                    ui,
-                    &format!(
-                        "{label} ({}): {}",
-                        retry.method,
-                        retry.error.as_ref().unwrap_or(&retry.text)
-                    ),
-                );
-            }
-            if !region.parsed_text.is_empty() && region.parsed_text != region.text {
-                style::caption(ui, &format!("Для сопоставления: {}", region.parsed_text));
-            }
-            if let Some(error) = &region.error {
-                ui.colored_label(AMBER, error);
-            }
-            if region.rect.is_some() {
-                let mut text = if region.text.is_empty() {
-                    "(OCR не вернул текст)".into()
-                } else {
-                    region.text.clone()
-                };
-                ui.add(
-                    egui::TextEdit::multiline(&mut text)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(3)
-                        .interactive(false),
-                );
-            }
-        }
+            });
     }
     action
 }
@@ -505,96 +753,111 @@ fn data(
     progress: Option<&crate::sources::UpdateProgress>,
 ) -> Option<Action> {
     let mut action = None;
-    egui::ComboBox::from_id_salt("period")
-        .selected_text(if draft.days == 0 {
-            "Весь архив".into()
-        } else {
-            format!("{} дней", draft.days)
-        })
-        .show_ui(ui, |ui| {
-            for (days, title) in [
-                (30, "30 дней"),
-                (90, "90 дней"),
-                (180, "180 дней"),
-                (0, "Весь архив"),
-            ] {
-                ui.selectable_value(&mut draft.days, days, title);
-            }
-        });
-    ui.add(egui::Slider::new(&mut draft.max_variants, 1..=12).text("Максимум вариантов"));
-    ui.add(egui::Slider::new(&mut draft.coverage, 50.0..=100.).text("Покрытие выборки, %"));
-    ui.add(egui::Slider::new(&mut draft.min_percent, 0.0..=20.).text("Минимальная доля, %"));
-    ui.add(egui::Slider::new(&mut draft.max_attackers, 1..=5).text("Максимум атакующих"));
-    ui.add(
-        egui::Slider::new(&mut draft.pilot_days, 1..=180).text("Период поиска фита пилота, дней"),
-    );
+    section(ui, "ОБНОВЛЕНИЕ БАЗЫ");
+    style::caption(ui, cache_status);
+    if let Some(p) = progress {
+        ui.add(
+            egui::ProgressBar::new(p.fraction().unwrap_or(0.))
+                .text(
+                    p.fraction()
+                        .map(|f| {
+                            format!(
+                                "{} / {} дней · {:.0}%",
+                                p.completed_days,
+                                p.total_days,
+                                f * 100.
+                            )
+                        })
+                        .unwrap_or_else(|| p.phase.clone()),
+                )
+                .desired_width(ui.available_width()),
+        );
+        style::caption(ui, &p.caption());
+        if let Some(error) = &p.error {
+            ui.colored_label(AMBER, error);
+        }
+    }
+    if syncing {
+        if ui.button("Остановить").clicked() {
+            cancel_sync.store(true, Ordering::Relaxed);
+        }
+        if cancel_sync.load(Ordering::Relaxed) {
+            style::caption(ui, "Остановка обновления…");
+        }
+    } else if ui.button("Обновить базу всех кораблей").clicked() {
+        action = Some(Action::Sync);
+    }
+    section(ui, "ВЫБОРКА СБОРОК");
+    ui.columns(if ui.available_width() < 380. { 1 } else { 2 }, |cols| {
+        let n = cols.len();
+        cols[0].label("Период статистики");
+        egui::ComboBox::from_id_salt("period")
+            .width(cols[0].available_width())
+            .selected_text(if draft.days == 0 {
+                "Весь архив".into()
+            } else {
+                format!("{} дней", draft.days)
+            })
+            .show_ui(&mut cols[0], |ui| {
+                for (days, label) in [
+                    (30, "30 дней"),
+                    (90, "90 дней"),
+                    (180, "180 дней"),
+                    (0, "Весь архив"),
+                ] {
+                    ui.selectable_value(&mut draft.days, days, label);
+                }
+            });
+        number(
+            &mut cols[1 % n],
+            "Максимум вариантов",
+            &mut draft.max_variants,
+            1..=12,
+            "",
+        );
+        number(
+            &mut cols[0],
+            "Покрытие выборки",
+            &mut draft.coverage,
+            50.0..=100.,
+            "%",
+        );
+        number(
+            &mut cols[1 % n],
+            "Минимальная доля",
+            &mut draft.min_percent,
+            0.0..=20.,
+            "%",
+        );
+        number(
+            &mut cols[0],
+            "Максимум атакующих",
+            &mut draft.max_attackers,
+            1..=5,
+            "",
+        );
+        number(
+            &mut cols[1 % n],
+            "Поиск фита пилота",
+            &mut draft.pilot_days,
+            1..=180,
+            " дней",
+        );
+    });
+    ui.add_space(5.);
     ui.checkbox(
         &mut draft.auto_pilot_lookup,
         "Дозагружать сведения выбранного пилота",
     );
     ui.checkbox(
         &mut draft.pilot_rating,
-        "Показывать соло-рейтинг пилота из zKillboard",
+        "Показывать соло-рейтинг zKillboard",
     );
-    style::caption(
-        ui,
-        "Общая статистика обновляется только вручную. Во время игры используется локальная база.",
-    );
-    ui.label("Обновление базы всех известных кораблей");
-    style::caption(ui, cache_status);
-    ui.checkbox(
-        &mut draft.force_refresh,
-        "Повторно скачать весь выбранный период (обычно не требуется)",
-    );
-    style::caption(
-        ui,
-        "Обновление сверяет дневной архив с кешем и скачивает только новые или изменившиеся дни. Во время боя используются локальные данные.",
-    );
-    if let Some(progress) = progress {
-        let mut bar = egui::ProgressBar::new(progress.fraction().unwrap_or(0.))
-            .text(
-                progress
-                    .fraction()
-                    .map(|fraction| {
-                        format!(
-                            "{} / {} дней · {:.0}%",
-                            progress.completed_days,
-                            progress.total_days,
-                            fraction * 100.
-                        )
-                    })
-                    .unwrap_or_else(|| progress.phase.clone()),
-            )
-            .desired_width(ui.available_width());
-        if syncing && !progress.finished {
-            bar = bar.animate(true);
-        }
-        ui.add(bar);
-        style::caption(ui, &progress.caption());
-        if syncing && cancel_sync.load(Ordering::Relaxed) {
-            style::caption(ui, "Остановка обновления…");
-        }
-        if let Some(error) = &progress.error {
-            ui.colored_label(egui::Color32::from_rgb(255, 195, 105), error);
-        }
-    }
-    ui.horizontal(|ui| {
-        if ui
-            .add_enabled(!syncing, egui::Button::new("Обновить базу всех кораблей"))
-            .clicked()
-        {
-            action = Some(Action::Sync);
-        }
-        if syncing && ui.button("Остановить").clicked() {
-            cancel_sync.store(true, Ordering::Relaxed);
-        }
+    ui.collapsing("Дополнительно: повторная загрузка и исключения",|ui| {
+        ui.checkbox(&mut draft.force_refresh,"Повторно скачать весь выбранный период");
+        style::caption(ui,"Обычно достаточно сверки новых и изменившихся дней. Общая база обновляется только вручную.");
+        if ui.button(format!("Сбросить исключения ({})",draft.excluded.len())).clicked(){draft.excluded.clear();}
     });
-    if ui
-        .button(format!("Сбросить исключения ({})", draft.excluded.len()))
-        .clicked()
-    {
-        draft.excluded.clear();
-    }
     action
 }
 
@@ -606,7 +869,7 @@ fn account(
     busy: bool,
 ) -> Option<Action> {
     let mut action = None;
-    ui.label(RichText::new("ПЕРСОНАЖ").color(CYAN));
+    section(ui, "ПЕРСОНАЖ");
     if profile.character_id > 0 {
         ui.label(format!(
             "{} · {} навыков",
@@ -618,23 +881,6 @@ fn account(
             catalog.name(crate::model::id(&profile.ship, "ship_type_id") as i32)
         ));
     }
-    ui.label("Client ID приложения EVE SSO");
-    ui.text_edit_singleline(&mut draft.sso_client_id);
-    ui.collapsing("Как подключить", |ui| {
-        ui.hyperlink_to(
-            "Зарегистрировать приложение",
-            "https://developers.eveonline.com/applications",
-        );
-        ui.label("Тип: Authentication & API Access. Используется вход PKCE без Client Secret.");
-        ui.label("Callback URL:");
-        ui.monospace(crate::account::CALLBACK);
-        ui.label("Разрешения:");
-        ui.monospace(crate::account::SCOPES.replace(' ', "\n"));
-        style::caption(
-            ui,
-            "Скопируйте Client ID в поле выше. Пароль вводится только на сайте EVE.",
-        );
-    });
     ui.horizontal_wrapped(|ui| {
         if ui
             .add_enabled(!busy, egui::Button::new("Войти через EVE Online"))
@@ -692,6 +938,25 @@ fn account(
             }
         });
     }
+    ui.collapsing("Подключение приложения", |ui| {
+        ui.label("Client ID приложения EVE SSO");
+        ui.add(egui::TextEdit::singleline(&mut draft.sso_client_id).desired_width(f32::INFINITY));
+        ui.collapsing("Как подключить", |ui| {
+            ui.hyperlink_to(
+                "Зарегистрировать приложение",
+                "https://developers.eveonline.com/applications",
+            );
+            ui.label("Тип: Authentication & API Access. Используется вход PKCE без Client Secret.");
+            ui.label("Callback URL:");
+            ui.monospace(crate::account::CALLBACK);
+            ui.label("Разрешения:");
+            ui.monospace(crate::account::SCOPES.replace(' ', "\n"));
+            style::caption(
+                ui,
+                "Скопируйте Client ID в поле выше. Пароль вводится только на сайте EVE.",
+            );
+        });
+    });
     for warning in &profile.warnings {
         ui.label(RichText::new(warning).color(AMBER));
     }
@@ -764,7 +1029,11 @@ fn fit_plan(
         }
     }
     ui.label("Добавить имплант или бустер по названию");
-    ui.text_edit_singleline(&mut state.search);
+    ui.add(
+        egui::TextEdit::singleline(&mut state.search)
+            .desired_width(f32::INFINITY)
+            .hint_text("Начните вводить название…"),
+    );
     if state.search.chars().count() >= 3 {
         let search = state.search.to_lowercase();
         let mut matches: Vec<_> = catalog

@@ -7,8 +7,31 @@ use eframe::egui::{
 pub const CYAN: Color32 = Color32::from_rgb(137, 220, 239);
 pub const TEXT: Color32 = Color32::from_rgb(215, 229, 237);
 pub const MUTED: Color32 = Color32::from_rgb(119, 148, 166);
+pub const YELLOW: Color32 = Color32::from_rgb(231, 210, 96);
 pub const AMBER: Color32 = Color32::from_rgb(242, 181, 107);
 pub const LINE: Color32 = Color32::from_rgb(43, 72, 89);
+pub const DAMAGE_COLORS: [Color32; 4] = [
+    Color32::from_rgb(100, 175, 214),
+    Color32::from_rgb(214, 125, 112),
+    Color32::from_rgb(181, 193, 203),
+    AMBER,
+];
+pub fn damage_mix(ui: &mut Ui, percentages: Option<[f64; 4]>, fallback: &str) {
+    if let Some(values) = percentages {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(7., 0.);
+            for (i, value) in values.iter().enumerate().filter(|(_, v)| **v > 0.001) {
+                ui.label(
+                    RichText::new(format!("{} {:.0}%", crate::tactics::DAMAGE[i].0, value))
+                        .size(13.)
+                        .color(DAMAGE_COLORS[i]),
+                );
+            }
+        });
+    } else {
+        ui.label(RichText::new(fallback).size(13.).color(MUTED));
+    }
+}
 pub fn caption(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).size(10.).color(MUTED));
 }
@@ -30,20 +53,20 @@ pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &
         Color32::from_rgb(73, 213, 201),
         Color32::from_rgb(189, 131, 239),
     ];
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(88., 70.), Sense::hover());
-    let center = rect.left_top() + Vec2::new(44., 27.);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(52., 52.), Sense::hover());
+    let center = rect.left_top() + Vec2::new(26., 23.);
     let color = rating
         .and_then(|r| r.tier())
         .map(|i| colors[i])
         .unwrap_or(MUTED);
     let p = ui.painter();
-    p.circle_filled(center, 25., color.gamma_multiply(0.08));
-    p.circle_stroke(center, 25., Stroke::new(1.8, color));
+    p.circle_filled(center, 19., color.gamma_multiply(0.08));
+    p.circle_stroke(center, 19., Stroke::new(1.8, color));
     p.text(
-        center + Vec2::new(0., -11.),
+        center + Vec2::new(0., -8.),
         Align2::CENTER_CENTER,
         "SOLO",
-        FontId::proportional(8.),
+        FontId::proportional(6.),
         MUTED,
     );
     p.text(
@@ -53,7 +76,7 @@ pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &
             .and_then(|r| r.score)
             .map(|s| s.to_string())
             .unwrap_or_else(|| "—".into()),
-        FontId::proportional(18.),
+        FontId::proportional(15.),
         color,
     );
     response.on_hover_text(
@@ -139,7 +162,7 @@ pub fn border(ui: &mut Ui, rect: Rect) {
 pub fn metric_height(ui: &mut Ui, name: &str, value: &str, danger: bool, height: f32) {
     egui::Frame::new()
         .stroke(Stroke::new(1., LINE))
-        .inner_margin(10.)
+        .inner_margin(8.)
         .show(ui, |ui| {
             ui.set_min_height(height);
             ui.set_min_width(ui.available_width());
@@ -152,53 +175,34 @@ pub fn metric_height(ui: &mut Ui, name: &str, value: &str, danger: bool, height:
             );
         });
 }
-pub fn incoming(ui: &mut Ui, damage: &str, range: &str) {
-    egui::Frame::new()
-        .stroke(Stroke::new(1., LINE))
-        .inner_margin(10.)
-        .show(ui, |ui| {
-            ui.set_min_height(86.);
-            ui.set_min_width(ui.available_width());
-            caption(ui, "ЕГО УРОН");
-            ui.add_space(3.);
-            ui.label(RichText::new(damage).size(13.).color(CYAN));
-            ui.add_space(1.);
-            let (rect, _) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.), Sense::hover());
-            ui.painter()
-                .line_segment([rect.left_top(), rect.right_top()], Stroke::new(1., LINE));
-            ui.label(RichText::new("ДАЛЬНОСТЬ ОРУЖИЯ").size(8.).color(MUTED));
-            ui.label(RichText::new(range).size(21.).color(CYAN));
-        });
-}
 pub fn speed_comparison(ui: &mut Ui, enemy: &serde_json::Value, own: &serde_json::Value) {
     let rows = crate::fit_metrics::speed_rows(enemy, own);
     let faster =
         |a: Option<f64>, b: Option<f64>| a.zip(b).is_some_and(|(a, b)| a.round() > b.round());
     let threat = rows.iter().any(|r| faster(r.enemy, r.own));
-    egui::Frame::new().stroke(Stroke::new(1.,if threat {AMBER.gamma_multiply(0.65)}else{LINE})).inner_margin(10.).show(ui, |ui| {
-        let (rect,response) = ui.allocate_exact_size(Vec2::new(ui.available_width(),rows.len() as f32*28.+28.),Sense::hover());
+    egui::Frame::new().stroke(Stroke::new(1.,if threat {AMBER.gamma_multiply(0.65)}else{LINE})).inner_margin(8.).show(ui, |ui| {
+        let (rect,response) = ui.allocate_exact_size(Vec2::new(ui.available_width(),rows.len() as f32*23.+22.),Sense::hover());
         let p=ui.painter();
         let origin=rect.left_top();
         let w=rect.width();
         let er=50.+(w-50.)/2.;
         p.text(origin,Align2::LEFT_TOP,"СКОРОСТЬ · М/С",FontId::proportional(10.),MUTED);
         for (x,name) in [(er,"ЕГО"),(w,"ТВОЯ")] {
-            p.text(origin+Vec2::new(x,19.),Align2::RIGHT_TOP,name,FontId::proportional(8.),MUTED);
+            p.text(origin+Vec2::new(x,16.),Align2::RIGHT_TOP,name,FontId::proportional(8.),MUTED);
         }
         for (i,row) in rows.iter().enumerate() {
-            let y=33.+i as f32*28.;
+            let y=28.+i as f32*23.;
             p.text(origin+Vec2::new(0.,y+3.),Align2::LEFT_TOP,&row.label,FontId::proportional(if row.label.len()>5 {8.}else{10.}),MUTED);
             for (x,value,highlight,color,width) in [(er,row.enemy,faster(row.enemy,row.own),AMBER,(er-48.).clamp(32.,52.)),(w,row.own,faster(row.own,row.enemy),CYAN,(w-er-4.).min(62.))] {
                 if highlight {
-                    let cell=Rect::from_min_size(origin+Vec2::new(x-width,y-2.),Vec2::new(width+4.,23.));
+                    let cell=Rect::from_min_size(origin+Vec2::new(x-width,y-2.),Vec2::new(width+4.,20.));
                     p.rect_filled(cell,3.,color.gamma_multiply(0.12));
                     if color==AMBER {p.rect_stroke(cell,3.,Stroke::new(1.,AMBER.gamma_multiply(0.6)),StrokeKind::Inside);}
                 }
                 let label=value.map(|v|format!("{v:.0}")).unwrap_or_else(||"—".into());
                 p.text(origin+Vec2::new(x,y),Align2::RIGHT_TOP,label,FontId::proportional(14.),if highlight{color}else{TEXT});
             }
-            if i+1<rows.len() {p.line_segment([origin+Vec2::new(0.,y+24.),origin+Vec2::new(w,y+24.)],Stroke::new(1.,LINE));}
+            if i+1<rows.len() {p.line_segment([origin+Vec2::new(0.,y+21.),origin+Vec2::new(w,y+21.)],Stroke::new(1.,LINE));}
         }
         response.on_hover_text("База — двигатели выключены, пассивные бонусы и штрафы фита сохранены. AB/MWD — каждый двигатель отдельно, без внешних сеток и скрамблеров. Его навыки V, твои — загруженные навыки персонажа с выбранными имплантами и бустерами. Если режимы отличаются, подпись слева: его / твой. Янтарный — он быстрее, бирюзовый — ты быстрее.\nЕсли твои навыки не загружены, сравнение недоступно: в колонке «ТВОЯ» стоит прочерк.");
     });
@@ -210,10 +214,8 @@ pub fn variant(
     personal: bool,
     active: bool,
 ) -> Response {
-    let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), if personal { 64. } else { 55. }),
-        Sense::click(),
-    );
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.), Sense::click());
     let p = ui.painter();
     if active || response.hovered() {
         p.rect_filled(
@@ -225,70 +227,299 @@ pub fn variant(
     if active {
         p.line_segment(
             [
-                rect.left_top() + Vec2::new(0., 5.),
-                rect.left_bottom() - Vec2::new(0., 5.),
+                rect.left_top() + Vec2::new(0., 3.),
+                rect.left_bottom() - Vec2::new(0., 3.),
             ],
             Stroke::new(2., CYAN),
         );
     }
-    let parts: Vec<_> = title.split(" · ").collect();
-    let first = parts.first().copied().unwrap_or(title);
-    let cap = ((rect.width() - 90.) / 7.).max(8.) as usize;
-    let name = if first.chars().count() > cap {
-        format!("{}…", first.chars().take(cap - 1).collect::<String>())
-    } else {
-        first.into()
-    };
-    let top = rect.top() + if personal { 26. } else { 9. };
-    if personal {
-        p.text(
-            rect.left_top() + Vec2::new(11., 7.),
-            Align2::LEFT_TOP,
-            "ФИТ ПИЛОТА",
-            FontId::proportional(10.),
-            CYAN,
-        );
+    let core = title.split(" · ").next().unwrap_or(title);
+    let parts: Vec<_> = core.split(" / ").collect();
+    let weapon = parts.first().copied().unwrap_or(core);
+    let prop = parts.get(1).copied().unwrap_or("");
+    let tank = parts.get(2..).unwrap_or_default().join(" / ");
+    let w = rect.width();
+    let weapon_width = (w * 0.47 - 14.).max(50.);
+    let font = FontId::proportional(11.);
+    let mut name = weapon.to_string();
+    while p.layout_no_wrap(name.clone(), font.clone(), TEXT).size().x > weapon_width
+        && name.chars().count() > 2
+    {
+        name = name
+            .trim_end_matches('…')
+            .chars()
+            .take(name.trim_end_matches('…').chars().count() - 1)
+            .collect::<String>()
+            + "…";
     }
     p.text(
-        Pos2::new(rect.left() + 11., top),
+        rect.left_top() + Vec2::new(10., 8.),
         Align2::LEFT_TOP,
         name,
-        FontId::proportional(12.),
+        font,
         if active { CYAN } else { TEXT },
     );
-    if let Some(percent) = percent {
-        p.text(
-            rect.right_top() + Vec2::new(-8., 9.),
-            Align2::RIGHT_TOP,
-            format!("{percent:.1}%").replace('.', ","),
-            FontId::monospace(13.),
-            CYAN,
-        );
-        let bar = Rect::from_min_size(
-            rect.left_bottom() + Vec2::new(11., -7.),
-            Vec2::new(rect.width() - 22., 2.),
-        );
-        p.rect_filled(bar, 0., LINE);
-        p.rect_filled(
-            Rect::from_min_size(bar.min, Vec2::new(bar.width() * percent as f32 / 100., 2.)),
-            0.,
-            CYAN,
-        );
-    }
-    if parts.len() > 1 {
-        p.text(
-            Pos2::new(rect.left() + 11., top + 19.),
-            Align2::LEFT_TOP,
-            parts[1],
-            FontId::proportional(10.),
-            MUTED,
-        );
-    }
+    p.text(
+        rect.left_top() + Vec2::new(w * 0.49, 9.),
+        Align2::LEFT_TOP,
+        prop,
+        FontId::proportional(9.),
+        MUTED,
+    );
+    let tank_rect = Rect::from_min_max(
+        rect.left_top() + Vec2::new(w * 0.66, 0.),
+        rect.right_bottom() - Vec2::new(53., 0.),
+    );
+    p.with_clip_rect(tank_rect).text(
+        rect.left_top() + Vec2::new(w * 0.66, 9.),
+        Align2::LEFT_TOP,
+        tank,
+        FontId::proportional(9.),
+        MUTED,
+    );
+    p.text(
+        rect.right_top() + Vec2::new(-7., 7.),
+        Align2::RIGHT_TOP,
+        if personal {
+            "ПИЛОТ".into()
+        } else {
+            percent
+                .map(|v| format!("{v:.1}%").replace('.', ","))
+                .unwrap_or_else(|| "—".into())
+        },
+        FontId::proportional(if personal { 9. } else { 12. }),
+        CYAN,
+    );
     p.line_segment(
         [rect.left_bottom(), rect.right_bottom()],
         Stroke::new(1., LINE),
     );
     response.on_hover_text(format!("{title}\nДвойной щелчок — полный фит"))
+}
+
+/// Uniform scale with a fixed number of ticks, including very near/far targets.
+pub fn range_axis(
+    current: Option<f64>,
+    desired: Option<(f64, f64)>,
+    weapon: Option<f64>,
+) -> (f64, f64) {
+    let maximum = current
+        .into_iter()
+        .chain(weapon)
+        .chain(desired.into_iter().flat_map(|(a, b)| [a, b]))
+        .filter(|v| v.is_finite() && *v > 0.)
+        .fold(1000., f64::max)
+        * 1.12;
+    let raw = maximum / 5.;
+    let power = 10_f64.powf(raw.log10().floor());
+    let step = [1., 2., 5., 10.]
+        .into_iter()
+        .map(|v| v * power)
+        .find(|v| *v >= raw)
+        .unwrap_or(power * 10.);
+    (step * 5., step)
+}
+pub fn range_ruler(
+    ui: &mut Ui,
+    current: Option<f64>,
+    desired: Option<(f64, f64)>,
+    weapon: &serde_json::Value,
+) {
+    let reach = weapon["max_range_m"]
+        .as_f64()
+        .filter(|v| v.is_finite() && *v > 0.);
+    if current.is_none() && desired.is_none() && reach.is_none() {
+        return;
+    }
+    let (max, step) = range_axis(current, desired, reach);
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 82.), Sense::hover());
+    let p = ui.painter();
+    let left = rect.left() + 10.;
+    let right = rect.right() - 10.;
+    let y = rect.top() + 32.;
+    let project = |v: f64| left + (right - left) * (v / max).clamp(0., 1.) as f32;
+    if let Some((a, b)) = desired {
+        p.rect_filled(
+            Rect::from_min_max(
+                egui::pos2(project(a), y - 8.),
+                egui::pos2(project(b), y + 8.),
+            ),
+            0.,
+            CYAN.gamma_multiply(0.14),
+        );
+    }
+    p.line_segment(
+        [egui::pos2(left, y), egui::pos2(right, y)],
+        Stroke::new(1., CYAN),
+    );
+    for i in 0..=5 {
+        let v = step * i as f64;
+        let x = project(v);
+        p.line_segment(
+            [egui::pos2(x, y - 4.), egui::pos2(x, y + 5.)],
+            Stroke::new(1., MUTED),
+        );
+        let mut label = if step >= 1000. {
+            format!("{:.0}", v / 1000.)
+        } else {
+            format!("{:.1}", v / 1000.).replace('.', ",")
+        };
+        if i == 5 {
+            label += " км";
+        }
+        p.text(
+            egui::pos2(x, y + 11.),
+            if i == 5 {
+                Align2::RIGHT_TOP
+            } else {
+                Align2::CENTER_TOP
+            },
+            label,
+            FontId::proportional(8.),
+            MUTED,
+        );
+    }
+    if let Some(v) = current.filter(|v| v.is_finite() && *v >= 0.) {
+        let x = project(v);
+        p.line_segment(
+            [egui::pos2(x, y - 16.), egui::pos2(x, y + 7.)],
+            Stroke::new(1.4, TEXT),
+        );
+        p.text(
+            egui::pos2(x.clamp(left + 35., right - 35.), rect.top()),
+            Align2::CENTER_TOP,
+            if v < 1000. {
+                format!("ЦЕЛЬ {v:.0} м")
+            } else {
+                format!("ЦЕЛЬ {:.1} км", v / 1000.).replace('.', ",")
+            },
+            FontId::proportional(9.),
+            TEXT,
+        );
+    }
+    if let Some(v) = reach {
+        let x = project(v);
+        p.line_segment(
+            [egui::pos2(x, y - 14.), egui::pos2(x, y + 7.)],
+            Stroke::new(1.5, AMBER),
+        );
+        let label = format!(
+            "ОРУЖИЕ {}",
+            weapon["label"]
+                .as_str()
+                .unwrap_or("—")
+                .trim_start_matches("до ")
+        );
+        p.text(
+            egui::pos2(x.clamp(left + 75., right - 75.), y + 34.),
+            Align2::CENTER_TOP,
+            label,
+            FontId::proportional(9.),
+            AMBER,
+        );
+    }
+    response.on_hover_text(
+        weapon["hint"]
+            .as_str()
+            .unwrap_or("Бирюзовый диапазон — рекомендация. Белая метка — текущая дистанция."),
+    );
+}
+
+pub fn settings_nav(ui: &mut Ui, index: usize, title: &str, active: bool) -> Response {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.), Sense::click());
+    let p = ui.painter();
+    if active || response.hovered() {
+        p.rect_filled(rect, 2., Color32::from_rgb(20, 47, 60));
+    }
+    if active {
+        p.line_segment(
+            [
+                rect.left_top() + Vec2::new(0., 3.),
+                rect.left_bottom() - Vec2::new(0., 3.),
+            ],
+            Stroke::new(2., CYAN),
+        );
+    }
+    let c = if active { CYAN } else { MUTED };
+    let origin = rect.left_top() + Vec2::new(10., 9.);
+    match index {
+        0 => {
+            for d in [
+                Vec2::ZERO,
+                Vec2::new(8., 0.),
+                Vec2::new(0., 8.),
+                Vec2::new(8., 8.),
+            ] {
+                p.rect_stroke(
+                    Rect::from_min_size(origin + d, Vec2::splat(5.)),
+                    0.,
+                    Stroke::new(1., c),
+                    StrokeKind::Inside,
+                );
+            }
+        }
+        1 => {
+            for (a, b) in [
+                (Vec2::new(7., 0.), Vec2::new(14., 14.)),
+                (Vec2::new(14., 14.), Vec2::new(7., 10.)),
+                (Vec2::new(7., 10.), Vec2::new(0., 14.)),
+                (Vec2::new(0., 14.), Vec2::new(7., 0.)),
+            ] {
+                p.line_segment([origin + a, origin + b], Stroke::new(1., c));
+            }
+        }
+        2 => {
+            p.circle_stroke(origin + Vec2::splat(7.), 6., Stroke::new(1., c));
+            p.circle_filled(origin + Vec2::splat(7.), 2., c);
+        }
+        3 => {
+            p.rect_stroke(
+                Rect::from_min_size(origin, Vec2::new(14., 10.)),
+                0.,
+                Stroke::new(1., c),
+                StrokeKind::Inside,
+            );
+            p.line_segment(
+                [origin + Vec2::new(3., 14.), origin + Vec2::new(11., 14.)],
+                Stroke::new(1., c),
+            );
+        }
+        4 => {
+            for y in [0., 5., 10.] {
+                p.rect_stroke(
+                    Rect::from_min_size(origin + Vec2::new(0., y), Vec2::new(14., 5.)),
+                    2.,
+                    Stroke::new(1., c),
+                    StrokeKind::Inside,
+                );
+            }
+        }
+        5 => {
+            for y in [1., 7., 13.] {
+                p.line_segment(
+                    [origin + Vec2::new(0., y), origin + Vec2::new(14., y)],
+                    Stroke::new(1., c),
+                );
+            }
+        }
+        _ => {
+            p.circle_stroke(origin + Vec2::new(7., 3.), 4., Stroke::new(1., c));
+            p.line_segment(
+                [origin + Vec2::new(0., 14.), origin + Vec2::new(14., 14.)],
+                Stroke::new(1., c),
+            );
+        }
+    }
+    p.text(
+        rect.left_top() + Vec2::new(33., 17.),
+        Align2::LEFT_CENTER,
+        title,
+        FontId::proportional(11.),
+        c,
+    );
+    response
 }
 /// A flat fitted layer has no effective hole. Only then show a distinct base hint.
 fn resistance_holes(values: [f64; 4], base: Option<[f64; 4]>) -> ([bool; 4], bool) {
@@ -319,16 +550,11 @@ pub fn abyssal_alert(ui: &mut Ui, details: &str) {
 }
 
 pub fn resistance(ui: &mut Ui, values: [f64; 4], base: Option<[f64; 4]>) {
-    let colors = [
-        Color32::from_rgb(100, 175, 214),
-        Color32::from_rgb(214, 125, 112),
-        Color32::from_rgb(181, 193, 203),
-        AMBER,
-    ];
+    let colors = DAMAGE_COLORS;
     let (holes, base_only) = resistance_holes(values, base);
     ui.columns(4, |cols| {
         for i in 0..4 {
-            let (cell, response) = cols[i].allocate_exact_size(Vec2::new(cols[i].available_width(), 74.), Sense::hover());
+            let (cell, response) = cols[i].allocate_exact_size(Vec2::new(cols[i].available_width(), 68.), Sense::hover());
             let p = cols[i].painter();
             let highlight = if base_only { CYAN } else { AMBER };
             if holes[i] {
@@ -341,7 +567,7 @@ pub fn resistance(ui: &mut Ui, values: [f64; 4], base: Option<[f64; 4]>) {
                 ["EM","THERM","KIN","EXP"][i], FontId::proportional(10.), MUTED);
             p.text(cell.left_top()+Vec2::new(5.,24.), Align2::LEFT_TOP,
                 format!("{:.0}%",values[i]), FontId::proportional(14.), colors[i]);
-            let rect = Rect::from_min_size(cell.left_top()+Vec2::new(5.,46.),Vec2::new((cell.width()-10.).max(0.),5.));
+            let rect = Rect::from_min_size(cell.left_top()+Vec2::new(5.,43.),Vec2::new((cell.width()-10.).max(0.),5.));
             let segment=|from:f64,to:f64|Rect::from_min_max(egui::pos2(rect.left()+rect.width()*(from/100.).clamp(0.,1.) as f32,rect.top()),egui::pos2(rect.left()+rect.width()*(to/100.).clamp(0.,1.) as f32,rect.bottom()));
             p.rect_filled(rect,0.,LINE);
             if let Some(base)=base {
@@ -353,7 +579,7 @@ pub fn resistance(ui: &mut Ui, values: [f64; 4], base: Option<[f64; 4]>) {
                     p.rect_stroke(removed,0.,Stroke::new(1.,AMBER),StrokeKind::Inside);
                 }
                 let base_label=if (base[i]-base[i].round()).abs()<0.005 {format!("{:.0}",base[i])}else{format!("{:.1}",base[i])};
-                p.text(cell.left_top()+Vec2::new(5.,57.),Align2::LEFT_TOP,format!("база {}%",base_label.replace('.',",")),FontId::proportional(9.),if holes[i] && base_only {CYAN} else {MUTED});
+                p.text(cell.left_top()+Vec2::new(5.,53.),Align2::LEFT_TOP,format!("база {}%",base_label.replace('.',",")),FontId::proportional(9.),if holes[i] && base_only {CYAN} else {MUTED});
             }else{p.rect_filled(segment(0.,values[i]),0.,colors[i]);}
             let mut hint=if let Some(base)=base {format!("Итог {:.2}%\nБаза без модулей {:.2}%\nИзменение от модулей {:+.2} п.п.\nНавыки V, без перегрева. Это пример опубликованного фита, а не измерение текущего корабля.",values[i],base[i],values[i]-base[i])}else{format!("Итог {:.2}% · база недоступна",values[i])};
             if holes[i] {hint+=if base_only {"\nБазовая уязвимость. Итоговые резисты равны: этот тип не получает преимущества по фактической защите."} else {"\nДыра: минимальный итоговый резист выбранного слоя."};}

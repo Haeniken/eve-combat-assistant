@@ -45,6 +45,7 @@ struct WindowLayout {
 
 pub struct CombatApp {
     args: Args,
+    app_icon: egui::TextureHandle,
     directory: PathBuf,
     settings: Settings,
     draft: Option<Settings>,
@@ -170,7 +171,19 @@ impl CombatApp {
                 egui::pos2(bounds[2] as f32, bounds[3] as f32),
             ))
         });
+        let icon = image::load_from_memory(include_bytes!("../resources/icon.png"))
+            .expect("bundled icon")
+            .to_rgba8();
+        let app_icon = cc.egui_ctx.load_texture(
+            "app-icon",
+            egui::ColorImage::from_rgba_unmultiplied(
+                [icon.width() as usize, icon.height() as usize],
+                icon.as_raw(),
+            ),
+            egui::TextureOptions::LINEAR,
+        );
         Self {
+            app_icon,
             tab: args.settings_tab.min(6),
             draft: args.open_settings.then(|| settings.clone()),
             profile: crate::account::Profile::load(&directory),
@@ -649,8 +662,7 @@ impl CombatApp {
     }
     fn header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let (dot, _) = ui.allocate_exact_size(Vec2::new(8., 14.), egui::Sense::hover());
-            ui.painter().circle_filled(dot.center(), 2.5, CYAN);
+            ui.image((self.app_icon.id(), Vec2::splat(22.)));
             let response = ui.add(
                 egui::Label::new(
                     RichText::new("ТАКТИЧЕСКИЙ ПОМОЩНИК")
@@ -672,79 +684,11 @@ impl CombatApp {
                 }
             });
         });
-        ui.add_space(5.);
         style::separator(ui);
     }
     fn overlay(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.y = 4.;
         self.header(ui);
-        let target = self.target.clone();
-        ui.horizontal(|ui| {
-            let rating = if self.settings.pilot_rating {
-                self.pilot_rating.as_ref()
-            } else {
-                None
-            }
-            .filter(|_| {
-                target
-                    .as_ref()
-                    .is_some_and(|t| t.pilot == self.rating_pilot)
-            });
-            let state = if !self.settings.pilot_rating {
-                "Соло-рейтинг выключен в настройках"
-            } else if target.as_ref().is_none_or(|t| t.pilot.trim().is_empty()) {
-                "Выберите пилота для соло-оценки"
-            } else if self.rating_pilot == target.as_ref().map(|t| t.pilot.as_str()).unwrap_or("") {
-                self.rating_error.as_deref().unwrap_or(if rating.is_some() {
-                    ""
-                } else {
-                    "Загрузка соло-статистики zKillboard…"
-                })
-            } else {
-                "Загрузка соло-статистики zKillboard…"
-            };
-            style::pilot_rating(ui, rating, state);
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 2.;
-                ui.label(
-                    RichText::new(
-                        target
-                            .as_ref()
-                            .map(|t| t.ship.to_uppercase())
-                            .unwrap_or_else(|| "НЕТ ЦЕЛИ".into()),
-                    )
-                    .size(26.)
-                    .strong(),
-                );
-                if let Some(t) = &target {
-                    if !t.pilot.is_empty() {
-                        ui.label(RichText::new(&t.pilot).size(12.).color(MUTED));
-                    }
-                    if t.distance.is_some() || rating.is_some_and(|r| r.group_marker().is_some()) {
-                        ui.horizontal(|ui| {
-                            if let Some(r) = t.distance {
-                                ui.label(
-                                    RichText::new(if r < 10000. {
-                                        format!("{r:.0} м")
-                                    } else {
-                                        format!("{:.1} км", r / 1000.).replace('.', ",")
-                                    })
-                                    .size(11.)
-                                    .color(CYAN),
-                                );
-                            }
-                            if let Some(rating) = rating {
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| style::pilot_group(ui, rating),
-                                );
-                            }
-                        });
-                    }
-                }
-            });
-        });
-        ui.add_space(10.);
-        style::separator(ui);
         let advice = self
             .matchup
             .as_ref()
@@ -793,6 +737,87 @@ impl CombatApp {
                 }
             }
         }
+        let controls = self
+            .matchup
+            .as_ref()
+            .and_then(|m| m.variants.get(self.selected))
+            .and_then(|v| v.title.split(" · ").nth(1))
+            .unwrap_or("")
+            .replace(" / ", " · ")
+            .to_uppercase();
+        let target = self.target.clone();
+        ui.horizontal(|ui| {
+            let rating = if self.settings.pilot_rating {
+                self.pilot_rating.as_ref()
+            } else {
+                None
+            }
+            .filter(|_| {
+                target
+                    .as_ref()
+                    .is_some_and(|t| t.pilot == self.rating_pilot)
+            });
+            let state = if !self.settings.pilot_rating {
+                "Соло-рейтинг выключен в настройках"
+            } else if target.as_ref().is_none_or(|t| t.pilot.trim().is_empty()) {
+                "Выберите пилота для соло-оценки"
+            } else if self.rating_pilot == target.as_ref().map(|t| t.pilot.as_str()).unwrap_or("") {
+                self.rating_error.as_deref().unwrap_or(if rating.is_some() {
+                    ""
+                } else {
+                    "Загрузка соло-статистики zKillboard…"
+                })
+            } else {
+                "Загрузка соло-статистики zKillboard…"
+            };
+            style::pilot_rating(ui, rating, state);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.;
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(
+                            target
+                                .as_ref()
+                                .map(|t| t.ship.to_uppercase())
+                                .unwrap_or_else(|| "НЕТ ЦЕЛИ".into()),
+                        )
+                        .size(23.)
+                        .strong(),
+                    );
+                    if !controls.is_empty() {
+                        ui.label(RichText::new(&controls).size(10.).color(style::YELLOW));
+                    }
+                });
+                if let Some(t) = &target
+                    && (!t.pilot.is_empty()
+                        || t.distance.is_some()
+                        || rating.is_some_and(|r| r.group_marker().is_some()))
+                {
+                    ui.horizontal(|ui| {
+                        let mut label = t.pilot.clone();
+                        if let Some(r) = t.distance {
+                            if !label.is_empty() {
+                                label += " · ";
+                            }
+                            label += &if r < 10000. {
+                                format!("{r:.0} м")
+                            } else {
+                                format!("{:.1} км", r / 1000.).replace('.', ",")
+                            };
+                        }
+                        ui.label(RichText::new(label).size(11.).color(CYAN));
+                        if let Some(rating) = rating {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| style::pilot_group(ui, rating),
+                            );
+                        }
+                    });
+                }
+            });
+        });
+        ui.add_space(2.);
+        style::separator(ui);
         if let Some(a) = &advice {
             let action = if let Some(d) = self.target.as_ref().and_then(|t| t.distance) {
                 if d > a.high {
@@ -805,13 +830,13 @@ impl CombatApp {
             } else {
                 &a.action
             };
-            ui.label(RichText::new(action).size(17.).color(CYAN));
+            ui.label(RichText::new(action).size(13.).color(CYAN))
+                .on_hover_text(&a.reason);
             ui.label(
                 RichText::new(tactics::range_text(a.low, a.high))
-                    .size(37.)
+                    .size(30.)
                     .color(CYAN),
             );
-            ui.label(RichText::new(&a.reason).size(11.).color(MUTED));
         } else {
             let own = !self.settings.own_fit.is_empty();
             ui.label(
@@ -833,10 +858,10 @@ impl CombatApp {
                         "ВЫБЕРИ СВОЙ ФИТ"
                     },
                 )
-                .size(17.)
+                .size(13.)
                 .color(CYAN),
             );
-            ui.label(RichText::new("—").size(37.).color(CYAN));
+            ui.label(RichText::new("—").size(30.).color(CYAN));
             style::caption(
                 ui,
                 if let Some(error) = &comparison_error {
@@ -862,101 +887,41 @@ impl CombatApp {
                 },
             );
         }
-        ui.add_space(6.);
+        style::range_ruler(
+            ui,
+            target.as_ref().and_then(|t| t.distance),
+            advice.as_ref().map(|a| (a.low, a.high)),
+            &weapon_range,
+        );
         style::separator(ui);
-        style::heading(ui, "СОЛО-ВАРИАНТЫ");
-        let mut details = None;
-        let mut exclude = None;
-        let mut selected = self.selected;
-        if let Some(m) = &self.matchup {
-            egui::ScrollArea::vertical()
-                .id_salt("variants")
-                .max_height(230.)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    for (index, v) in m.variants.iter().enumerate() {
-                        let r =
-                            style::variant(ui, &v.title, v.percent, v.personal, index == selected);
-                        if r.clicked() {
-                            selected = index;
-                        }
-                        if r.double_clicked() {
-                            details = Some(fits::eft(&v.fit, &self.catalog));
-                        }
-                        r.context_menu(|ui| {
-                            if ui.button("Полный фит").clicked() {
-                                details = Some(fits::eft(&v.fit, &self.catalog));
-                                ui.close();
-                            }
-                            if ui.button("Копировать EFT").clicked() {
-                                ui.ctx().copy_text(fits::eft(&v.fit, &self.catalog));
-                                ui.close();
-                            }
-                            if ui.button("Исключить этот фит").clicked() {
-                                exclude = Some(fits::fingerprint(&v.fit));
-                                ui.close();
-                            }
-                        });
-                    }
-                });
-            if m.pop.other >= 0.05 {
-                style::caption(
-                    ui,
-                    &format!("Другие варианты: {:.1}%", m.pop.other).replace('.', ","),
-                );
-            }
-            if m.variants.is_empty() {
-                style::caption(
-                    ui,
-                    if m.pop.report.input == 0 {
-                        "В локальной базе нет потерь этого корпуса за доступный период"
-                    } else {
-                        "Записи есть; подходящих фитов после фильтрации нет"
-                    },
-                );
-            }
-        } else {
-            style::caption(ui, "Варианты появятся из локальной базы");
-        }
-        self.selected = selected;
-        if let Some(value) = details {
-            self.details = Some(value);
-        }
-        if let Some(key) = exclude {
-            self.settings.excluded.push(key);
-            let _ = self.settings.save(&self.directory);
-            self.recalculate();
-        }
-        ui.add_space(8.);
-        ui.columns(2, |cols| {
-            let damage_card = cols[0]
-                .scope(|ui| {
-                    style::incoming(
-                        ui,
-                        &incoming_label,
-                        weapon_range["label"].as_str().unwrap_or("—"),
+        egui::Grid::new("combat-metrics")
+            .num_columns(2)
+            .min_col_width(96.)
+            .max_col_width((ui.available_width()-106.).max(100.))
+            .spacing([10., 8.])
+            .show(ui, |ui| {
+                style::caption(ui, "ЕГО УРОН");
+                let percentages=diagnostic.and_then(|r|serde_json::from_value::<[f64;4]>(r["incoming"]["percentages"].clone()).ok());
+                ui.scope(|ui|style::damage_mix(ui,percentages,&incoming_label)).response.on_hover_text(&incoming_hint);
+                ui.end_row();
+                style::caption(ui, "ТВОЙ ЗАРЯД");
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(advice.as_ref().map(|a| a.ammo.as_str()).unwrap_or("—"))
+                            .size(13.)
+                            .color(CYAN),
                     )
-                })
-                .response;
-            let card_height = damage_card.rect.height() - 20.;
-            damage_card.on_hover_text(format!(
-                "{incoming_hint}\n\n{}",
-                weapon_range["hint"]
-                    .as_str()
-                    .unwrap_or("Дальность недоступна")
-            ));
-            style::metric_height(
-                &mut cols[1],
-                "ТВОИ БОЕПРИПАСЫ",
-                advice.as_ref().map(|a| a.ammo.as_str()).unwrap_or("—"),
-                false,
-                card_height.max(86.),
-            );
-        });
+                    .wrap(),
+                );
+                ui.end_row();
+                style::caption(ui,"ТВОЙ УРОН");
+                ui.scope(|ui|style::damage_mix(ui,advice.as_ref().and_then(|a|a.outgoing_percentages),"—")).response.on_hover_text("Типы урона своего фита с рекомендованным зарядом, включая выбранные дроны. До резистов и применения урона.");ui.end_row();
+            });
+        style::separator(ui);
         ui.columns(2, |cols| {
             let neut = neutralizers["label"].as_str().unwrap_or("—");
-            let speed_height =
-                crate::fit_metrics::speed_rows(&fitted_speed, &own_speed).len() as f32 * 28. + 28.;
+            let height =
+                crate::fit_metrics::speed_rows(&fitted_speed, &own_speed).len() as f32 * 23. + 22.;
             cols[0]
                 .scope(|ui| {
                     style::metric_height(
@@ -964,7 +929,7 @@ impl CombatApp {
                         "НЕЙТРИКИ",
                         neut,
                         neut != "НЕТ В ФИТЕ" && neut != "—",
-                        speed_height,
+                        height,
                     )
                 })
                 .response
@@ -1015,7 +980,73 @@ impl CombatApp {
             });
             style::resistance(ui, resistances, base);
         }
-        ui.add_space(7.);
+        style::separator(ui);
+        style::heading(ui, "СОЛО-ВАРИАНТЫ");
+        let mut details = None;
+        let mut exclude = None;
+        let mut selected = self.selected;
+        if let Some(m) = &self.matchup {
+            egui::ScrollArea::vertical()
+                .id_salt("variants")
+                .max_height((ui.clip_rect().bottom() - ui.cursor().top() - 83.).clamp(56., 180.))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for (index, v) in m.variants.iter().enumerate() {
+                        let r =
+                            style::variant(ui, &v.title, v.percent, v.personal, index == selected);
+                        if r.clicked() {
+                            selected = index;
+                        }
+                        if r.double_clicked() {
+                            details = Some(fits::eft(&v.fit, &self.catalog));
+                        }
+                        r.context_menu(|ui| {
+                            if ui.button("Полный фит").clicked() {
+                                details = Some(fits::eft(&v.fit, &self.catalog));
+                                ui.close();
+                            }
+                            if ui.button("Копировать EFT").clicked() {
+                                ui.ctx().copy_text(fits::eft(&v.fit, &self.catalog));
+                                ui.close();
+                            }
+                            if ui.button("Исключить этот фит").clicked() {
+                                exclude = Some(fits::fingerprint(&v.fit));
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+            if m.pop.other >= 0.05 {
+                style::caption(
+                    ui,
+                    &format!("Другие варианты: {:.1}%", m.pop.other).replace('.', ","),
+                );
+            }
+            if m.variants.is_empty() {
+                style::caption(
+                    ui,
+                    if m.pop.report.input == 0 {
+                        "В локальной базе нет потерь этого корпуса за доступный период"
+                    } else {
+                        "Записи есть; подходящих фитов после фильтрации нет"
+                    },
+                );
+            }
+        } else {
+            style::caption(ui, "Варианты появятся из локальной базы");
+        }
+        if self.selected != selected {
+            self.selected = selected;
+            ui.ctx().request_repaint();
+        }
+        if let Some(value) = details {
+            self.details = Some(value);
+        }
+        if let Some(key) = exclude {
+            self.settings.excluded.push(key);
+            let _ = self.settings.save(&self.directory);
+            self.recalculate();
+        }
         style::separator(ui);
         let own = self
             .matchup
@@ -1023,29 +1054,46 @@ impl CombatApp {
             .and_then(|m| m.own.as_ref())
             .map(|v| s(&v["hull"], "name"))
             .unwrap_or("НЕ ВЫБРАН");
-        style::caption(ui, &format!("МОЙ ФИТ / {own}"));
-        style::caption(ui, &self.status);
+        ui.horizontal(|ui| {
+            style::caption(ui, &format!("МОЙ ФИТ / {own}"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(RichText::new(&self.ocr_status).size(9.).color(MUTED))
+                        .truncate(),
+                )
+                .on_hover_text(&self.ocr_status);
+            });
+        });
+        let status = if self.pilot_status.is_empty() {
+            self.status.clone()
+        } else {
+            format!("{} · {}", self.status, self.pilot_status)
+        };
+        ui.add(egui::Label::new(RichText::new(&status).size(9.).color(MUTED)).truncate())
+            .on_hover_text(status);
         if self.target.is_some()
             && let Some(remaining) = self
                 .gate
                 .remaining(Instant::now(), self.settings.target_hold_seconds)
         {
-            style::caption(
-                ui,
-                &format!(
+            ui.label(
+                RichText::new(format!(
                     "Цель не видна · сохранена ещё {} с",
                     remaining.as_secs_f64().ceil() as u32
-                ),
+                ))
+                .size(10.)
+                .color(style::AMBER),
             );
         }
-        if !self.pilot_status.is_empty() {
-            style::caption(ui, &self.pilot_status);
-        }
         if let Some(error) = &self.own_ship_error {
-            style::caption(ui, &format!("Смена корабля: {error}"));
+            ui.label(
+                RichText::new(format!("Смена корабля: {error}"))
+                    .size(10.)
+                    .color(style::AMBER),
+            );
         }
-        style::caption(ui, &self.ocr_status);
     }
+
     fn settings_view(&mut self, ctx: &egui::Context) {
         if self.draft.is_none() || self.selecting || self.capturing {
             return;
@@ -1081,7 +1129,7 @@ impl CombatApp {
             .with_visible(true)
             .with_inner_size([
                 760_f32.min(available.x - 30.),
-                650_f32.min(available.y - 60.),
+                600_f32.min(available.y - 60.),
             ])
             .with_min_inner_size([380., 350.])
             .with_always_on_top();
@@ -1089,6 +1137,7 @@ impl CombatApp {
             let current = crate::settings_ui::Window {
                 catalog: &self.catalog,
                 tab: &mut self.tab,
+                dirty: draft != self.settings,
                 status: &self.status,
                 cache_status: &cache_status,
                 sync_progress: self.sync_progress.as_ref(),
@@ -1485,11 +1534,11 @@ impl eframe::App for CombatApp {
                         22,
                         (appearance.background * appearance.opacity / 100. * 2.55) as u8,
                     ))
-                    .inner_margin(18.),
+                    .inner_margin(14.),
             )
             .show(ui, |ui| {
                 ui.set_opacity(appearance.opacity / 100.);
-                let border = ui.max_rect().expand(17.);
+                let border = ui.max_rect().expand(13.);
                 style::border(ui, border);
                 egui::ScrollArea::vertical()
                     .id_salt("main")
