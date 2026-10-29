@@ -47,6 +47,7 @@ pub enum Message {
     PilotReady(u64, String, String, Result<(), String>),
     PilotStatus(u64, String, String, String),
     PilotRating(u64, String, Result<crate::pilot::Rating, String>),
+    OwnPilotRating(i64, Result<crate::pilot::Rating, String>),
     SyncDone(Result<usize, String>),
     SyncProgress(crate::sources::UpdateProgress),
     Ocr(u64, Result<Option<Target>, String>, Option<String>),
@@ -78,6 +79,27 @@ pub struct NetworkRequest {
     pub settings: Settings,
     pub target: Target,
     pub global: bool,
+    pub own_character: Option<i64>,
+}
+fn next_network_request(
+    rx: &mpsc::Receiver<NetworkRequest>,
+    pending: &mut Option<NetworkRequest>,
+) -> Option<NetworkRequest> {
+    let mut request = pending.take().or_else(|| rx.recv().ok())?;
+    if !request.global && request.own_character.is_none() {
+        while let Ok(next) = rx.try_recv() {
+            // Keep the last target; own-profile jobs must neither consume nor be consumed by it.
+            if next.own_character.is_some() {
+                *pending = Some(next);
+                break;
+            }
+            request = next;
+            if request.global {
+                break;
+            }
+        }
+    }
+    Some(request)
 }
 #[derive(Clone)]
 pub struct OcrConfig {
@@ -455,21 +477,13 @@ impl Workers {
             let catalog = catalog.clone();
             thread::spawn(move || {
                 platform::low_priority();
-                while let Ok(mut request) = network_rx.recv() {
-                    // Manual global jobs are never discarded by later pilot lookups.
-                    if !request.global {
-                        while let Ok(next) = network_rx.try_recv() {
-                            request = next;
-                            if request.global {
-                                break;
-                            }
-                        }
-                    }
+                let mut pending = None;
+                while let Some(request) = next_network_request(&network_rx, &mut pending) {
                     let ship = catalog.ship_id(&request.target.ship);
-                    if !request.global && ship.is_none() {
+                    if !request.global && request.own_character.is_none() && ship.is_none() {
                         continue;
                     }
-                    let trace=fit_trace.job(request.settings.ocr_debug,json!({"correlation":format!("{}-{}",std::process::id(),request.generation),"generation":request.generation,"job":if request.global{"all_hull_update"}else{"pilot_lookup"},"job_id":crate::diagnostics::trace_id("network"),"target_ship":request.target.ship,"pilot":request.target.pilot}));
+                    let trace=fit_trace.job(request.settings.ocr_debug,json!({"correlation":format!("{}-{}",std::process::id(),request.generation),"generation":request.generation,"job":if request.global{"all_hull_update"}else if request.own_character.is_some(){"own_pilot_rating"}else{"pilot_lookup"},"job_id":crate::diagnostics::trace_id("network"),"target_ship":request.target.ship,"pilot":request.target.pilot}));
                     trace.event(
                         "network_start",
                         json!({"queue_ms":request.queued_at.elapsed().as_millis()}),
@@ -477,7 +491,11 @@ impl Workers {
                     let store = match Store::open(&directory) {
                         Ok(s) => s,
                         Err(e) => {
-                            emit(&event_tx, &ctx, Message::Status(e));
+                            if let Some(character) = request.own_character {
+                                emit(&event_tx, &ctx, Message::OwnPilotRating(character, Err(e)));
+                            } else {
+                                emit(&event_tx, &ctx, Message::Status(e));
+                            }
                             continue;
                         }
                     };
@@ -491,6 +509,12 @@ impl Workers {
                     };
                     let mut source = Sources::new(store, job_cancel, catalog.clone());
                     source.set_trace(trace.clone());
+                    if let Some(character) = request.own_character {
+                        let result = source.character_rating(character);
+                        trace.event("own_pilot_rating_end", json!({"character_id":character,"rating":result.as_ref().ok(),"error":result.as_ref().err()}));
+                        emit(&event_tx, &ctx, Message::OwnPilotRating(character, result));
+                        continue;
+                    }
                     let progress = |text| {
                         if request.global {
                             emit(&event_tx, &ctx, Message::Status(text))
@@ -792,6 +816,41 @@ impl Workers {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn own_rating_preserves_latest_target_and_manual_update_jobs() {
+        let (tx, rx) = mpsc::channel();
+        for (generation, global, own_character) in [
+            (1, false, None),
+            (2, false, None),
+            (3, false, Some(123)),
+            (4, true, None),
+            (5, false, None),
+        ] {
+            tx.send(NetworkRequest {
+                generation,
+                global,
+                own_character,
+                queued_at: std::time::Instant::now(),
+                settings: Settings::default(),
+                target: Target {
+                    ship: "Rifter".into(),
+                    pilot: String::new(),
+                    distance: None,
+                    angular: 0.,
+                },
+            })
+            .unwrap();
+        }
+        drop(tx);
+        let mut pending = None;
+        for expected in [2, 3, 4, 5] {
+            assert_eq!(
+                next_network_request(&rx, &mut pending).unwrap().generation,
+                expected
+            );
+        }
+        assert!(next_network_request(&rx, &mut pending).is_none());
+    }
     #[test]
     fn distance_change_reuses_population_and_dogma_results() {
         let dir = std::env::temp_dir().join(format!(

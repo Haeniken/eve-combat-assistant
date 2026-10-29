@@ -44,7 +44,7 @@ pub fn separator(ui: &mut Ui) {
         .line_segment([rect.left_top(), rect.right_top()], Stroke::new(1., LINE));
     ui.add_space(7.);
 }
-pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &str) {
+pub fn rating_color(rating: Option<&crate::pilot::Rating>) -> Color32 {
     let colors = [
         Color32::from_rgb(231, 91, 91),
         Color32::from_rgb(240, 148, 69),
@@ -53,15 +53,34 @@ pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &
         Color32::from_rgb(73, 213, 201),
         Color32::from_rgb(189, 131, 239),
     ];
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(52., 52.), Sense::hover());
-    let center = rect.left_top() + Vec2::new(26., 23.);
-    let color = rating
+    rating
         .and_then(|r| r.tier())
         .map(|i| colors[i])
-        .unwrap_or(MUTED);
+        .unwrap_or(MUTED)
+}
+pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &str) {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(58., 58.), Sense::hover());
+    let center = rect.center();
+    let color = rating_color(rating);
+    let tier = rating.and_then(|r| r.tier());
     let p = ui.painter();
-    p.circle_filled(center, 19., color.gamma_multiply(0.08));
-    p.circle_stroke(center, 19., Stroke::new(1.8, color));
+    p.circle_filled(center, 24., Color32::from_rgb(9, 22, 30));
+    p.circle_stroke(center, 21., Stroke::new(0.7, LINE));
+    for segment in 0..6 {
+        let start = (-85. + segment as f32 * 60.).to_radians();
+        let points: Vec<_> = (0..=12)
+            .map(|i| {
+                let angle = start + (50_f32.to_radians() * i as f32 / 12.);
+                center + Vec2::angled(angle) * 26.
+            })
+            .collect();
+        let stroke = if tier.is_some_and(|tier| segment <= tier) {
+            color
+        } else {
+            LINE
+        };
+        p.add(egui::Shape::line(points, Stroke::new(2.2, stroke)));
+    }
     p.text(
         center + Vec2::new(0., -8.),
         Align2::CENTER_CENTER,
@@ -76,7 +95,7 @@ pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &
             .and_then(|r| r.score)
             .map(|s| s.to_string())
             .unwrap_or_else(|| "—".into()),
-        FontId::proportional(15.),
+        FontId::proportional(16.),
         color,
     );
     response.on_hover_text(

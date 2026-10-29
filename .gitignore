@@ -9,7 +9,22 @@ target/
 .prototype/
 build/
 dist/
-data/
+/data/
 *.log
 
 installer/*.exe
+
+# Local credentials and profiles must stay outside public source and packages.
+.env
+.env.*
+!.env.example
+sso.dat
+sso.tmp
+character.json
+character.tmp
+/settings.json
+*.key
+*.pfx
+*.p12
+id_rsa
+id_ed25519

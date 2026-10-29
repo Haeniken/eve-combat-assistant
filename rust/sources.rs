@@ -449,6 +449,12 @@ impl Sources {
     }
     pub fn pilot_rating(&mut self, name: &str) -> Result<crate::pilot::Rating, String> {
         let character = self.resolve_pilot(name)?.ok_or("Пилот не найден в ESI")?;
+        self.character_rating(character)
+    }
+    pub fn character_rating(&mut self, character: i64) -> Result<crate::pilot::Rating, String> {
+        if character <= 0 {
+            return Err("Не выбран персонаж для соло-оценки".into());
+        }
         let stats = self.request(
             &format!("https://zkillboard.com/api/stats/characterID/{character}/"),
             None,
@@ -459,7 +465,10 @@ impl Sources {
             &format!("pilot_rating:v1:{character}"),
             &serde_json::to_value(&rating).map_err(|e| e.to_string())?,
         )?;
-        self.record("pilot_rating_ready", json!({"pilot":name,"rating":rating}));
+        self.record(
+            "pilot_rating_ready",
+            json!({"character_id":character,"rating":rating}),
+        );
         Ok(rating)
     }
     pub fn sync_pilot(
@@ -753,6 +762,17 @@ mod tests {
             rating.score
         );
         assert!(crate::pilot::cached(&source.store, "Someone Else").is_none());
+        // The logged-in character uses its known ID, the same calibration and HTTP cache.
+        let own = source.character_rating(123).unwrap();
+        assert_eq!(own.score, rating.score);
+        assert_eq!(
+            crate::pilot::cached_character(&source.store, 123)
+                .unwrap()
+                .score,
+            rating.score
+        );
+        assert!(crate::pilot::cached_character(&source.store, 456).is_none());
+        assert!(source.character_rating(0).is_err());
         let log = std::fs::read_to_string(directory.join("debug/fits.jsonl")).unwrap();
         assert!(log.contains("http_cache_hit") && log.contains("pilot_rating_ready"));
         assert!(!log.contains("http_attempt") && !log.contains("/api/losses/"));

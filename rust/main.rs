@@ -17,6 +17,7 @@ mod settings_ui;
 mod sources;
 mod store;
 mod style;
+mod system_info;
 mod tactics;
 #[cfg(windows)]
 mod tray;

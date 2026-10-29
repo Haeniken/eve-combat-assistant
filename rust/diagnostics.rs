@@ -204,6 +204,34 @@ impl Trace {
             context,
         }
     }
+    pub fn system_report(&self, ui: Value) {
+        let log = self.log.clone();
+        let directory = self
+            .log
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .directory
+            .clone();
+        std::thread::spawn(move || {
+            let report = crate::system_info::collect(ui);
+            let result = (|| -> Result<(), String> {
+                fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+                fs::write(
+                    directory.join("system.tmp"),
+                    serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                crate::platform::replace_file(
+                    &directory.join("system.tmp"),
+                    &directory.join("system.json"),
+                )
+            })();
+            if let Err(error) = result {
+                log.lock().unwrap_or_else(|p| p.into_inner()).error =
+                    Some(format!("Не удалось записать системный отчёт: {error}"));
+            }
+        });
+    }
     pub fn event(&self, kind: &str, fields: Value) {
         if !self.enabled {
             return;

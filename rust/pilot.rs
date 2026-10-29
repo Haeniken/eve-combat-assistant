@@ -141,6 +141,9 @@ pub fn cached(store: &Store, name: &str) -> Option<Rating> {
     let character = store
         .meta(&format!("character:{}", name.to_lowercase()))?
         .as_i64()?;
+    cached_character(store, character)
+}
+pub fn cached_character(store: &Store, character: i64) -> Option<Rating> {
     let mut rating: Rating =
         serde_json::from_value(store.meta(&format!("pilot_rating:v1:{character}"))?).ok()?;
     rating.score = solo_score(rating.solo_kills, rating.solo_losses);

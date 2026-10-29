@@ -72,6 +72,10 @@ pub struct CombatApp {
     pilot_rating: Option<crate::pilot::Rating>,
     rating_pilot: String,
     rating_error: Option<String>,
+    own_rating: Option<crate::pilot::Rating>,
+    own_rating_character: i64,
+    own_rating_error: Option<String>,
+    next_own_rating_check: Instant,
     tab: usize,
     syncing: bool,
     sync_progress: Option<crate::sources::UpdateProgress>,
@@ -94,6 +98,8 @@ pub struct CombatApp {
     shots_done: Arc<AtomicUsize>,
     started: Instant,
     initialized: bool,
+    system_info: Value,
+    system_reported: bool,
     layout: Option<WindowLayout>,
     monitor_bounds: Box<dyn Fn() -> Option<egui::Rect>>,
     #[cfg(windows)]
@@ -212,6 +218,10 @@ impl CombatApp {
             pilot_rating: None,
             rating_pilot: String::new(),
             rating_error: None,
+            own_rating: None,
+            own_rating_character: 0,
+            own_rating_error: None,
+            next_own_rating_check: Instant::now(),
             syncing: false,
             sync_progress: None,
             ocr_epoch: 0,
@@ -233,6 +243,8 @@ impl CombatApp {
             shots_done: Arc::new(AtomicUsize::new(0)),
             started: Instant::now(),
             initialized: false,
+            system_info: crate::system_info::graphics(cc),
+            system_reported: false,
             layout: None,
             monitor_bounds,
             #[cfg(windows)]
@@ -280,6 +292,7 @@ impl CombatApp {
                 settings: self.settings.clone(),
                 target,
                 global: false,
+                own_character: None,
             });
         }
     }
@@ -329,7 +342,51 @@ impl CombatApp {
             settings,
             target,
             global: true,
+            own_character: None,
         });
+    }
+    fn refresh_own_rating(&mut self, ctx: &egui::Context) {
+        let character = self.profile.character_id;
+        if character != self.own_rating_character {
+            self.own_rating_character = character;
+            self.own_rating = Store::open(&self.directory)
+                .ok()
+                .and_then(|store| crate::pilot::cached_character(&store, character));
+            self.own_rating_error = None;
+            self.next_own_rating_check = Instant::now();
+        }
+        if character <= 0 || !self.settings.pilot_rating || self.args.demo {
+            return;
+        }
+        if Instant::now() >= self.next_own_rating_check {
+            self.next_own_rating_check = Instant::now() + std::time::Duration::from_secs(3600);
+            let result = self.workers.network.send(NetworkRequest {
+                generation: self.generation,
+                queued_at: Instant::now(),
+                settings: self.settings.clone(),
+                target: Target {
+                    ship: self.settings.ship.clone(),
+                    pilot: self.profile.name.clone(),
+                    distance: None,
+                    angular: 0.,
+                },
+                global: false,
+                own_character: Some(character),
+            });
+            if result.is_err() {
+                self.own_rating_error = Some("Поток сети недоступен".into());
+            }
+        }
+        ctx.request_repaint_after(
+            self.next_own_rating_check
+                .saturating_duration_since(Instant::now()),
+        );
+    }
+    fn ensure_system_report(&mut self, settings: &Settings) {
+        if !self.system_reported {
+            self.system_reported = true;
+            self.workers.trace.system_report(json!({"runtime":self.system_info,"ocr_language":settings.language,"ui_scale_percent":settings.scale}));
+        }
     }
     fn apply(&mut self, draft: Settings) -> Result<(), String> {
         if self.catalog.ship_id(&draft.ship).is_none() {
@@ -380,6 +437,21 @@ impl CombatApp {
     fn messages(&mut self, ctx: &egui::Context) {
         while let Ok(message) = self.rx.try_recv() {
             match message {
+                Message::OwnPilotRating(character, result) => {
+                    if character == self.profile.character_id {
+                        match result {
+                            Ok(rating) => {
+                                self.own_rating = Some(rating);
+                                self.own_rating_error = None;
+                            }
+                            Err(error) => {
+                                self.own_rating_error = Some(error);
+                                self.next_own_rating_check =
+                                    Instant::now() + std::time::Duration::from_secs(60);
+                            }
+                        }
+                    }
+                }
                 Message::OwnShipChanging(character) => {
                     if character == self.profile.character_id {
                         self.settings.own_fit.clear();
@@ -1054,8 +1126,61 @@ impl CombatApp {
             .and_then(|m| m.own.as_ref())
             .map(|v| s(&v["hull"], "name"))
             .unwrap_or("НЕ ВЫБРАН");
+        let status = if self.pilot_status.is_empty() {
+            self.status.clone()
+        } else {
+            format!("{} · {}", self.status, self.pilot_status)
+        };
+        ui.horizontal_top(|ui| {
+            let rating_width = if self.settings.pilot_rating { 82. } else { 0. };
+            ui.allocate_ui_with_layout(
+                Vec2::new((ui.available_width() - rating_width - 8.).max(1.), 30.),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.;
+                    style::caption(ui, &format!("МОЙ ФИТ / {own}"));
+                    ui.add(
+                        egui::Label::new(RichText::new(&status).size(9.).color(MUTED)).truncate(),
+                    )
+                    .on_hover_text(&status);
+                },
+            );
+            if self.settings.pilot_rating {
+                let (rect, response) =
+                    ui.allocate_exact_size(Vec2::new(82., 30.), egui::Sense::hover());
+                let p = ui.painter();
+                p.text(
+                    rect.right_top(),
+                    egui::Align2::RIGHT_TOP,
+                    "ТВОЙ SOLO",
+                    egui::FontId::proportional(8.),
+                    MUTED,
+                );
+                p.text(
+                    rect.right_top() + Vec2::new(0., 12.),
+                    egui::Align2::RIGHT_TOP,
+                    self.own_rating
+                        .as_ref()
+                        .and_then(|r| r.score)
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                    egui::FontId::proportional(12.),
+                    style::rating_color(self.own_rating.as_ref()).gamma_multiply(0.85),
+                );
+                response.on_hover_text(self.own_rating.as_ref().map(|r| r.hint()).unwrap_or_else(
+                    || {
+                        if self.profile.character_id <= 0 {
+                            "Войдите персонажем в EVE SSO для своей соло-оценки".into()
+                        } else {
+                            self.own_rating_error
+                                .clone()
+                                .unwrap_or_else(|| "Загрузка соло-статистики zKillboard…".into())
+                        }
+                    },
+                ));
+            }
+        });
         ui.horizontal(|ui| {
-            style::caption(ui, &format!("МОЙ ФИТ / {own}"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add(
                     egui::Label::new(RichText::new(&self.ocr_status).size(9.).color(MUTED))
@@ -1064,13 +1189,6 @@ impl CombatApp {
                 .on_hover_text(&self.ocr_status);
             });
         });
-        let status = if self.pilot_status.is_empty() {
-            self.status.clone()
-        } else {
-            format!("{} · {}", self.status, self.pilot_status)
-        };
-        ui.add(egui::Label::new(RichText::new(&status).size(9.).color(MUTED)).truncate())
-            .on_hover_text(status);
         if self.target.is_some()
             && let Some(remaining) = self
                 .gate
@@ -1192,6 +1310,7 @@ impl CombatApp {
                 self.draft = Some(draft);
             }
             Some(Action::CheckScreen) => {
+                self.ensure_system_report(&draft);
                 self.screen_state = crate::settings_ui::ScreenState {
                     busy: true,
                     language: draft.language.clone(),
@@ -1394,6 +1513,8 @@ impl eframe::App for CombatApp {
             self.recalculate();
         }
         self.messages(ctx);
+        self.ensure_system_report(&self.settings.clone());
+        self.refresh_own_rating(ctx);
         if !self.args.demo
             && self.draft.is_none()
             && !self.account_busy
