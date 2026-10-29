@@ -1321,17 +1321,20 @@ impl CombatApp {
                     egui::FontId::proportional(12.),
                     style::rating_color(self.own_rating.as_ref()).gamma_multiply(0.85),
                 );
-                response.on_hover_text(self.own_rating.as_ref().map(|r| r.hint()).unwrap_or_else(
-                    || {
-                        if self.profile.character_id <= 0 {
-                            "Войдите персонажем в EVE SSO для своей соло-оценки".into()
-                        } else {
-                            self.own_rating_error
-                                .clone()
-                                .unwrap_or_else(|| "Загрузка соло-статистики zKillboard…".into())
-                        }
-                    },
-                ));
+                style::pilot_link(response, self.profile.character_id).on_hover_text(
+                    self.own_rating
+                        .as_ref()
+                        .map(|r| r.hint())
+                        .unwrap_or_else(|| {
+                            if self.profile.character_id <= 0 {
+                                "Войдите персонажем в EVE SSO для своей соло-оценки".into()
+                            } else {
+                                self.own_rating_error.clone().unwrap_or_else(|| {
+                                    "Загрузка соло-статистики zKillboard…".into()
+                                })
+                            }
+                        }),
+                );
             }
         });
         ui.horizontal(|ui| {

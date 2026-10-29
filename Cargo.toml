@@ -1,6 +1,6 @@
 [package]
 name = "eve-combat-assistant"
-version = "0.3.12+local.7"
+version = "0.3.12+local.8"
 edition = "2024"
 rust-version = "1.99"
 publish = false

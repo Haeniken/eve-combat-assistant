@@ -141,6 +141,8 @@ fn solo_score(wins: u64, losses: u64) -> Option<u16> {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Rating {
+    #[serde(default = "stats_available_default")]
+    pub stats_available: bool,
     pub character_id: i64,
     pub solo_kills: u64,
     pub solo_losses: u64,
@@ -152,7 +154,27 @@ pub struct Rating {
     #[serde(default)]
     pub recent: RecentActivity,
 }
+fn stats_available_default() -> bool {
+    true
+}
+pub fn profile_url(character: i64) -> Option<String> {
+    (character > 0).then(|| format!("https://zkillboard.com/character/{character}/"))
+}
 impl Rating {
+    pub fn unavailable(character_id: i64) -> Self {
+        Self {
+            character_id,
+            stats_available: false,
+            solo_kills: 0,
+            solo_losses: 0,
+            kills: 0,
+            score: None,
+            group_fraction: None,
+            large_group_fraction: None,
+            average_gang: None,
+            recent: RecentActivity::default(),
+        }
+    }
     pub fn from_stats(stats: &Value, character_id: i64) -> Result<Self, String> {
         if stats["type"] != "characterID" || id(stats, "id") != character_id || character_id <= 0 {
             return Err("zKillboard не вернул статистику выбранного пилота".into());
@@ -191,6 +213,7 @@ impl Rating {
             .flatten();
         let average = n(stats, "avgGangSize");
         Ok(Self {
+            stats_available: true,
             character_id,
             solo_kills,
             solo_losses,
@@ -251,6 +274,9 @@ impl Rating {
         format!("{who} · {time}")
     }
     pub fn hint(&self) -> String {
+        if !self.stats_available {
+            return "Статистика zKillboard для персонажа пока недоступна".into();
+        }
         let mut hint = if self.score.is_some() {
             "Условная оценка соло по zKillboard; не официальный ELO.\n"
         } else {

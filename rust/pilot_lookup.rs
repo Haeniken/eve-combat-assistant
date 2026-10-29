@@ -268,21 +268,29 @@ pub fn popup(
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        ui.label(
-                                            RichText::new(
-                                                profile
-                                                    .rating
-                                                    .score
-                                                    .map(|s| s.to_string())
-                                                    .unwrap_or_else(|| "—".into()),
+                                        let rating_response = ui
+                                            .label(
+                                                RichText::new(
+                                                    profile
+                                                        .rating
+                                                        .score
+                                                        .map(|s| s.to_string())
+                                                        .unwrap_or_else(|| "—".into()),
+                                                )
+                                                .size(19.)
+                                                .color(style::rating_color(Some(&profile.rating))),
                                             )
-                                            .size(19.)
-                                            .color(style::rating_color(Some(&profile.rating))),
-                                        )
-                                        .on_hover_text("SOLO-рейтинг");
+                                            .on_hover_text(profile.rating.hint());
+                                        style::pilot_link(
+                                            rating_response,
+                                            profile.rating.character_id,
+                                        );
                                     },
                                 );
                             });
+                            if !profile.rating.stats_available {
+                                style::caption(ui, "Статистика zKillboard пока недоступна");
+                            }
                             style::pilot_group(ui, &profile.rating);
                             ui.add_space(3.);
                             style::caption(ui, "ПОСЛЕДНЯЯ PVP-ПОТЕРЯ");
@@ -345,7 +353,10 @@ pub fn popup(
                                     );
                                 });
                             } else {
-                                style::caption(ui, "PvP-потерь в доступной выборке нет");
+                                style::caption(
+                                    ui,
+                                    "PvP-потерь на кораблях в доступной выборке нет",
+                                );
                             }
                         }
                     });

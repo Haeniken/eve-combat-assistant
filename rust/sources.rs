@@ -526,11 +526,45 @@ impl Sources {
         if character <= 0 {
             return Err("Не выбран персонаж для соло-оценки".into());
         }
-        let stats = self.request(
+        self.character_rating_at(
+            character,
             &format!("https://zkillboard.com/api/stats/characterID/{character}/"),
-            None,
-            3600,
-        )?;
+        )
+    }
+    fn character_rating_at(
+        &mut self,
+        character: i64,
+        url: &str,
+    ) -> Result<crate::pilot::Rating, String> {
+        let missing_key = format!("pilot_stats_missing:v1:{character}");
+        let previous = || {
+            crate::pilot::cached_character(&self.store, character)
+                .unwrap_or_else(|| crate::pilot::Rating::unavailable(character))
+        };
+        if self
+            .store
+            .meta(&missing_key)
+            .and_then(|v| v.as_i64())
+            .is_some_and(|at| (0..3600).contains(&Utc::now().timestamp().saturating_sub(at)))
+        {
+            self.record(
+                "pilot_stats_missing_cache_hit",
+                json!({"character_id":character}),
+            );
+            return Ok(previous());
+        }
+        let stats = match self.request(url, None, 3600) {
+            Ok(stats) => stats,
+            Err(error) if error.eq_ignore_ascii_case("Invalid type or id") => {
+                self.store
+                    .set_meta(&missing_key, &json!(Utc::now().timestamp()))?;
+                self.record("pilot_stats_unavailable",json!({"character_id":character,"reason":"no_statistics_for_resolved_identity"}));
+                return Ok(crate::pilot::cached_character(&self.store, character)
+                    .unwrap_or_else(|| crate::pilot::Rating::unavailable(character)));
+            }
+            Err(error) => return Err(error),
+        };
+        self.store.set_meta(&missing_key, &Value::Null)?;
         let mut rating = crate::pilot::Rating::from_stats(&stats, character)?;
         if let Some(cached) = crate::pilot::cached_activity(&self.store, character) {
             rating.recent = cached.activity;
@@ -599,7 +633,17 @@ impl Sources {
             .meta(&format!("character_name:{character}"))
             .and_then(|v| v.as_str().map(str::to_owned))
             .unwrap_or_else(|| name.to_string());
-        let rating = self.character_rating(character)?;
+        let rating = match self.character_rating(character) {
+            Ok(rating) => rating,
+            Err(error) => {
+                self.record(
+                    "pilot_lookup_rating_unavailable",
+                    json!({"character_id":character,"error":error}),
+                );
+                crate::pilot::cached_character(&self.store, character)
+                    .unwrap_or_else(|| crate::pilot::Rating::unavailable(character))
+            }
+        };
         Ok(crate::pilot_lookup::Profile { name, rating })
     }
     pub fn lookup_latest_loss(
@@ -616,39 +660,54 @@ impl Sources {
         character: i64,
         url: &str,
     ) -> Result<Option<crate::pilot_lookup::Loss>, String> {
-        let value = self.request(url, None, 3600)?;
-        let rows = value.as_array().ok_or("Источник не вернул список потерь")?;
-        let mut rows: Vec<_> = rows.iter().take(200).collect();
-        rows.sort_by_key(|row| std::cmp::Reverse(id(row, "killmail_id")));
-        for row in rows {
+        for page in 1..=100 {
             self.check()?;
-            if row["zkb"]["npc"] == true {
-                continue;
+            let page_url = if page == 1 {
+                url.to_string()
+            } else {
+                format!("{}/page/{page}/", url.trim_end_matches('/'))
+            };
+            let value = self.request(&page_url, None, 3600)?;
+            let rows = value.as_array().ok_or("Источник не вернул список потерь")?;
+            let full_page = rows.len() >= 200;
+            let mut rows: Vec<_> = rows.iter().take(200).collect();
+            rows.sort_by_key(|row| std::cmp::Reverse(id(row, "killmail_id")));
+            for row in rows {
+                self.check()?;
+                if row["zkb"]["npc"] == true {
+                    continue;
+                }
+                let mail = self.complete(row)?;
+                if id(&mail["victim"], "character_id") != character
+                    || !array(&mail["attackers"])
+                        .iter()
+                        .any(|a| id(a, "character_id") > 0 && id(a, "character_id") != character)
+                    || mail["zkb"]["npc"] == true
+                {
+                    continue;
+                }
+                let ship = id(&mail["victim"], "ship_type_id") as i32;
+                if id(self.catalog.get(ship), "group") == 29 {
+                    self.record("pilot_loss_skipped",json!({"reason":"capsule","character_id":character,"killmail_id":mail["killmail_id"],"ship_type_id":ship,"page":page}));
+                    continue;
+                }
+                let fit = crate::fits::normalize(&mail, &self.catalog);
+                return Ok(Some(crate::pilot_lookup::Loss {
+                    killmail_id: id(&mail, "killmail_id"),
+                    happened: s(&mail, "killmail_time").to_string(),
+                    ship: self.catalog.esi_item_name(ship)?,
+                    description: fit
+                        .as_ref()
+                        .map(|fit| crate::fits::describe(fit, &self.catalog).0),
+                    eft: fit.as_ref().map(|fit| crate::fits::eft(fit, &self.catalog)),
+                    fit,
+                }));
             }
-            let mail = self.complete(row)?;
-            if id(&mail["victim"], "character_id") != character
-                || !array(&mail["attackers"])
-                    .iter()
-                    .any(|a| id(a, "character_id") > 0 && id(a, "character_id") != character)
-                || mail["zkb"]["npc"] == true
-            {
-                continue;
+            if !full_page {
+                return Ok(None);
             }
-            let fit = crate::fits::normalize(&mail, &self.catalog);
-            return Ok(Some(crate::pilot_lookup::Loss {
-                killmail_id: id(&mail, "killmail_id"),
-                happened: s(&mail, "killmail_time").to_string(),
-                ship: self
-                    .catalog
-                    .esi_item_name(id(&mail["victim"], "ship_type_id") as i32)?,
-                description: fit
-                    .as_ref()
-                    .map(|fit| crate::fits::describe(fit, &self.catalog).0),
-                eft: fit.as_ref().map(|fit| crate::fits::eft(fit, &self.catalog)),
-                fit,
-            }));
         }
-        Ok(None)
+        Err("Достигнут предел истории потерь".into())
     }
     pub fn sync_pilot(
         &mut self,
@@ -1040,6 +1099,139 @@ mod tests {
                 .count(),
             1
         );
+    }
+    #[test]
+    fn missing_zkill_stats_keep_resolved_identity_unknown_score_and_hour_cooldown() {
+        let directory = temp();
+        let (url, server) = mock(vec![
+            (200, json!({"error":"Invalid type or id"})),
+            (
+                200,
+                json!({"type":"characterID","id":2124807832,"shipsDestroyed":100,"shipsLost":30,"soloKills":70,"soloLosses":20}),
+            ),
+        ]);
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        let unknown = source.character_rating_at(2124807832, &url).unwrap();
+        assert!(!unknown.stats_available && unknown.score.is_none());
+        assert_eq!(unknown.character_id, 2124807832);
+        assert!(!unknown.hint().contains("Соло-убийства"));
+        assert!(
+            source
+                .character_rating_at(2124807832, &url)
+                .unwrap()
+                .score
+                .is_none()
+        );
+        source
+            .store
+            .set_meta(
+                "pilot_stats_missing:v1:2124807832",
+                &json!(Utc::now().timestamp() - 3601),
+            )
+            .unwrap();
+        let recovered = source.character_rating_at(2124807832, &url).unwrap();
+        assert!(recovered.stats_available && recovered.score.is_some());
+        assert_eq!(server.join().unwrap().len(), 2);
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn quick_lookup_missing_stats_does_not_prevent_last_ship_loading() {
+        let directory = temp();
+        let store = Store::open_with_seed(&directory, None).unwrap();
+        store
+            .set_meta("character:archerxxxx", &json!(2124668894))
+            .unwrap();
+        store
+            .set_meta(
+                "pilot_stats_missing:v1:2124668894",
+                &json!(Utc::now().timestamp()),
+            )
+            .unwrap();
+        let (url, server) = mock(vec![(
+            200,
+            json!([{"killmail_id":1,"killmail_time":"2026-01-01T00:00:00Z","victim":{"character_id":2124668894,"ship_type_id":587,"items":[]},"attackers":[{"character_id":200}],"zkb":{"npc":false}}]),
+        )]);
+        let mut source = Sources::new(
+            store,
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        let profile = source.lookup_profile("ArcherXXXX").unwrap();
+        assert_eq!(profile.rating.character_id, 2124668894);
+        assert!(!profile.rating.stats_available);
+        assert_eq!(
+            source
+                .lookup_latest_loss_at(profile.rating.character_id, &url)
+                .unwrap()
+                .unwrap()
+                .ship,
+            "Rifter"
+        );
+        assert_eq!(server.join().unwrap().len(), 1);
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn last_loss_skips_consecutive_capsule_variants_and_keeps_newest_ship_without_modules() {
+        let directory = temp();
+        let row = |km, ship| json!({"killmail_id":km,"killmail_time":"2026-01-01T00:00:00Z","victim":{"character_id":123,"ship_type_id":ship,"items":[]},"attackers":[{"character_id":200}],"zkb":{"npc":false}});
+        let capsules = json!([row(4, 670), row(3, 33328)]);
+        let (url, server) = mock(vec![
+            (
+                200,
+                json!([row(4, 670), row(2, 587), row(3, 33328), row(1, 33153)]),
+            ),
+            (200, capsules),
+        ]);
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        let loss = source.lookup_latest_loss_at(123, &url).unwrap().unwrap();
+        assert_eq!(loss.killmail_id, 2);
+        assert_eq!(loss.ship, "Rifter");
+        assert!(loss.fit.is_none());
+        assert!(
+            source
+                .lookup_latest_loss_at(123, &format!("{url}/only-pods/"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(server.join().unwrap().len(), 2);
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn last_ship_continues_on_next_page_after_a_full_page_of_capsules() {
+        let directory = temp();
+        let row = |km, ship| json!({"killmail_id":km,"killmail_time":"2026-01-01T00:00:00Z","victim":{"character_id":123,"ship_type_id":ship,"items":[]},"attackers":[{"character_id":200}],"zkb":{"npc":false}});
+        let pods: Vec<_> = (2..202).map(|id| row(id, 670)).collect();
+        let (url, server) = mock(vec![(200, json!(pods)), (200, json!([row(1, 587)]))]);
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        source.limit_interactive(Duration::from_secs(10));
+        assert_eq!(
+            source
+                .lookup_latest_loss_at(123, &url)
+                .unwrap()
+                .unwrap()
+                .ship,
+            "Rifter"
+        );
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].contains("/page/2/"));
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn quick_lookup_uses_lifetime_cached_rating_without_a_hull() {

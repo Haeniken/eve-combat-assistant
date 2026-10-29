@@ -68,6 +68,18 @@ fn activity_pulse(ui: &Ui, rect: Rect) -> f32 {
     let phase = ui.input(|input| input.time).rem_euclid(3.6) / 3.6;
     (0.5 - 0.5 * (phase * std::f64::consts::TAU).cos()) as f32
 }
+pub fn pilot_link(response: Response, character: i64) -> Response {
+    let Some(url) = crate::pilot::profile_url(character) else {
+        return response;
+    };
+    let response = response
+        .interact(Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if response.clicked() {
+        response.ctx.open_url(egui::OpenUrl::new_tab(url));
+    }
+    response
+}
 pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &str) {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(58., 58.), Sense::hover());
     let center = rect.center();
@@ -121,6 +133,11 @@ pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &
         FontId::proportional(16.),
         glow,
     );
+    let response = if let Some(rating) = rating {
+        pilot_link(response, rating.character_id)
+    } else {
+        response
+    };
     response.on_hover_text(
         rating
             .map(|r| {
@@ -750,5 +767,52 @@ mod tests {
             ([false; 4], true)
         );
         assert_eq!(resistance_holes([65.; 4], None), ([false; 4], true));
+    }
+}
+
+#[cfg(test)]
+mod pilot_link_tests {
+    use super::*;
+    #[test]
+    fn rating_link_opens_the_given_character_without_launching_a_browser_in_test() {
+        let ctx = egui::Context::default();
+        let mut id = egui::Id::NULL;
+        let mut frame = |events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let response = ui.label("5717");
+                    id = response.id;
+                    pilot_link(response, 2115812397);
+                },
+            );
+            output.textures_delta.clear();
+            (id, output)
+        };
+        frame(vec![]);
+        let (id, _) = frame(vec![]);
+        let point = ctx.read_response(id).unwrap().rect.center();
+        let event = |pressed| {
+            vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        frame(event(true));
+        let (_, output) = frame(event(false));
+        assert!(output.platform_output.commands.iter().any(|command|matches!(command,egui::OutputCommand::OpenUrl(url) if url.url=="https://zkillboard.com/character/2115812397/")));
+        assert!(crate::pilot::profile_url(0).is_none());
+        assert_eq!(
+            crate::pilot::profile_url(123).as_deref(),
+            Some("https://zkillboard.com/character/123/")
+        );
     }
 }
