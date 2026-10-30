@@ -650,6 +650,7 @@ impl Workers {
                 let mut card_document = ocr::Document::default();
                 let mut selected_retries = Vec::new();
                 let mut cached = None;
+                let mut continuity = ocr::Continuity::default();
                 let mut last_state = String::new();
                 loop {
                     let interval = config
@@ -701,6 +702,7 @@ impl Workers {
                             card_document = ocr::Document::default();
                             last_state.clear();
                             cached = None;
+                            continuity = ocr::Continuity::default();
                         }
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -779,10 +781,11 @@ impl Workers {
                             if selected_decision == ocr::FrameDecision::Ignore
                                 && card_decision == ocr::FrameDecision::Ignore
                             {
+                                continuity.touch(std::time::Instant::now());
                                 should_emit = false;
                                 return Ok(None);
                             }
-                            return ocr::identify_images(
+                            let strict = ocr::identify_images(
                                 &image,
                                 &selected_document,
                                 &cards,
@@ -790,8 +793,38 @@ impl Workers {
                                 &config.settings.language,
                                 &catalog,
                                 &mut selected_retries,
-                            )
-                            .map(Some);
+                            );
+                            // Retries can correct the right-side nickname. Emit the
+                            // same final reading that the matcher actually used.
+                            let selected =
+                                ocr::selected_text(&selected_document, &selected_retries);
+                            observed_pilot = ocr::selected_pilot(&selected);
+                            continuity.observe_selection(&selected);
+                            let now = std::time::Instant::now();
+                            if let Ok(target) = &strict {
+                                continuity.learn(target, now);
+                            } else if strict
+                                .as_ref()
+                                .err()
+                                .is_some_and(|e| !e.to_lowercase().contains("несколь"))
+                            {
+                                let grace = Duration::from_secs_f64(
+                                    (interval * 3.)
+                                        .clamp(2., 6.)
+                                        .min(config.settings.target_hold_seconds as f64),
+                                );
+                                if let Some((target, method)) = continuity.recover(
+                                    &selected,
+                                    &card_document,
+                                    &catalog,
+                                    now,
+                                    grace,
+                                ) {
+                                    frame_event["tracking_recovery"] = json!({"method":method,"strict_error":strict.as_ref().err(),"grace_ms":grace.as_millis()});
+                                    return Ok(Some(target));
+                                }
+                            }
+                            return strict.map(Some);
                         }
                         let decision = frames.inspect(image.as_raw());
                         frame_event["selected_frame"] = json!(format!("{decision:?}"));
@@ -814,6 +847,7 @@ impl Workers {
                         cached = ocr::parse(&selected_document.text(), &catalog);
                         Ok(cached.clone())
                     })();
+                    let tracking_recovered = frame_event.get("tracking_recovery").is_some();
                     if config.settings.ocr_debug {
                         frame_event["elapsed_ms"] = json!(started.elapsed().as_millis());
                         frame_event["selected_text"] = json!(selected_document.text());
@@ -845,7 +879,7 @@ impl Workers {
                     if !should_emit {
                         continue;
                     }
-                    if result.is_err() {
+                    if result.is_err() || tracking_recovered {
                         // Ошибка не должна закрепляться в кеше неизменившегося кадра.
                         frames = ocr::FrameCache::default();
                         card_frames = ocr::FrameCache::default();

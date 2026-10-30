@@ -2022,6 +2022,186 @@ fn stable_right_name_prevents_truncated_card_from_resetting_current_target() {
 }
 
 #[test]
+fn acquired_target_tolerates_one_spelling_tick_and_switches_near_names_atomically() {
+    use std::time::{Duration, Instant};
+    let now = Instant::now();
+    let mut gate = ocr::Gate::default();
+    let a = ocr::Target {
+        ship: "Harbinger Navy Issue".into(),
+        pilot: "DmitriuHink".into(),
+        distance: Some(44000.),
+        angular: 0.,
+    };
+    gate.observe_at(Some(a.clone()), Some(&a.pilot), now, 60);
+    gate.observe_at(Some(a.clone()), Some(&a.pilot), now, 60);
+    let mut typo = a.clone();
+    typo.pilot = "OmitriuHink".into();
+    typo.distance = Some(43000.);
+    let update = gate.observe_at(
+        Some(typo.clone()),
+        Some(&typo.pilot),
+        now + Duration::from_secs(1),
+        60,
+    );
+    assert!(
+        matches!(update,Some(Some(ref target)) if target.pilot==a.pilot && target.distance==Some(43000.))
+    );
+    assert!(
+        gate.observe_at(
+            Some(a.clone()),
+            Some(&a.pilot),
+            now + Duration::from_secs(2),
+            60
+        ) != Some(None)
+    );
+    assert!(
+        gate.observe_at(
+            Some(typo.clone()),
+            Some(&typo.pilot),
+            now + Duration::from_secs(3),
+            60
+        ) != Some(None)
+    );
+    assert_eq!(
+        gate.observe_at(
+            Some(typo.clone()),
+            Some(&typo.pilot),
+            now + Duration::from_secs(4),
+            60
+        ),
+        Some(Some(typo))
+    );
+    let different = ocr::Target {
+        pilot: "Clearly Other Pilot".into(),
+        ..a
+    };
+    assert_eq!(
+        gate.observe_at(
+            Some(different.clone()),
+            Some(&different.pilot),
+            now + Duration::from_secs(5),
+            60
+        ),
+        Some(None)
+    );
+}
+
+#[test]
+fn confirmed_selection_recovers_a_brief_card_failure_without_renewing_itself() {
+    use std::time::{Duration, Instant};
+    let c = catalog();
+    let now = Instant::now();
+    let grace = Duration::from_secs(3);
+    let t = ocr::Target {
+        ship: "Drekavac".into(),
+        pilot: "Kappa Life".into(),
+        distance: Some(3719.),
+        angular: 0.,
+    };
+    let mut tracking = ocr::Continuity::default();
+    let missing = ocr::Document::default();
+    tracking.learn(&t, now);
+    assert!(
+        tracking
+            .recover("Kappa Life\n3 719 m", &missing, &c, now, grace)
+            .is_none()
+    );
+    tracking.learn(&t, now);
+    let (recovered, method) = tracking
+        .recover(
+            "Kappa Life\n3 800 m",
+            &missing,
+            &c,
+            now + Duration::from_secs(1),
+            grace,
+        )
+        .unwrap();
+    assert_eq!(method, "confirmed_selected");
+    assert_eq!(recovered.identity(), t.identity());
+    assert_eq!(recovered.distance, Some(3800.));
+    assert!(
+        tracking
+            .recover(
+                "Kappa Life\n4 km",
+                &missing,
+                &c,
+                now + Duration::from_secs(4),
+                grace
+            )
+            .is_none()
+    );
+    assert!(
+        tracking
+            .recover("Kappa\n3 km", &missing, &c, now, grace)
+            .is_none()
+    );
+    assert!(
+        tracking
+            .recover("No object selected", &missing, &c, now, grace)
+            .is_none()
+    );
+    tracking.observe_selection("Clearly Other Pilot\n10 km");
+    assert!(
+        tracking
+            .recover("Kappa Life\n3 km", &missing, &c, now, grace)
+            .is_none()
+    );
+}
+
+#[test]
+fn tracked_recovery_needs_card_support_for_a_misspelled_selected_name() {
+    use ocr::{Document, TextLine, Word};
+    use std::time::{Duration, Instant};
+    let c = catalog();
+    let now = Instant::now();
+    let grace = Duration::from_secs(3);
+    let mut track = ocr::Continuity::default();
+    let t = ocr::Target {
+        ship: "Harbinger Navy Issue".into(),
+        pilot: "DmitriuHink".into(),
+        distance: Some(44000.),
+        angular: 0.,
+    };
+    track.learn(&t, now);
+    track.learn(&t, now);
+    let row = |text: &str, y: f32| TextLine {
+        text: text.into(),
+        words: vec![Word {
+            text: text.into(),
+            x: 100.,
+            y,
+            width: 170.,
+            height: 20.,
+        }],
+    };
+    let mut cards = Document {
+        lines: vec![row("DmitriuHink", 100.), row("Harbinger Navy Issue*", 155.)],
+    };
+    assert!(ocr::identify_card("DmitriuHink", &cards, &c).is_ok());
+    let (recovered, method) = track
+        .recover("OmitriuHink\n43 km", &cards, &c, now, grace)
+        .unwrap();
+    assert_eq!(method, "confirmed_card");
+    assert_eq!(recovered.pilot, t.pilot);
+    assert!(
+        track
+            .recover("OmitriuHink\n43 km", &Document::default(), &c, now, grace)
+            .is_none()
+    );
+    cards.lines[1] = row("Tornado*", 155.);
+    assert!(
+        track
+            .recover("DmitriuHink\n43 km", &cards, &c, now, grace)
+            .is_none()
+    );
+    assert!(
+        ocr::Continuity::default()
+            .recover("DmitriuHink\n43 km", &cards, &c, now, grace)
+            .is_none()
+    );
+}
+
+#[test]
 fn drone_fit_without_recovered_drones_is_not_grouped_with_unarmed_losses() {
     let c = catalog();
     let base = json!({"ship_type_id":24700,"modules":[],"drones":[]});

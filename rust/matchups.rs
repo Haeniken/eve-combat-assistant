@@ -238,9 +238,11 @@ impl Statistic {
                 self.wins, self.losses, self.battles
             );
         }
-        if self.percent.is_none() {
+        if self.battles == 0 {
+            hint += "\nНет записанных исходов этой пары";
+        } else if self.battles < self.minimum_battles {
             hint += &format!(
-                "\nМало данных: нужно хотя бы {} исходов",
+                "\nМалая выборка: цветовой уровень доступен от {} исходов",
                 self.minimum_battles
             );
         }
@@ -274,7 +276,7 @@ pub fn lookup(
     };
     let battles = wins + losses;
     let rules = rules(db);
-    let percent = (battles >= rules.minimum_battles).then(|| {
+    let percent = (battles > 0).then(|| {
         if mirror {
             50
         } else {
@@ -286,7 +288,9 @@ pub fn lookup(
         losses,
         battles,
         percent,
-        tier: percent.map(|p| rules.tier(p)),
+        tier: percent
+            .filter(|_| battles >= rules.minimum_battles)
+            .map(|p| rules.tier(p)),
         mirror,
         own_ship: catalog.name(own).into(),
         enemy_ship: catalog.name(enemy).into(),
@@ -421,7 +425,7 @@ mod tests {
         assert_eq!(covered(&db, "20261029"), Some(200));
     }
     #[test]
-    fn insufficient_sample_is_unknown_and_mirror_pair_is_fifty() {
+    fn small_sample_has_a_neutral_percentage_and_mirror_pair_is_fifty() {
         let db = database();
         let c = Catalog::load().unwrap();
         let a = c.ship_id("Harpy").unwrap();
@@ -434,7 +438,10 @@ mod tests {
             &Counts::from([((a.min(b), a.max(b)), (49, 0)), ((a, a), (51, 0))]),
         )
         .unwrap();
-        assert_eq!(lookup(&db, a, b, &c, end).unwrap().percent, None);
+        let small = lookup(&db, a, b, &c, end).unwrap();
+        assert!(small.percent.is_some());
+        assert_eq!(small.tier, None);
+        assert!(small.hint().contains("Малая выборка"));
         let mirror = lookup(&db, a, a, &c, end).unwrap();
         assert_eq!((mirror.battles, mirror.percent), (51, Some(50)));
         assert_eq!(

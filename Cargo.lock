@@ -927,7 +927,7 @@ dependencies = [
 
 [[package]]
 name = "eve-combat-assistant"
-version = "0.3.13+local.9"
+version = "0.3.14"
 dependencies = [
  "arboard",
  "base64 0.22.1",

@@ -775,7 +775,6 @@ impl Gate {
         hold_seconds: u32,
     ) -> Option<Option<Target>> {
         if let Some(mut target) = target {
-            self.selection_candidate = None;
             if let Some(current) = &self.current
                 && current.ship == target.ship
                 && observed.is_some_and(|pilot| {
@@ -785,6 +784,32 @@ impl Gate {
             {
                 target.pilot = current.pilot.clone();
             }
+            if let Some(current) = self.current.clone()
+                && current.ship == target.ship
+                && current.identity() != target.identity()
+                && !clearly_different_pilot(&current.pilot, &target.pilot)
+                && observed.is_some_and(|p| !clearly_different_pilot(p, &current.pilot))
+            {
+                // A one-frame spelling change is weak evidence after acquisition.
+                // Two consistent complete reads replace the identity atomically.
+                let name = format!("near:{}", normalized_pilot(&target.pilot));
+                let count = match &self.selection_candidate {
+                    Some((previous, count)) if previous == &name => count + 1,
+                    _ => 1,
+                };
+                self.selection_candidate = Some((name, count));
+                if count < 2 {
+                    target.pilot = current.pilot;
+                    return self.feed_at(Some(target), now, hold_seconds);
+                }
+                self.current = Some(target.clone());
+                self.candidate = Some(target.clone());
+                self.count = 2;
+                self.missing_since = None;
+                self.selection_candidate = None;
+                return Some(Some(target));
+            }
+            self.selection_candidate = None;
             return self.feed_at(Some(target), now, hold_seconds);
         }
         if hold_seconds > 0
@@ -902,6 +927,92 @@ impl Gate {
         } else {
             None
         }
+    }
+}
+
+/// Context is acquired from two complete reads. Weak recovery never renews it.
+#[derive(Default)]
+pub struct Continuity {
+    known: Option<(Target, std::time::Instant)>,
+    pending: Option<(Target, usize)>,
+}
+impl Continuity {
+    pub fn learn(&mut self, target: &Target, now: std::time::Instant) {
+        if self
+            .known
+            .as_ref()
+            .is_some_and(|(known, _)| known.identity() == target.identity())
+        {
+            self.known = Some((target.clone(), now));
+            self.pending = None;
+            return;
+        }
+        let count = match &self.pending {
+            Some((candidate, count)) if candidate.identity() == target.identity() => count + 1,
+            _ => 1,
+        };
+        self.pending = Some((target.clone(), count));
+        if count >= 2 {
+            self.known = Some((target.clone(), now));
+            self.pending = None;
+        }
+    }
+    pub fn touch(&mut self, now: std::time::Instant) {
+        if let Some((_, last)) = &mut self.known {
+            *last = now;
+        }
+    }
+    pub fn observe_selection(&mut self, text: &str) {
+        if empty_selection(text)
+            || selected_pilot(text).is_some_and(|p| {
+                self.known
+                    .as_ref()
+                    .is_some_and(|(known, _)| clearly_different_pilot(&p, &known.pilot))
+            })
+        {
+            self.known = None;
+            self.pending = None;
+        }
+    }
+    pub fn recover(
+        &self,
+        selected: &str,
+        cards: &Document,
+        catalog: &Catalog,
+        now: std::time::Instant,
+        grace: std::time::Duration,
+    ) -> Option<(Target, &'static str)> {
+        let (known, last) = self.known.as_ref()?;
+        if now.saturating_duration_since(*last) > grace || empty_selection(selected) {
+            return None;
+        }
+        let pilot = selected_pilot(selected)?;
+        let exact = normalized_pilot(&pilot) == normalized_pilot(&known.pilot);
+        let card = identify_card(&known.pilot, cards, catalog);
+        if card.as_ref().is_ok_and(|c| c.ship != known.ship) {
+            return None;
+        }
+        if card
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.to_lowercase().contains("несколь"))
+        {
+            return None;
+        }
+        let supported_card = card.as_ref().is_ok_and(|c| c.ship == known.ship);
+        if !exact && (!supported_card || clearly_different_pilot(&pilot, &known.pilot)) {
+            return None;
+        }
+        let mut recovered = known.clone();
+        recovered.distance = read_distance(selected).or(known.distance);
+        Some((
+            recovered,
+            if exact {
+                "confirmed_selected"
+            } else {
+                "confirmed_card"
+            },
+        ))
     }
 }
 

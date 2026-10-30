@@ -832,7 +832,14 @@ impl CombatApp {
                                 self.recalculate();
                             }
                         }
-                        self.observe_control_ranges(target.as_ref(), now);
+                        if result.is_err()
+                            && self.target.is_some()
+                            && self.gate.remaining(now, hold).is_some()
+                        {
+                            self.ocr_status = "OCR: цель удерживается · повторное чтение".into();
+                        }
+                        let accepted = target.as_ref().and(self.target.as_ref()).cloned();
+                        self.observe_control_ranges(accepted.as_ref(), now);
                     }
                 }
                 #[cfg(windows)]
@@ -1044,7 +1051,7 @@ impl CombatApp {
                                 statistic
                                     .percent
                                     .map(|p| format!("{p}%"))
-                                    .unwrap_or_else(|| "—".into()),
+                                    .unwrap_or_else(|| "—%".into()),
                             )
                             .size(16.)
                             .color(
