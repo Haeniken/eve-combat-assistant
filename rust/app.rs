@@ -88,6 +88,8 @@ pub struct CombatApp {
     capturing: bool,
     restore_pending: bool,
     gate: Gate,
+    range_motion: crate::control::Motion,
+    range_alerts: crate::control::Alerts,
     details: Option<String>,
     selecting: bool,
     selecting_targets: bool,
@@ -135,7 +137,7 @@ impl CombatApp {
         let target = Some(Target {
             ship: settings.ship.clone(),
             pilot: settings.pilot.clone(),
-            distance: None,
+            distance: args.demo.then_some(18000.),
             angular: 0.,
         });
         let mut style = egui::Style {
@@ -239,6 +241,8 @@ impl CombatApp {
             capturing: false,
             restore_pending: false,
             gate: Gate::default(),
+            range_motion: Default::default(),
+            range_alerts: Default::default(),
             details: None,
             selecting: false,
             selecting_targets: false,
@@ -309,6 +313,7 @@ impl CombatApp {
         }
     }
     fn configure_ocr(&mut self) {
+        self.range_alerts.suspend();
         self.ocr_epoch += 1;
         self.gate = Gate::default();
         if self.settings.ocr && self.draft.is_none() && !self.selecting {
@@ -503,6 +508,8 @@ impl CombatApp {
         }
     }
     fn clear_target_view(&mut self) {
+        self.range_alerts.suspend();
+        self.range_motion = Default::default();
         self.selected_loss = None;
         self.target = None;
         self.matchup = None;
@@ -513,6 +520,42 @@ impl CombatApp {
         self.pilot_rating = None;
         self.rating_pilot.clear();
         self.rating_error = None;
+    }
+    fn observe_control_ranges(&mut self, observed: Option<&Target>, now: Instant) {
+        let sample = observed.filter(|t| {
+            self.target
+                .as_ref()
+                .is_some_and(|current| current.identity() == t.identity())
+        });
+        let parts = sample
+            .and_then(|target| target.distance.map(|distance| (target, distance)))
+            .zip(self.matchup.as_ref())
+            .filter(|_| self.draft.is_none() && !self.selecting);
+        let Some(((target, distance), matchup)) = parts else {
+            self.range_alerts.suspend();
+            return;
+        };
+        let Some((result, variant)) = matchup
+            .results
+            .get(self.selected)
+            .and_then(Option::as_ref)
+            .zip(matchup.variants.get(self.selected))
+        else {
+            self.range_alerts.suspend();
+            return;
+        };
+        let ranges = crate::control::Ranges::from_results(
+            result,
+            matchup.own.as_ref().unwrap_or(&Value::Null),
+        );
+        let key = format!("{}:{}:{}", target.ship, target.pilot, variant.key);
+        if let Some(cue) = self
+            .range_alerts
+            .observe(&key, distance, ranges, &self.settings, now)
+        {
+            let result = platform::play_range_sound(cue);
+            self.workers.trace.job(self.settings.ocr_debug,json!({"job":"control_ranges"})).event("range_crossing_sound",json!({"cue":format!("{cue:?}"),"distance_m":distance,"ranges":ranges,"error":result.err()}));
+        }
     }
     fn messages(&mut self, ctx: &egui::Context) {
         while let Ok(message) = self.rx.try_recv() {
@@ -789,6 +832,7 @@ impl CombatApp {
                                 self.recalculate();
                             }
                         }
+                        self.observe_control_ranges(target.as_ref(), now);
                     }
                 }
                 #[cfg(windows)]
@@ -990,6 +1034,28 @@ impl CombatApp {
                         .size(23.)
                         .strong(),
                     );
+                    if let Some(statistic) = self
+                        .matchup
+                        .as_ref()
+                        .and_then(|m| m.hull_statistic.as_ref())
+                    {
+                        ui.label(
+                            RichText::new(
+                                statistic
+                                    .percent
+                                    .map(|p| format!("{p}%"))
+                                    .unwrap_or_else(|| "—".into()),
+                            )
+                            .size(16.)
+                            .color(
+                                statistic
+                                    .tier
+                                    .map(crate::rating_scale::color)
+                                    .unwrap_or(MUTED),
+                            ),
+                        )
+                        .on_hover_text(statistic.hint());
+                    }
                     if !controls.is_empty() {
                         ui.label(RichText::new(&controls).size(10.).color(style::YELLOW));
                     }
@@ -1099,9 +1165,22 @@ impl CombatApp {
         }
         style::range_ruler(
             ui,
-            target.as_ref().and_then(|t| t.distance),
-            advice.as_ref().map(|a| (a.low, a.high)),
-            &weapon_range,
+            crate::control::View {
+                current: target.as_ref().and_then(|t| t.distance),
+                desired: advice.as_ref().map(|a| (a.low, a.high)),
+                weapon: &weapon_range,
+                ranges: crate::control::Ranges::from_results(
+                    diagnostic.unwrap_or(&Value::Null),
+                    own_result.unwrap_or(&Value::Null),
+                ),
+                key: &format!(
+                    "{}:{}",
+                    target.as_ref().map(|t| t.ship.as_str()).unwrap_or(""),
+                    target.as_ref().map(|t| t.pilot.as_str()).unwrap_or("")
+                ),
+                interval: self.settings.ocr_interval,
+            },
+            &mut self.range_motion,
         );
         style::separator(ui);
         egui::Grid::new("combat-metrics")
@@ -1828,7 +1907,11 @@ impl eframe::App for CombatApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| self.overlay(ui));
             });
-        if self.args.screenshot.is_some() && !self.root_shot && self.matchup.is_some() {
+        if self.args.screenshot.is_some()
+            && !self.root_shot
+            && self.matchup.is_some()
+            && self.range_motion.settled(ctx.input(|i| i.time))
+        {
             self.root_shot = true;
             request_shot(
                 &ctx,

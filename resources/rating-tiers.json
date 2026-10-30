@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "colors": [
+    {
+      "id": "red",
+      "name": "Красный",
+      "rgb": [
+        231,
+        91,
+        91
+      ]
+    },
+    {
+      "id": "orange",
+      "name": "Оранжевый",
+      "rgb": [
+        240,
+        148,
+        69
+      ]
+    },
+    {
+      "id": "yellow",
+      "name": "Жёлтый",
+      "rgb": [
+        231,
+        210,
+        96
+      ]
+    },
+    {
+      "id": "green",
+      "name": "Зелёный",
+      "rgb": [
+        116,
+        205,
+        118
+      ]
+    },
+    {
+      "id": "turquoise",
+      "name": "Бирюзовый",
+      "rgb": [
+        73,
+        213,
+        201
+      ]
+    },
+    {
+      "id": "blue",
+      "name": "Синий",
+      "rgb": [
+        95,
+        153,
+        241
+      ]
+    },
+    {
+      "id": "purple",
+      "name": "Фиолетовый",
+      "rgb": [
+        189,
+        131,
+        239
+      ]
+    }
+  ],
+  "winrate": {
+    "boundaries": [
+      9,
+      20,
+      36,
+      64,
+      80,
+      91
+    ],
+    "minimum_battles": 50,
+    "classification": "rounded_display_percentage; 50 percent is green",
+    "period_start": "2025-10-30",
+    "period_end": "2026-10-29",
+    "source_records": 6089675,
+    "eligible_killmails": 1016104,
+    "reference_pairs": 1641,
+    "reference_duels": 369873,
+    "selection": "At least 50 solo outcomes and at least 5 wins in each direction. Same-hull pairs excluded from color calibration only. Each pair contributes equally.",
+    "method": "Quartiles of absolute deviation from 50%; symmetric unrounded cutoffs, rounded to nearest whole percent for display classification.",
+    "unrounded_boundaries": [
+      9.230769230769226,
+      20.155038759689923,
+      35.585585585585584,
+      64.41441441441441,
+      79.84496124031008,
+      90.76923076923077
+    ],
+    "tier_reference_counts": [
+      368,
+      426,
+      436,
+      800,
+      421,
+      407,
+      424
+    ]
+  },
+  "solo": {
+    "boundaries": [
+      2000,
+      3000,
+      4000,
+      6000,
+      7000,
+      8000
+    ],
+    "reference_profiles": 39,
+    "reference_model": "solo-reference-2026-10-28-v1",
+    "reference_percentiles": [
+      0.125,
+      0.25,
+      0.375,
+      0.625,
+      0.75,
+      0.875
+    ],
+    "unrounded_boundaries": [
+      1999.5,
+      2999.5,
+      3999.5,
+      5999.25,
+      6999.0,
+      7998.75
+    ],
+    "tier_reference_counts": [
+      5,
+      5,
+      5,
+      9,
+      5,
+      5,
+      5
+    ],
+    "scope": "lifetime",
+    "score_min": 1000,
+    "score_max": 8999,
+    "reserved": [
+      9000,
+      9998
+    ],
+    "method": "Empirical score quantiles at 12.5,25,37.5,62.5,75,87.5 percent, rounded upwards to a hundred; the central quarter is green. Score model and lifetime counters are unchanged."
+  }
+}

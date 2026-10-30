@@ -45,17 +45,9 @@ pub fn separator(ui: &mut Ui) {
     ui.add_space(7.);
 }
 pub fn rating_color(rating: Option<&crate::pilot::Rating>) -> Color32 {
-    let colors = [
-        Color32::from_rgb(231, 91, 91),
-        Color32::from_rgb(240, 148, 69),
-        Color32::from_rgb(231, 210, 96),
-        Color32::from_rgb(116, 205, 118),
-        Color32::from_rgb(73, 213, 201),
-        Color32::from_rgb(189, 131, 239),
-    ];
     rating
         .and_then(|r| r.tier())
-        .map(|i| colors[i])
+        .map(crate::rating_scale::color)
         .unwrap_or(MUTED)
 }
 /// Slow breathing light, repainted only while the active indicator is visible.
@@ -101,11 +93,11 @@ pub fn pilot_rating(ui: &mut Ui, rating: Option<&crate::pilot::Rating>, state: &
     }
     p.circle_filled(center, 24., Color32::from_rgb(9, 22, 30));
     p.circle_stroke(center, 21., Stroke::new(0.7, LINE));
-    for segment in 0..6 {
-        let start = (-85. + segment as f32 * 60.).to_radians();
+    for segment in 0..7 {
+        let start = (-85. + segment as f32 * (360. / 7.)).to_radians();
         let points: Vec<_> = (0..=12)
             .map(|i| {
-                let angle = start + (50_f32.to_radians() * i as f32 / 12.);
+                let angle = start + (43_f32.to_radians() * i as f32 / 12.);
                 center + Vec2::angled(angle) * 26.
             })
             .collect();
@@ -271,11 +263,15 @@ pub fn metric_height(ui: &mut Ui, name: &str, value: &str, danger: bool, height:
             ui.set_min_width(ui.available_width());
             caption(ui, name);
             ui.add_space(5.);
-            ui.label(
-                RichText::new(value)
-                    .size(13.)
-                    .color(if danger { AMBER } else { CYAN }),
-            );
+            ui.label(RichText::new(value).size(13.).color(if danger {
+                if name == "НЕЙТРИКИ" {
+                    YELLOW
+                } else {
+                    AMBER
+                }
+            } else {
+                CYAN
+            }));
         });
 }
 pub fn speed_comparison(ui: &mut Ui, enemy: &serde_json::Value, own: &serde_json::Value) {
@@ -424,114 +420,10 @@ pub fn range_axis(
 }
 pub fn range_ruler(
     ui: &mut Ui,
-    current: Option<f64>,
-    desired: Option<(f64, f64)>,
-    weapon: &serde_json::Value,
+    view: crate::control::View<'_>,
+    motion: &mut crate::control::Motion,
 ) {
-    let reach = weapon["max_range_m"]
-        .as_f64()
-        .filter(|v| v.is_finite() && *v > 0.);
-    if current.is_none() && desired.is_none() && reach.is_none() {
-        return;
-    }
-    let (max, step) = range_axis(current, desired, reach);
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), 82.), Sense::hover());
-    let p = ui.painter();
-    let left = rect.left() + 10.;
-    let right = rect.right() - 10.;
-    let y = rect.top() + 32.;
-    let project = |v: f64| left + (right - left) * (v / max).clamp(0., 1.) as f32;
-    if let Some((a, b)) = desired {
-        p.rect_filled(
-            Rect::from_min_max(
-                egui::pos2(project(a), y - 8.),
-                egui::pos2(project(b), y + 8.),
-            ),
-            0.,
-            CYAN.gamma_multiply(0.14),
-        );
-    }
-    p.line_segment(
-        [egui::pos2(left, y), egui::pos2(right, y)],
-        Stroke::new(1., CYAN),
-    );
-    for i in 0..=5 {
-        let v = step * i as f64;
-        let x = project(v);
-        p.line_segment(
-            [egui::pos2(x, y - 4.), egui::pos2(x, y + 5.)],
-            Stroke::new(1., MUTED),
-        );
-        let mut label = if step >= 1000. {
-            format!("{:.0}", v / 1000.)
-        } else {
-            format!("{:.1}", v / 1000.).replace('.', ",")
-        };
-        if i == 5 {
-            label += " км";
-        }
-        p.text(
-            egui::pos2(x, y + 11.),
-            if i == 5 {
-                Align2::RIGHT_TOP
-            } else {
-                Align2::CENTER_TOP
-            },
-            label,
-            FontId::proportional(8.),
-            MUTED,
-        );
-    }
-    if let Some(v) = current.filter(|v| v.is_finite() && *v >= 0.) {
-        let x = project(v);
-        p.line_segment(
-            [egui::pos2(x, y - 16.), egui::pos2(x, y + 7.)],
-            Stroke::new(1.4, TEXT),
-        );
-        p.text(
-            egui::pos2(x.clamp(left + 35., right - 35.), rect.top()),
-            Align2::CENTER_TOP,
-            if v < 1000. {
-                format!("ЦЕЛЬ {v:.0} м")
-            } else {
-                format!("ЦЕЛЬ {:.1} км", v / 1000.).replace('.', ",")
-            },
-            FontId::proportional(9.),
-            TEXT,
-        );
-    }
-    if let Some(v) = reach {
-        let x = project(v);
-        p.line_segment(
-            [egui::pos2(x, y - 14.), egui::pos2(x, y + 7.)],
-            Stroke::new(1.5, AMBER),
-        );
-        let label = format!(
-            "{} {}",
-            if weapon["kind"] == "drones" {
-                "ДРОНЫ"
-            } else {
-                "ОРУЖИЕ"
-            },
-            weapon["label"]
-                .as_str()
-                .unwrap_or("—")
-                .trim_start_matches("до ")
-        );
-        p.text(
-            egui::pos2(x.clamp(left + 75., right - 75.), y + 34.),
-            Align2::CENTER_TOP,
-            label,
-            FontId::proportional(9.),
-            AMBER,
-        );
-    }
-    response.on_hover_text(
-        weapon["hint"]
-            .as_str()
-            .unwrap_or("Бирюзовый диапазон — рекомендация. Белая метка — текущая дистанция."),
-    );
+    crate::control::draw(ui, view, motion);
 }
 
 pub fn settings_nav(ui: &mut Ui, index: usize, title: &str, active: bool) -> Response {

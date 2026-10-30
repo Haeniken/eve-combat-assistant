@@ -10,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 pub struct Store {
-    db: Connection,
+    pub(crate) db: Connection,
     pub seed: Option<crate::seed::SeedInfo>,
     pub seed_error: Option<String>,
     trace: Option<crate::diagnostics::Trace>,
@@ -83,6 +83,7 @@ impl Store {
           CREATE TABLE IF NOT EXISTS http_cache(key TEXT PRIMARY KEY,expires REAL,raw BLOB);
           CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);
           CREATE TABLE IF NOT EXISTS global_membership(id INTEGER PRIMARY KEY);") .map_err(|e|e.to_string())?;
+        crate::matchups::setup(&db)?;
         let mut store = Self {
             db,
             seed: None,
@@ -137,6 +138,19 @@ impl Store {
             0
         };
         local.map(|n| n as usize).unwrap_or(seed as usize)
+    }
+    pub fn archive_matches(&self, day: &str, expected: usize) -> bool {
+        self.archive_count(day) == expected
+            || self.seed.is_some()
+                && self
+                    .db
+                    .query_row(
+                        "SELECT coalesce(index_total,source_count) FROM bundled.days WHERE day=?",
+                        [day],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .ok()
+                    .is_some_and(|count| count as usize == expected)
     }
     pub fn seed_population(&self, key: &str) -> Option<Value> {
         if !self.seed.as_ref().is_some_and(|s| s.prepared) {

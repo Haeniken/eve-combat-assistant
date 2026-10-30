@@ -2,6 +2,66 @@
 
 use std::path::{Path, PathBuf};
 
+/// Short in-memory WAVs played asynchronously; buffers outlive the audio call.
+pub fn play_range_sound(cue: crate::control::Cue) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::sync::OnceLock;
+        use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+        fn wave(first: f64, second: f64) -> Vec<u8> {
+            let rate = 22050_u32;
+            let count = rate as usize * 18 / 100;
+            let bytes = (count * 2) as u32;
+            let mut wav = Vec::with_capacity(44 + bytes as usize);
+            wav.extend_from_slice(b"RIFF");
+            wav.extend_from_slice(&(36 + bytes).to_le_bytes());
+            wav.extend_from_slice(b"WAVEfmt ");
+            wav.extend_from_slice(&16_u32.to_le_bytes());
+            wav.extend_from_slice(&1_u16.to_le_bytes());
+            wav.extend_from_slice(&1_u16.to_le_bytes());
+            wav.extend_from_slice(&rate.to_le_bytes());
+            wav.extend_from_slice(&(rate * 2).to_le_bytes());
+            wav.extend_from_slice(&2_u16.to_le_bytes());
+            wav.extend_from_slice(&16_u16.to_le_bytes());
+            wav.extend_from_slice(b"data");
+            wav.extend_from_slice(&bytes.to_le_bytes());
+            for i in 0..count {
+                let t = i as f64 / rate as f64;
+                let envelope = (std::f64::consts::PI * i as f64 / count as f64)
+                    .sin()
+                    .powi(2);
+                let frequency = first + (second - first) * i as f64 / count as f64 / 2.;
+                let sample = (t * frequency * std::f64::consts::TAU).sin()
+                    * envelope
+                    * 0.13
+                    * i16::MAX as f64;
+                wav.extend_from_slice(&(sample as i16).to_le_bytes());
+            }
+            wav
+        }
+        static WAVES: OnceLock<[Vec<u8>; 3]> = OnceLock::new();
+        let waves = WAVES.get_or_init(|| [wave(780., 1100.), wave(500., 600.), wave(1000., 550.)]);
+        let index = match cue {
+            crate::control::Cue::Tackle => 0,
+            crate::control::Cue::Neut => 1,
+            crate::control::Cue::Point => 2,
+        };
+        let result = unsafe {
+            PlaySoundW(
+                waves[index].as_ptr().cast(),
+                std::ptr::null_mut(),
+                SND_ASYNC | SND_MEMORY | SND_NODEFAULT,
+            )
+        };
+        if result == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = cue;
+    Ok(())
+}
+
 /// Возвращает рабочую область текущего монитора в физических пикселях.
 /// Панель задач Windows не должна перекрывать кнопки увеличенного интерфейса.
 pub fn monitor_work_area(bounds: [i32; 4]) -> [i32; 4] {

@@ -80,11 +80,11 @@ impl Sources {
         if settings.force_refresh {
             self.store.invalidate_statistics_cache()?;
         }
-        let end = Utc::now().date_naive();
+        let end = Utc::now().date_naive() - TimeDelta::days(1);
         let start = if settings.days == 0 {
             NaiveDate::from_ymd_opt(2003, 5, 1).unwrap()
         } else {
-            end - TimeDelta::days(settings.days as i64)
+            end - TimeDelta::days(settings.days.saturating_sub(1) as i64)
         };
         self.record("statistics_update_start",json!({"scope":"all_catalog_hulls","period_start":start,"period_end":end,"force":settings.force_refresh,"catalog_hulls":self.catalog.ships.len(),"bundled":self.store.seed}));
         if settings.force_refresh {
@@ -790,8 +790,11 @@ impl Sources {
             self.publish_update();
             let expected = totals.get(&stamp).and_then(Value::as_u64).unwrap_or(0) as usize;
             let covered = self.store.archive_count(&stamp);
-            self.record("archive_day",json!({"day":stamp,"expected":expected,"local_or_bundled":covered,"download":expected>0 && (force || covered!=expected)}));
-            if expected == 0 || !force && covered == expected {
+            let matchup_covered = crate::matchups::covered(&self.store.db, &stamp);
+            let needs_fits = force || !self.store.archive_matches(&stamp, expected);
+            let needs_matchups = matchup_covered != Some(expected) || force;
+            self.record("archive_day",json!({"day":stamp,"expected":expected,"local_or_bundled":covered,"matchup_covered":matchup_covered,"download":expected>0 && (needs_fits || needs_matchups)}));
+            if expected == 0 || !needs_fits && !needs_matchups {
                 self.finish_day();
                 date -= TimeDelta::days(1);
                 continue;
@@ -814,49 +817,99 @@ impl Sources {
                     continue;
                 }
             };
-            let rows: Vec<Value> = if rows.is_array() {
-                array(&rows).to_vec()
-            } else {
-                rows.as_object()
-                    .ok_or("Некорректный архив")?
-                    .values()
-                    .cloned()
-                    .collect()
+            let mut rows: Vec<Value> = match rows {
+                Value::Array(rows) => rows,
+                Value::Object(rows) => rows.into_values().collect(),
+                _ => return Err("Некорректный архив".into()),
             };
             let source_count = rows.len();
             let mut verified = source_count == expected;
             if !verified {
-                let ids: std::collections::HashSet<_> = rows
+                let mut ids: std::collections::HashSet<_> = rows
                     .iter()
                     .map(|r| id(r, "killmail_id").to_string())
                     .collect();
                 let index = self.request(&format!("{}/{stamp}.json", self.archive_base), None, 0);
+                if let Some(index) = index.as_ref().ok().and_then(Value::as_object) {
+                    let missing: Vec<_> =
+                        index.iter().filter(|(km, _)| !ids.contains(*km)).collect();
+                    if missing.len() <= 100 {
+                        for (km, hash) in missing {
+                            let Some(hash) = hash.as_str().filter(|s| {
+                                s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
+                            }) else {
+                                continue;
+                            };
+                            let Ok(number) = km.parse::<i64>() else {
+                                continue;
+                            };
+                            self.check()?;
+                            let row = self.request(
+                                &format!("https://esi.evetech.net/killmails/{number}/{hash}/"),
+                                None,
+                                2592000,
+                            );
+                            match row {
+                                Ok(row)
+                                    if id(&row, "killmail_id") == number
+                                        && row["victim"].is_object()
+                                        && s(&row, "killmail_time")
+                                            .starts_with(&date.to_string()) =>
+                                {
+                                    ids.insert(km.clone());
+                                    rows.push(row);
+                                    self.record(
+                                        "archive_missing_killmail_loaded",
+                                        json!({"day":stamp,"killmail_id":number}),
+                                    );
+                                }
+                                result => self.record(
+                                    "archive_missing_killmail_error",
+                                    json!({"day":stamp,"killmail_id":number,"error":result.err()}),
+                                ),
+                            }
+                        }
+                    }
+                }
                 verified = index
                     .as_ref()
                     .ok()
                     .and_then(Value::as_object)
                     .is_some_and(|index| {
-                        index.len() == ids.len() && index.keys().all(|key| ids.contains(key))
+                        !index.is_empty() && index.keys().all(|key| ids.contains(key))
                     });
-                self.record("archive_index_verification",json!({"day":stamp,"published_total":expected,"available_records":source_count,"verified":verified,"error":index.as_ref().err()}));
+                self.record("archive_index_verification",json!({"day":stamp,"published_total":expected,"raw_records":source_count,"available_records":rows.len(),"verified":verified,"error":index.as_ref().err()}));
             }
-
+            let source_count = rows.len();
+            let matchup_counts = crate::matchups::aggregate(&rows, &self.catalog);
             let mut mails = Vec::new();
-            for row in rows {
-                let row = self.complete(&row)?;
-                if self.catalog.get(id(&row["victim"], "ship_type_id") as i32)["category"] == 6 {
-                    mails.push(row);
+            if needs_fits {
+                for row in &rows {
+                    let row = self.complete(row)?;
+                    if self.catalog.get(id(&row["victim"], "ship_type_id") as i32)["category"] == 6
+                    {
+                        mails.push(row);
+                    }
                 }
             }
             self.update_progress.phase = "Сохранение данных".into();
             self.publish_update();
-            let inserted = self.store.ingest_archive(&mails, force)?;
+            let inserted = if needs_fits {
+                self.store.ingest_archive(&mails, force)?
+            } else {
+                0
+            };
+            if verified {
+                crate::matchups::replace_day(&self.store.db, &stamp, expected, &matchup_counts)?;
+            }
             count += inserted;
             self.update_progress.inserted = count;
-            self.store.set_meta(
-                &format!("archive_count:{stamp}"),
-                &json!(if verified { expected } else { source_count }),
-            )?;
+            if needs_fits {
+                self.store.set_meta(
+                    &format!("archive_count:{stamp}"),
+                    &json!(if verified { expected } else { source_count }),
+                )?;
+            }
             self.record("archive_day_ingested",json!({"day":stamp,"source_count":source_count,"ship_records":mails.len(),"inserted":inserted,"complete":verified}));
             if !verified {
                 failed.push(stamp);
@@ -864,6 +917,10 @@ impl Sources {
             self.finish_day();
             date -= TimeDelta::days(1);
         }
+        self.update_progress.phase = "Пересчёт винрейтов и цветов".into();
+        self.publish_update();
+        let calibration = crate::matchups::recalibrate(&self.store.db, end)?;
+        self.record("hull_matchup_recalibrated", json!(calibration));
         self.record(
             "archive_complete",
             json!({"inserted":count,"failed_days":failed}),
@@ -1439,6 +1496,58 @@ mod tests {
         assert!(requests[2].contains("raw/20261026"));
     }
     #[test]
+    fn client_update_does_not_download_the_year_reference_again() {
+        let directory = temp();
+        let end = Utc::now().date_naive() - TimeDelta::days(1);
+        let previous = end - TimeDelta::days(1);
+        let old = end - TimeDelta::days(364);
+        let key = |day: NaiveDate| day.format("%Y%m%d").to_string();
+        let row = |km, day: NaiveDate| json!({"killmail_id":km,"killmail_time":format!("{day}T12:00:00Z"),"victim":{"ship_type_id":587,"character_id":100,"items":[]},"attackers":[{"character_id":200,"ship_type_id":11381}]});
+        let (base, server) = mock(vec![
+            (200, json!({(key(end)):1,(key(previous)):1,(key(old)):1})),
+            (200, json!({"1":row(1,end)})),
+            (200, json!({"2":row(2,previous)})),
+        ]);
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        source.archive_base = format!("{base}/history");
+        let settings = crate::model::Settings {
+            days: 2,
+            ..Default::default()
+        };
+        assert_eq!(source.refresh_statistics(&settings, &|_| {}).unwrap(), 2);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests.iter().all(|r| !r.contains(&key(old))));
+    }
+    #[test]
+    fn raw_archive_superset_of_the_daily_index_keeps_additional_public_records() {
+        let directory = temp();
+        let row = |km| json!({"killmail_id":km,"killmail_time":"2026-10-29T12:00:00Z","victim":{"ship_type_id":587,"character_id":100,"items":[]},"attackers":[{"character_id":200,"ship_type_id":11381}]});
+        let (base, server) = mock(vec![
+            (200, json!({"20261029":3})),
+            (200, json!({"1":row(1),"2":row(2)})),
+            (200, json!({"1":"0000000000000000000000000000000000000000"})),
+        ]);
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        source.archive_base = format!("{base}/history");
+        let day = NaiveDate::from_ymd_opt(2026, 10, 29).unwrap();
+        assert_eq!(source.archive(day, day, &|_| {}).unwrap(), 2);
+        assert_eq!(source.store.archive_count("20261029"), 3);
+        assert_eq!(
+            crate::matchups::covered(&source.store.db, "20261029"),
+            Some(3)
+        );
+        assert_eq!(server.join().unwrap().len(), 3);
+    }
+    #[test]
     fn archive_update_covers_all_hulls_and_only_downloads_new_or_changed_days() {
         let directory = temp();
         let record = |id, ship| json!({"killmail_id":id,"killmail_time":"2026-10-27T12:00:00Z","solar_system_id":30000142,"victim":{"ship_type_id":ship,"character_id":90000000+id,"corporation_id":98000000+id,"items":[]},"attackers":[{"character_id":80000000+id}]});
@@ -1465,6 +1574,13 @@ mod tests {
             .store
             .set_meta("archive_count:20261026", &json!(1))
             .unwrap();
+        crate::matchups::replace_day(
+            &source.store.db,
+            "20261026",
+            1,
+            &crate::matchups::Counts::new(),
+        )
+        .unwrap();
         let start = NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
         let end = start + TimeDelta::days(1);
         assert_eq!(source.archive(start, end, &|_| {}).unwrap(), 2);

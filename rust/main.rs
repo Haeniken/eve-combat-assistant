@@ -3,16 +3,19 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod account;
 mod app;
+mod control;
 mod diagnostics;
 mod engine;
 mod fit_metrics;
 mod fit_plan;
 mod fits;
+mod matchups;
 mod model;
 mod ocr;
 mod pilot;
 mod pilot_lookup;
 mod platform;
+mod rating_scale;
 mod seed;
 mod settings_ui;
 mod sources;

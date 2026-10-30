@@ -43,10 +43,16 @@ cargo build --release --locked --target x86_64-pc-windows-gnu
 `scripts/build_bootstrap.py` собирает базу из публичного дневного архива zKillboard и подготавливает локальные группировки всех корпусов. Полная загрузка занимает время и требует сети и свободного диска:
 
 ```sh
-python3 scripts/build_bootstrap.py --prepare-executable target/release/eve-combat-assistant
+python3 scripts/build_matchups.py --raw-directory build/raw-cache --directory build/matchups --end 2026-10-29 --days 365
+python3 scripts/build_bootstrap.py --directory build/seed --end 2026-10-29 --days 90 --prepare-executable target/release/eve-combat-assistant
+python3 scripts/verify_matchups.py build/matchups --raw-directories build/seed/raw build/matchups/raw build/raw-cache --totals build/seed/totals.json
+python3 scripts/calibrate_ratings.py build/matchups
+python3 scripts/build_bootstrap.py --directory build/seed --end 2026-10-29 --days 90 --matchup-directory build/matchups
 ```
 
-Доступные параметры и пути выводятся через `--help`. Результат — каталог с `seed.sqlite3` и `seed-manifest.json`. Скрипт упаковки проверяет версию схемы, SDE, полноту периода, группировки и SHA256 базы.
+Доступные параметры и пути выводятся через `--help`. Результат — каталог с `seed.sqlite3` и `seed-manifest.json`. Скрипт упаковки проверяет версию схемы, SDE, полноту периода, группировки, годовую статистику корпусов и SHA256 базы. Для другого среза укажите последний полный день UTC. Скрипт годовой статистики возобновляет сбор по готовым дням и читает JSON по одной записи; архивы остаются только в каталоге сборки. `verify_matchups.py` сверяет дневные итоги и индексы, сохраняет дополнительные raw-записи и восстанавливает индексированные пропуски по публичным ESI hash.
+
+Для актуализации существующего снимка используйте `build_bootstrap.py --refresh-period`: перекрывающиеся полные дни переиспользуются, из периода выходят старые даты, новые и изменённые дни дозагружаются. После проверки обновлённой годовой истории повторите калибровку и присоединение таблиц. Клиенту поставляются только компактные дневные суммы. Его обновление пересчитывает винрейты и цвета по локальной базе, отдельную годовую загрузку не запускает.
 
 Для упаковки также нужен каталог текстов лицензий зависимостей с `DEPENDENCIES.json`. Список требований и лицензий — в [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). Само приложение и комплект лицензий должны соответствовать одному `Cargo.lock`.
 

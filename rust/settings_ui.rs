@@ -392,6 +392,13 @@ fn appearance(ui: &mut Ui, draft: &mut Settings) {
     ui.checkbox(&mut draft.on_top, "Держать поверх игры");
     ui.checkbox(&mut draft.click_through, "Пропускать клики в игру");
     style::caption(ui, "Настройки доступны через значок в системном трее.");
+    section(ui, "ЗВУКОВЫЕ СИГНАЛЫ");
+    ui.checkbox(&mut draft.sound_tackle, "Вход в дальность скрама или сетки");
+    ui.checkbox(&mut draft.sound_neut, "Вход в дальность нейтрализатора");
+    ui.checkbox(
+        &mut draft.sound_point,
+        "Выход из дальности своего поинта / скрама",
+    );
 }
 
 fn own_fit(ui: &mut Ui, draft: &mut Settings) -> Option<String> {

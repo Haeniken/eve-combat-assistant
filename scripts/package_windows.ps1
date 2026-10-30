@@ -16,6 +16,7 @@ if (-not (Test-Path $seedDatabase) -or -not (Test-Path $seedManifest)) { throw '
 $manifest = Get-Content $seedManifest -Raw | ConvertFrom-Json
 $upstream = Get-Content (Join-Path $root 'native\upstream.json') -Raw | ConvertFrom-Json
 if ($manifest.schema_version -ne 1 -or $manifest.sde_build -ne $upstream.sde_build -or $manifest.complete_days -lt 90 -or $manifest.prepared_populations -ne $manifest.known_hulls) { throw 'Incomplete or incompatible starter database' }
+if (-not $manifest.hull_matchups -or $manifest.hull_matchups.days -lt 365 -or $manifest.hull_matchups.policy -ne 'hull-solo-v1') { throw 'Prepare and attach the verified annual hull matchup dataset with --matchup-directory before packaging' }
 if ((Get-FileHash $seedDatabase -Algorithm SHA256).Hash -ne $manifest.sha256) { throw 'Starter database hash mismatch' }
 $dist = Join-Path $root 'dist'
 $destination = Join-Path $dist 'EVECombatAssistant'
@@ -36,7 +37,8 @@ $guide = $guide.Replace('](pilot-rating.md)', '](PILOT_RATING.md)').Replace('](f
 $guide = $guide.Replace('](development.md)', '](https://github.com/Haeniken/eve-combat-assistant/blob/main/docs/development.md)').Replace('](architecture.md)', '](https://github.com/Haeniken/eve-combat-assistant/blob/main/docs/architecture.md)')
 [System.IO.File]::WriteAllText((Join-Path $destination 'USER_GUIDE.md'), $guide, [System.Text.UTF8Encoding]::new($false))
 Copy-Item (Join-Path $root 'docs\pilot-rating.md') (Join-Path $destination 'PILOT_RATING.md') -Force
-Copy-Item (Join-Path $root 'docs\fit-metrics.md') (Join-Path $destination 'FIT_METRICS.md') -Force
+$metrics = [System.IO.File]::ReadAllText((Join-Path $root 'docs\fit-metrics.md')).Replace('](pilot-rating.md)', '](PILOT_RATING.md)')
+[System.IO.File]::WriteAllText((Join-Path $destination 'FIT_METRICS.md'), $metrics, [System.Text.UTF8Encoding]::new($false))
 Get-ChildItem $destination -Recurse -File | Where-Object { $_.LastWriteTime.Year -lt 1980 -or $_.LastWriteTime.Year -gt 2107 } | ForEach-Object { $_.LastWriteTime = [datetime]'2000-01-01' }
 $archive = Join-Path $dist 'EVECombatAssistant-windows-x64.zip'
 # Create mode streams entries; Compress-Archive uses Update mode and buffers large files.

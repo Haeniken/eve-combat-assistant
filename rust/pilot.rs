@@ -228,12 +228,7 @@ impl Rating {
         })
     }
     pub fn tier(&self) -> Option<usize> {
-        self.score.map(|score| {
-            [2500, 4000, 5500, 7000, 8000]
-                .into_iter()
-                .take_while(|limit| score >= *limit)
-                .count()
-        })
+        self.score.map(crate::rating_scale::solo_tier)
     }
     pub fn group_marker(&self) -> Option<&'static str> {
         if self.kills < 20 {
@@ -462,15 +457,16 @@ mod tests {
         assert!(Rating::from_stats(&blob, 124).is_err());
     }
     #[test]
-    fn solo_results_control_all_six_tiers_without_formula_or_age_in_hint() {
+    fn solo_results_control_all_seven_tiers_without_formula_or_age_in_hint() {
         for (score, tier) in [
             (1000, 0),
-            (2500, 1),
-            (4000, 2),
-            (5500, 3),
-            (7000, 4),
-            (8000, 5),
-            (8999, 5),
+            (2000, 1),
+            (3000, 2),
+            (4000, 3),
+            (6000, 4),
+            (7000, 5),
+            (8000, 6),
+            (8999, 6),
         ] {
             let mut r = Rating::from_stats(&stats(100, 100, 20), 123).unwrap();
             r.score = Some(score);
@@ -515,7 +511,7 @@ mod tests {
         }
         let data: Value =
             serde_json::from_str(include_str!("../resources/pilot-rating-reference.json")).unwrap();
-        let mut tiers = [0; 6];
+        let mut tiers = [0; 7];
         for row in data["samples"].as_array().unwrap() {
             let wins = row["solo_kills"].as_u64().unwrap();
             let losses = row["solo_losses"].as_u64().unwrap();

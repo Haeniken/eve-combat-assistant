@@ -75,11 +75,36 @@ def compact(mail, allowed, categories):
     return record
 
 
+def reconcile_archive(rows, index, stamp, directory):
+    """Keep all raw records, fill indexed omissions from their public ESI hashes."""
+    if not index:
+        raise RuntimeError('Empty daily ID index for '+stamp)
+    mapping=rows if isinstance(rows,dict) else {str(r['killmail_id']):r for r in rows}
+    missing=sorted(set(index)-set(mapping))
+    if len(missing)>100:
+        raise RuntimeError('Too many missing indexed killmails for '+stamp)
+    for km in missing:
+        hashed=index[km]
+        if not isinstance(hashed,str) or len(hashed)!=40 or not all(c in '0123456789abcdefABCDEF' for c in hashed) or not km.isdecimal():
+            raise RuntimeError('Invalid public killmail hash in '+stamp)
+        path=directory/'individual'/(km+'.json')
+        if not path.exists():
+            download(f'https://esi.evetech.net/killmails/{km}/{hashed}/',path)
+            time.sleep(1.2)
+        mail=json.loads(path.read_bytes())
+        if str(mail.get('killmail_id'))!=km or mail.get('killmail_time','')[:10].replace('-','')!=stamp:
+            raise RuntimeError('ESI killmail identity/date mismatch for '+km)
+        mapping[km]=mail
+    return mapping,{'supplemented_via_esi':len(missing),'extra_raw_records':len(set(mapping)-set(index))}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--days', type=int, default=90)
     parser.add_argument('--end', default=(dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=1)).isoformat())
     parser.add_argument('--prepare-executable', type=Path, help='Built native app: precompute default populations before publishing the manifest')
+    parser.add_argument('--matchup-directory',type=Path,help='Prepared 365-day compact hull-vs-hull statistics')
+    parser.add_argument('--refresh-period',action='store_true',help='Advance an existing build snapshot by reusing overlapping complete days')
     parser.add_argument('--directory', type=Path, default=Path('build/bootstrap-v0.3.4'))
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
@@ -110,7 +135,13 @@ def main():
     populations_invalidated = False
     previous_period = dict(db.execute("SELECT key,value FROM meta WHERE key IN ('period_start','period_end')"))
     if previous_period and (json.loads(previous_period.get('period_start', 'null')) != start.isoformat() or json.loads(previous_period.get('period_end', 'null')) != end.isoformat()):
-        raise RuntimeError('Use a new directory for another snapshot period')
+        if not args.refresh_period:
+            raise RuntimeError('Use a new directory or --refresh-period for another snapshot period')
+        with db:
+            db.execute('DROP TABLE IF EXISTS populations')
+            db.execute('DELETE FROM killmails WHERE happened<? OR happened>=?',(start.isoformat(),(end+dt.timedelta(days=1)).isoformat()))
+            db.execute('DELETE FROM days WHERE day<? OR day>?',(start.strftime('%Y%m%d'),end.strftime('%Y%m%d')))
+        populations_invalidated=True
     db.executemany('INSERT OR REPLACE INTO hulls VALUES(?,?)', ships.items())
     meta = {'schema_version': 1, 'sde_build': upstream['sde_build'], 'period_start': start.isoformat(), 'period_end': end.isoformat(), 'source': BASE + '/raw/{YYYYMMDD}.json', 'labels': 'Public ESI raw archive: zkb labels may be unavailable; local fleet/attacker filters apply.'}
     db.executemany('INSERT OR REPLACE INTO meta VALUES(?,?)', ((key, json.dumps(value)) for key, value in meta.items()))
@@ -143,11 +174,12 @@ def main():
                 time.sleep(1.2)
             index = json.loads(index_path.read_bytes())
             raw_ids = set(rows) if isinstance(rows, dict) else {str(row['killmail_id']) for row in rows}
-            if set(index) != raw_ids:
-                path.unlink(missing_ok=True)
-                index_path.unlink(missing_ok=True)
-                raise RuntimeError('Raw archive does not match daily ID index for ' + stamp + '; rerun to retry')
-            discrepancies.append({'day': stamp, 'published_total': expected, 'available_records': len(rows), 'daily_id_index_verified': True})
+            rows, reconciliation=reconcile_archive(rows,index,stamp,directory)
+            if reconciliation['supplemented_via_esi']:
+                temporary=path.with_suffix('.reconciled.tmp')
+                temporary.write_text(json.dumps(rows,separators=(',',':')))
+                temporary.replace(path)
+            discrepancies.append({'day': stamp, 'published_total': expected, 'available_records': len(rows), 'daily_id_index_verified': True,**reconciliation})
         values = rows.values() if isinstance(rows, dict) else rows
         batch = []
         for mail in values:
@@ -186,6 +218,9 @@ def main():
     has_prepared = prepared_db.execute("SELECT count(*) FROM sqlite_schema WHERE name='populations'").fetchone()[0]
     manifest['prepared_populations'] = prepared_db.execute('SELECT count(*) FROM populations').fetchone()[0] if has_prepared else 0
     prepared_db.close()
+    if args.matchup_directory:
+        from build_matchups import install_seed
+        manifest['hull_matchups']=install_seed(directory/'seed.sqlite3',args.matchup_directory)
     with (directory / 'seed.sqlite3').open('rb') as source:
         manifest['sha256'] = hashlib.file_digest(source, 'sha256').hexdigest()
     (directory / 'seed-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

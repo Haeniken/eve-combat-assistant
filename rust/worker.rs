@@ -29,6 +29,7 @@ pub struct Matchup {
     pub advice: Vec<Option<Advice>>,
     pub results: Vec<Option<Value>>,
     pub own: Option<Value>,
+    pub hull_statistic: Option<crate::matchups::Statistic>,
     pub failures: Vec<String>,
     pub seed: Option<crate::seed::SeedInfo>,
     pub seed_error: Option<String>,
@@ -279,6 +280,25 @@ impl AnalysisCore {
                 }
             }
         };
+        let hull_statistic = own.as_ref().and_then(|r| {
+            let own_ship = id(&r["fit"], "ship_type_id") as i32;
+            match crate::matchups::lookup(
+                &self.store.db,
+                own_ship,
+                ship,
+                &self.catalog,
+                Utc::now().date_naive() - chrono::TimeDelta::days(1),
+            ) {
+                Ok(statistic) => {
+                    trace.event("hull_matchup_ready", json!(statistic));
+                    Some(statistic)
+                }
+                Err(error) => {
+                    trace.event("hull_matchup_error", json!({"error":error}));
+                    None
+                }
+            }
+        });
         let mut out = Matchup {
             target: target.clone(),
             pop,
@@ -286,6 +306,7 @@ impl AnalysisCore {
             advice: Vec::new(),
             results: Vec::new(),
             own,
+            hull_statistic,
             failures,
             seed: self.store.seed.clone(),
             seed_error: self.store.seed_error.clone(),
