@@ -1,6 +1,6 @@
 //! Compact annual observations; personal lookups never certify global day coverage.
 use crate::{
-    annual_rating::{Duel, WINDOW},
+    annual_rating::{Duel, window, window_days},
     store::Store,
 };
 use chrono::{TimeDelta, Utc};
@@ -55,16 +55,19 @@ fn insert(db: &Connection, entries: &[Duel]) -> Result<(), String> {
 impl Store {
     pub fn prune_annual(&self, now: i64) -> Result<(), String> {
         let tx = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM annual_rating_duels WHERE at<?", [now - WINDOW])
-            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM annual_rating_duels WHERE at<?",
+            [now - window()],
+        )
+        .map_err(|e| e.to_string())?;
         tx.execute(
             "DELETE FROM annual_rating_exclusions WHERE at<?",
-            [now - WINDOW],
+            [now - window()],
         )
         .map_err(|e| e.to_string())?;
         tx.execute(
             "DELETE FROM annual_rating_days WHERE day<?",
-            [day(now - WINDOW)],
+            [day(now - window())],
         )
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())
@@ -104,7 +107,7 @@ impl Store {
         entries: &[Duel],
     ) -> Result<(), String> {
         if entries.iter().any(|e| day(e.at) != stamp) {
-            return Err("Дата годового исхода отличается от даты архива".into());
+            return Err("Дата исхода SOLO отличается от даты архива".into());
         }
         let tx = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM annual_rating_duels WHERE day=?", [stamp])
@@ -117,14 +120,28 @@ impl Store {
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())
     }
-    pub fn annual_duels(&self, character: i64, now: i64) -> Result<Vec<Duel>, String> {
-        let mut sql="SELECT d.id,d.at,d.winner,d.loser,d.winner_hull,d.loser_hull FROM main.annual_rating_duels d WHERE (d.winner=?1 OR d.loser=?1) AND d.at>=?2 AND d.at<=?3 AND NOT EXISTS(SELECT 1 FROM main.annual_rating_exclusions e WHERE e.id=d.id)".to_string();
+    fn annual_rows(
+        &self,
+        character: Option<i64>,
+        first: i64,
+        last: i64,
+    ) -> Result<Vec<Duel>, String> {
+        let mut sql="SELECT d.id,d.at,d.winner,d.loser,d.winner_hull,d.loser_hull FROM main.annual_rating_duels d WHERE (?1 IS NULL OR d.winner=?1 OR d.loser=?1) AND d.at>=?2 AND d.at<=?3 AND NOT EXISTS(SELECT 1 FROM main.annual_rating_exclusions e WHERE e.id=d.id)".to_string();
         if bundled(&self.db) {
-            sql += " UNION ALL SELECT d.id,d.at,d.winner,d.loser,d.winner_hull,d.loser_hull FROM bundled.annual_rating_duels d WHERE (d.winner=?1 OR d.loser=?1) AND d.at>=?2 AND d.at<=?3 AND NOT EXISTS(SELECT 1 FROM main.annual_rating_days c WHERE c.day=d.day AND c.policy='pilot-evidence-v3') AND NOT EXISTS(SELECT 1 FROM main.annual_rating_duels m WHERE m.id=d.id) AND NOT EXISTS(SELECT 1 FROM main.annual_rating_exclusions e WHERE e.id=d.id)";
+            sql += " UNION ALL SELECT d.id,d.at,d.winner,d.loser,d.winner_hull,d.loser_hull FROM bundled.annual_rating_duels d WHERE (?1 IS NULL OR d.winner=?1 OR d.loser=?1) AND d.at>=?2 AND d.at<=?3 AND NOT EXISTS(SELECT 1 FROM main.annual_rating_days c WHERE c.day=d.day AND c.policy='pilot-evidence-v3') AND NOT EXISTS(SELECT 1 FROM main.annual_rating_duels m WHERE m.id=d.id) AND NOT EXISTS(SELECT 1 FROM main.annual_rating_exclusions e WHERE e.id=d.id)";
         }
+        sql = sql.replace(
+            "(?1 IS NULL OR d.winner=?1 OR d.loser=?1)",
+            if character.is_some() {
+                "(d.winner=?1 OR d.loser=?1)"
+            } else {
+                "1=1"
+            },
+        );
+        sql += " ORDER BY 2,1";
         let mut statement = self.db.prepare(&sql).map_err(|e| e.to_string())?;
         statement
-            .query_map(params![character, now - WINDOW, now], |r| {
+            .query_map(params![character, first, last], |r| {
                 Ok(Duel {
                     id: r.get(0)?,
                     at: r.get(1)?,
@@ -138,10 +155,16 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
     }
+    pub fn annual_duels(&self, character: i64, now: i64) -> Result<Vec<Duel>, String> {
+        self.annual_rows(Some(character), now - window(), now)
+    }
+    pub fn all_annual_duels(&self, first: i64, last: i64) -> Result<Vec<Duel>, String> {
+        self.annual_rows(None, first, last)
+    }
     pub fn annual_gap(&self, now: i64) -> Result<i64, String> {
         let now =
-            chrono::DateTime::from_timestamp(now, 0).ok_or("Некорректное время годовой истории")?;
-        let first = (now - TimeDelta::days(365)).date_naive();
+            chrono::DateTime::from_timestamp(now, 0).ok_or("Некорректное время истории SOLO")?;
+        let first = (now - TimeDelta::days(window_days())).date_naive();
         let end = now.date_naive();
         let mut sql="SELECT day FROM main.annual_rating_days WHERE day>=?1 AND day<=?2 AND policy='pilot-evidence-v3'".to_string();
         if bundled(&self.db) {
@@ -274,7 +297,7 @@ mod tests {
         let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 30).unwrap();
         let now = date.and_hms_opt(12, 0, 0).unwrap().and_utc().timestamp();
         let tx = store.db.unchecked_transaction().unwrap();
-        for delta in 1..=365 {
+        for delta in 1..=window_days() {
             tx.execute(
                 "INSERT INTO annual_rating_days VALUES(?,0,?)",
                 params![
@@ -291,7 +314,7 @@ mod tests {
         );
         let stale = Duel {
             id: 1,
-            at: now - WINDOW - 1,
+            at: now - window() - 1,
             winner: 100,
             loser: 200,
             winner_hull: 587,

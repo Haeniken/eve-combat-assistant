@@ -398,22 +398,6 @@ fn profile_base_preference(profile: &Profile, enemy: &Value, catalog: &Catalog) 
     base_hole_preference(&damage, &total, &base)
 }
 
-pub fn resistance_note(values: &[f64; 4]) -> String {
-    let low = values.iter().copied().fold(f64::INFINITY, f64::min);
-    let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    if high - low < 0.01 {
-        return "РАВНОМЕРНО".into();
-    }
-    format!(
-        "СЛАБЕЕ {}",
-        (0..4)
-            .filter(|i| (values[*i] - low).abs() < 0.01)
-            .map(|i| DAMAGE[i].0)
-            .collect::<Vec<_>>()
-            .join(" / ")
-    )
-}
-
 /// Damage before target resists/application, for the chosen historical example.
 pub fn incoming_summary(result: &Value, original_fit: &Value, catalog: &Catalog) -> Value {
     let profile = Profile::new(result);

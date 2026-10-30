@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refit a validated pairwise model on 365 days and export its compact snapshot."""
+"""Refit a validated pairwise model on a verified period and export its compact snapshot."""
 import argparse
 from dataclasses import asdict
 import datetime as dt
@@ -21,17 +21,23 @@ def main():
     parser.add_argument('--end', required=True)
     parser.add_argument('--model', required=True)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--start', help='First complete UTC day; defaults to a 365-day window')
+    parser.add_argument('--minimum-battles', type=int, default=20)
+    parser.add_argument('--minimum-opponents', type=int, default=5)
     args = parser.parse_args()
     specification = next((s for s in SPECIFICATIONS if s.name == args.model), None)
     if specification is None or not specification.player_effects:
         parser.error('Only validated pairwise models can be exported')
     end = dt.date.fromisoformat(args.end)
-    start = end-dt.timedelta(days=364)
+    start = dt.date.fromisoformat(args.start) if args.start else end-dt.timedelta(days=364)
+    window_days = (end-start).days+1
+    if window_days < 1 or args.minimum_battles < 1 or args.minimum_opponents < 1:
+        parser.error('Invalid period or minimum evidence')
     rows = load_window(args.directory/'history.sqlite3', start.isoformat(), end.isoformat())
     model = PairwiseModel(specification).fit(rows)
     if not model.result['success']:
         raise ValueError(f'Model did not converge: {model.result}')
-    eligible = established_players(rows)
+    eligible = established_players(rows, args.minimum_battles, args.minimum_opponents)
     p = len(model.players)
     h = len(model.hulls) if specification.hulls else 0
     strengths = np.round(model.parameters[:p], 8)
@@ -60,13 +66,13 @@ def main():
                               (start.strftime('%Y%m%d'),end.strftime('%Y%m%d'))).fetchall()
     source.close()
     digest = hashlib.sha256(json.dumps(coverage,separators=(',',':')).encode()).hexdigest()
-    configuration = hashlib.sha256(json.dumps({'specification':asdict(specification),'excluded_hulls':excluded},sort_keys=True).encode()).hexdigest()[:8]
+    configuration = hashlib.sha256(json.dumps({'specification':asdict(specification),'excluded_hulls':excluded,'window_days':window_days,'minimum_battles':args.minimum_battles,'minimum_opponents':args.minimum_opponents},sort_keys=True).encode()).hexdigest()[:8]
     fitted = hashlib.sha256(np.round(model.parameters,8).tobytes()).hexdigest()[:8]
     document = {
         'schema': 1, 'version': f'annual-pairwise-v1-{end:%Y%m%d}-{digest[:8]}-{configuration}-{fitted}',
         'policy': 'pilot-evidence-v3', 'period_start': start.isoformat(), 'period_end': end.isoformat(),
         'anchor': int(rows['at'].max()), 'specification': asdict(specification),
-        'minimum_battles': 20, 'minimum_opponents': 5,
+        'window_days': window_days, 'minimum_battles': args.minimum_battles, 'minimum_opponents': args.minimum_opponents,
         'repeat_pair_day_cap': 3, 'minimum_player_damage_fraction': .9,
         'calibration_players': len(cohort_strengths), 'calibration_knots': knots,
         'players': [[int(identity), float(mu), int(w), int(l), int(o), int(t)]

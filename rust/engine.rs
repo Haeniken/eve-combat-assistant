@@ -695,10 +695,5 @@ mod resistance_regressions {
                 .iter()
                 .any(|s| s["assumed_charge"] == true)
         );
-        assert_eq!(crate::tactics::resistance_note(&[79.312; 4]), "РАВНОМЕРНО");
-        assert_eq!(
-            crate::tactics::resistance_note(&[20., 40., 50., 60.]),
-            "СЛАБЕЕ EM"
-        );
     }
 }

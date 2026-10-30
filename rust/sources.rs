@@ -19,6 +19,8 @@ use std::{
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct UpdateProgress {
     pub total_days: usize,
+    pub model_iteration: Option<usize>,
+    pub solo_history: bool,
     pub completed_days: usize,
     pub current_day: Option<String>,
     pub phase: String,
@@ -29,6 +31,11 @@ pub struct UpdateProgress {
 }
 impl UpdateProgress {
     pub fn fraction(&self) -> Option<f32> {
+        if self.model_iteration.is_some() {
+            return self
+                .finished
+                .then_some(if self.error.is_none() { 1. } else { 0. });
+        }
         (self.total_days > 0)
             .then(|| (self.completed_days as f32 / self.total_days as f32).clamp(0., 1.))
     }
@@ -37,13 +44,28 @@ impl UpdateProgress {
         if self.total_days > 0 {
             text += &format!(" · {} / {} дней", self.completed_days, self.total_days);
         }
+        if let Some(iteration) = self.model_iteration
+            && !self.finished
+        {
+            text += &format!(" · шаг {iteration}");
+        }
         if let Some(day) = &self.current_day {
             text += &format!(" · {day}");
         }
         if self.downloaded_bytes > 0 && !self.finished {
             text += &format!(" · {:.1} МиБ", self.downloaded_bytes as f64 / 1048576.);
         }
-        text += &format!(" · добавлено {}", self.inserted);
+        if self.model_iteration.is_none() {
+            text += &format!(
+                " · {} {}",
+                if self.solo_history {
+                    "обработано исходов"
+                } else {
+                    "добавлено"
+                },
+                self.inserted
+            );
+        }
         text
     }
 }
@@ -81,7 +103,7 @@ fn annual_routes(base: &str, character: i64, since: i64, now: i64) -> Result<Vec
         )]);
     }
     let date = chrono::DateTime::from_timestamp(
-        (since - 604800).max(now - crate::annual_rating::WINDOW),
+        (since - 604800).max(now - crate::annual_rating::window()),
         0,
     )
     .ok_or("Некорректное начало истории")?
@@ -125,7 +147,7 @@ impl Sources {
                 &end.format("%Y%m%d").to_string(),
             )?;
         }
-        let result = self.archive_update(start, end, settings.force_refresh, progress);
+        let result = self.archive_update(start, end, settings.force_refresh, false, progress);
         self.record(
             "statistics_update_end",
             json!({"inserted":result.as_ref().ok(),"error":result.as_ref().err()}),
@@ -134,6 +156,52 @@ impl Sources {
             self.store
                 .set_meta("archive_refresh_pending", &Value::Null)?;
         }
+        result
+    }
+    pub fn refresh_solo_model(
+        &mut self,
+        directory: &std::path::Path,
+        progress: &dyn Fn(String),
+    ) -> Result<usize, String> {
+        let end = Utc::now().date_naive() - TimeDelta::days(1);
+        let start = end - TimeDelta::days(crate::annual_rating::window_days() - 1);
+        self.record("solo_model_update_start", json!({"start":start,"end":end}));
+        self.archive_update(start, end, false, true, progress)?;
+        let mut day = start;
+        while day <= end {
+            if self
+                .store
+                .annual_day_covered(&day.format("%Y%m%d").to_string())
+                .is_none()
+            {
+                return Err(format!(
+                    "Нет полного дневного архива SOLO за {}. Повторите обновление позже",
+                    day.format("%d.%m.%Y")
+                ));
+            }
+            day += TimeDelta::days(1);
+        }
+        self.update_progress = UpdateProgress {
+            phase: "Чтение истории SOLO".into(),
+            solo_history: true,
+            ..Default::default()
+        };
+        self.publish_update();
+        self.check()?;
+        let rows = self.store.all_annual_duels(
+            start.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp(),
+            end.and_hms_opt(23, 59, 59).unwrap().and_utc().timestamp(),
+        )?;
+        let count = rows.len();
+        let cancel = self.cancel.clone();
+        let result =
+            crate::annual_rating::rebuild(rows, directory, end, &cancel, false, &mut |iteration| {
+                self.record("solo_model_fit_step", json!({"iteration":iteration}));
+                self.update_progress.phase = "Пересчёт SOLO-рейтинга".into();
+                self.update_progress.model_iteration = Some(iteration);
+                self.publish_update();
+            });
+        self.record("solo_model_update_end",json!({"outcomes":count,"model":crate::annual_rating::version(),"rated_players":result.as_ref().ok(),"error":result.as_ref().err()}));
         result
     }
     pub fn new(store: Store, cancel: Arc<AtomicBool>, catalog: crate::engine::Catalog) -> Self {
@@ -175,6 +243,8 @@ impl Sources {
         self.update_progress.finished = true;
         self.update_progress.phase = if error.is_some() {
             "Обновление не завершено"
+        } else if self.update_progress.model_iteration.is_some() {
+            "SOLO-рейтинг обновлён"
         } else {
             "База актуализирована"
         }
@@ -661,7 +731,10 @@ impl Sources {
         self.limit_interactive(Duration::from_secs(8));
         let mut evidence = crate::annual_rating::Evidence::new(character, now);
         evidence.extend_duels(&self.store.annual_duels(character, now)?);
-        let checked_key = format!("annual_personal_checked:v3:{character}");
+        let checked_key = format!(
+            "annual_personal_checked:v4:{}:{character}",
+            crate::annual_rating::version()
+        );
         let checked = self
             .store
             .meta(&checked_key)
@@ -672,20 +745,20 @@ impl Sources {
             .store
             .annual_gap(now)?
             .max(checked)
-            .max(now - crate::annual_rating::WINDOW);
+            .max(now - crate::annual_rating::window());
         let routes = annual_routes(base, character, since, now)?;
         let mut requests = 0;
         for route in routes {
             let mut complete = false;
             for page in 1..=100 {
                 if stop() {
-                    return Err("Дозагрузка годовой оценки отложена для нового запроса".into());
+                    return Err("Дозагрузка SOLO-оценки отложена для нового запроса".into());
                 }
                 let url = format!("{route}/page/{page}/");
                 if self.store.cached(&url).is_none() {
                     if requests >= 6 {
                         return Err(
-                            "Дозагрузка годовой оценки продолжится из кеша при следующей проверке"
+                            "Дозагрузка SOLO-оценки продолжится из кеша при следующей проверке"
                                 .into(),
                         );
                     }
@@ -923,13 +996,14 @@ impl Sources {
         end: NaiveDate,
         progress: &dyn Fn(String),
     ) -> Result<usize, String> {
-        self.archive_update(start, end, false, progress)
+        self.archive_update(start, end, false, false, progress)
     }
     fn archive_update(
         &mut self,
         start: NaiveDate,
         end: NaiveDate,
         force: bool,
+        solo_only: bool,
         progress: &dyn Fn(String),
     ) -> Result<usize, String> {
         if start > end {
@@ -937,6 +1011,7 @@ impl Sources {
         }
         self.update_progress = UpdateProgress {
             total_days: (end - start).num_days() as usize + 1,
+            solo_history: solo_only,
             phase: "Проверка архива".into(),
             ..Default::default()
         };
@@ -956,18 +1031,26 @@ impl Sources {
             let expected = totals.get(&stamp).and_then(Value::as_u64).unwrap_or(0) as usize;
             let covered = self.store.archive_count(&stamp);
             let matchup_covered = crate::matchups::covered(&self.store.db, &stamp);
-            let needs_fits = force || !self.store.archive_matches(&stamp, expected);
-            let needs_matchups = matchup_covered != Some(expected) || force;
+            let needs_fits = !solo_only && (force || !self.store.archive_matches(&stamp, expected));
+            let needs_matchups = !solo_only && (matchup_covered != Some(expected) || force);
             let annual_covered = self.store.annual_day_covered(&stamp);
             let needs_annual = annual_covered != Some(expected) || force;
             self.record("archive_day",json!({"day":stamp,"expected":expected,"local_or_bundled":covered,"matchup_covered":matchup_covered,"annual_covered":annual_covered,"download":expected>0 && (needs_fits || needs_matchups || needs_annual)}));
+            if solo_only && expected == 0 && totals.contains_key(&stamp) {
+                self.store.replace_annual_day(&stamp, 0, &[])?;
+            }
             if expected == 0 || !needs_fits && !needs_matchups && !needs_annual {
                 self.finish_day();
                 date -= TimeDelta::days(1);
                 continue;
             }
             progress(format!(
-                "База всех кораблей · {} · добавлено {count}",
+                "{} · {} · записей {count}",
+                if solo_only {
+                    "История SOLO"
+                } else {
+                    "База всех кораблей"
+                },
                 date.format("%d.%m.%Y")
             ));
             self.update_progress.phase = "Загрузка данных".into();
@@ -1048,7 +1131,11 @@ impl Sources {
                 self.record("archive_index_verification",json!({"day":stamp,"published_total":expected,"raw_records":source_count,"available_records":rows.len(),"verified":verified,"error":index.as_ref().err()}));
             }
             let source_count = rows.len();
-            let matchup_counts = crate::matchups::aggregate(&rows, &self.catalog);
+            let matchup_counts = if solo_only {
+                crate::matchups::Counts::new()
+            } else {
+                crate::matchups::aggregate(&rows, &self.catalog)
+            };
             let mut mails = Vec::new();
             if needs_fits {
                 for row in &rows {
@@ -1066,13 +1153,24 @@ impl Sources {
             } else {
                 0
             };
+            let mut solo_count = 0;
             if verified {
-                crate::matchups::replace_day(&self.store.db, &stamp, expected, &matchup_counts)?;
+                if !solo_only {
+                    crate::matchups::replace_day(
+                        &self.store.db,
+                        &stamp,
+                        expected,
+                        &matchup_counts,
+                    )?;
+                }
                 let annual = crate::annual_rating::collect(&rows, &self.catalog);
+                solo_count = annual.len();
                 self.store.replace_annual_day(&stamp, expected, &annual)?;
-                self.store.prune_annual(Utc::now().timestamp())?;
+                if !solo_only {
+                    self.store.prune_annual(Utc::now().timestamp())?;
+                }
             }
-            count += inserted;
+            count += if solo_only { solo_count } else { inserted };
             self.update_progress.inserted = count;
             if needs_fits {
                 self.store.set_meta(
@@ -1087,10 +1185,17 @@ impl Sources {
             self.finish_day();
             date -= TimeDelta::days(1);
         }
-        self.update_progress.phase = "Пересчёт винрейтов и цветов".into();
+        self.update_progress.phase = if solo_only {
+            "Проверка полноты истории SOLO"
+        } else {
+            "Пересчёт винрейтов и цветов"
+        }
+        .into();
         self.publish_update();
-        let calibration = crate::matchups::recalibrate(&self.store.db, end)?;
-        self.record("hull_matchup_recalibrated", json!(calibration));
+        if !solo_only {
+            let calibration = crate::matchups::recalibrate(&self.store.db, end)?;
+            self.record("hull_matchup_recalibrated", json!(calibration));
+        }
         self.record(
             "archive_complete",
             json!({"inserted":count,"failed_days":failed}),
@@ -1796,7 +1901,7 @@ mod tests {
             .unwrap()
             .date_naive();
         let tx = store.db.unchecked_transaction().unwrap();
-        for offset in 1..=365 {
+        for offset in 1..=crate::annual_rating::window_days() {
             tx.execute(
                 "INSERT INTO annual_rating_days VALUES(?,0,?)",
                 rusqlite::params![
@@ -1817,6 +1922,79 @@ mod tests {
             "attackers":[{"character_id":123,"ship_type_id":593,"corporation_id":1,"damage_done":100}]})).collect()
     }
     #[test]
+    fn solo_history_backfill_does_not_store_old_full_fits() {
+        let directory = temp();
+        let date = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+        let now = date.and_hms_opt(12, 0, 0).unwrap().and_utc().timestamp();
+        let catalog = crate::engine::Catalog::load().unwrap();
+        let rows = annual_test_rows(&catalog, now, 1);
+        let (url, server) = mock(vec![(200, json!({"20261001":1})), (200, json!(rows))]);
+        let store = Store::open_with_seed(&directory, None).unwrap();
+        let mut source = Sources::new(store, Arc::new(AtomicBool::new(false)), catalog);
+        source.archive_base = url;
+        assert_eq!(
+            source
+                .archive_update(date, date, false, true, &|_| {})
+                .unwrap(),
+            1
+        );
+        assert_eq!(source.store.annual_day_covered("20261001"), Some(1));
+        assert_eq!(
+            source
+                .store
+                .all_annual_duels(now - 86400, now)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            source
+                .store
+                .db
+                .query_row("SELECT count(*) FROM killmails", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(crate::matchups::covered(&source.store.db, "20261001").is_none());
+        assert_eq!(server.join().unwrap().len(), 2);
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn old_personal_checkpoint_does_not_certify_an_expanded_history_window() {
+        let directory = temp();
+        let now = Utc::now().timestamp();
+        let store = Store::open_with_seed(&directory, None).unwrap();
+        store
+            .set_meta("annual_personal_checked:v3:123", &json!(now))
+            .unwrap();
+        let (url, server) = mock(vec![(200, json!([]))]);
+        let mut source = Sources::new(
+            store,
+            Arc::new(AtomicBool::new(false)),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        let mut rating = crate::pilot::Rating::unavailable(123);
+        let mut calls = 0;
+        assert!(
+            source
+                .refresh_annual_rating_at(&mut rating, &url, now, &mut || {
+                    calls += 1;
+                    calls > 1
+                })
+                .is_err()
+        );
+        let earliest =
+            chrono::DateTime::from_timestamp(now - crate::annual_rating::window(), 0).unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].contains(&format!("/year/{}/", earliest.year())));
+        assert!(rating.annual.is_none());
+        assert!(source.store.meta("annual_rating:v1:123").is_none());
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
     fn annual_history_uses_week_delta_and_never_an_unsupported_year_seconds_filter() {
         let now = chrono::NaiveDate::from_ymd_opt(2026, 10, 30)
             .unwrap()
@@ -1832,11 +2010,11 @@ mod tests {
         let long = annual_routes(
             "http://fixture",
             123,
-            now - crate::annual_rating::WINDOW,
+            now - crate::annual_rating::window(),
             now,
         )
         .unwrap();
-        assert_eq!(long.len(), 13);
+        assert_eq!(long.len(), 61);
         assert!(
             long.iter()
                 .all(|s| s.contains("/year/") && !s.contains("pastSeconds"))
@@ -1923,7 +2101,10 @@ mod tests {
         assert!(
             source
                 .store
-                .meta("annual_personal_checked:v3:123")
+                .meta(&format!(
+                    "annual_personal_checked:v4:{}:123",
+                    crate::annual_rating::version()
+                ))
                 .is_none()
         );
         assert_eq!(source.store.annual_duels(123, now).unwrap().len(), 200);

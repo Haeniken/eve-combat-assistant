@@ -14,14 +14,17 @@ def main():
     parser.add_argument('--directory',required=True,type=Path)
     parser.add_argument('--end',required=True)
     parser.add_argument('--output',required=True,type=Path)
-    args=parser.parse_args();end=dt.date.fromisoformat(args.end);start=end-dt.timedelta(days=364)
+    parser.add_argument('--start',help='First complete UTC day; defaults to a 365-day window')
+    args=parser.parse_args();end=dt.date.fromisoformat(args.end);start=dt.date.fromisoformat(args.start) if args.start else end-dt.timedelta(days=364)
+    window_days=(end-start).days+1
+    if window_days<1:parser.error('Invalid period')
     catalog=json.loads((args.directory/'annual-rating-catalog.json').read_text())
     excluded=','.join(str(int(k)) for k,v in catalog['ships'].items() if v['group'] in [547,659])
     if args.output.exists():raise ValueError('Output already exists; choose a new export path')
     db=sqlite3.connect(args.output)
     db.execute('ATTACH DATABASE ? AS research',(str(args.directory/'history.sqlite3'),))
     bounds=(start.strftime('%Y%m%d'),end.strftime('%Y%m%d'))
-    if db.execute("SELECT count(*) FROM research.days WHERE day BETWEEN ? AND ? AND policy='pilot-evidence-v3'",bounds).fetchone()[0]!=365:
+    if db.execute("SELECT count(*) FROM research.days WHERE day BETWEEN ? AND ? AND policy='pilot-evidence-v3'",bounds).fetchone()[0]!=window_days:
         raise ValueError('Incomplete annual source coverage')
     db.executescript('''CREATE TABLE annual_rating_duels(id INTEGER PRIMARY KEY,day TEXT NOT NULL,at INTEGER NOT NULL,
         winner INTEGER NOT NULL,loser INTEGER NOT NULL,winner_hull INTEGER NOT NULL,loser_hull INTEGER NOT NULL);
@@ -40,7 +43,7 @@ def main():
     db.close()
     with args.output.open('rb') as source,gzip.open(str(args.output)+'.gz','wb',compresslevel=6) as target:
         shutil.copyfileobj(source,target,1024*1024)
-    print(json.dumps({'period_start':str(start),'period_end':str(end),'days':365,'outcomes':count,
+    print(json.dumps({'period_start':str(start),'period_end':str(end),'days':window_days,'outcomes':count,
                       'database_bytes':args.output.stat().st_size,'compressed_bytes':Path(str(args.output)+'.gz').stat().st_size}),flush=True)
 
 

@@ -22,6 +22,7 @@ pub enum Action {
     SelectRegion,
     SelectTargetsRegion,
     Sync,
+    SyncSolo,
     Login,
     RefreshCharacter,
     Logout,
@@ -824,8 +825,10 @@ fn data(
     if let Some(p) = progress {
         ui.add(
             egui::ProgressBar::new(p.fraction().unwrap_or(0.))
+                .animate(p.fraction().is_none())
                 .text(
                     p.fraction()
+                        .filter(|_| p.total_days > 0)
                         .map(|f| {
                             format!(
                                 "{} / {} дней · {:.0}%",
@@ -852,6 +855,22 @@ fn data(
         }
     } else if ui.button("Обновить базу всех кораблей").clicked() {
         action = Some(Action::Sync);
+    }
+    if !syncing {
+        let confirmation = egui::Id::unique("solo-model-confirmation");
+        if ui.button("Обновить SOLO-рейтинг").clicked() {
+            ui.memory_mut(|m| m.data.insert_temp(confirmation, true));
+        }
+        if ui.memory(|m| m.data.get_temp::<bool>(confirmation).unwrap_or(false)) {
+            egui::Frame::new().stroke(egui::Stroke::new(1.,AMBER)).inner_margin(10.).show(ui,|ui|{
+                ui.colored_label(AMBER,"Длительная операция");
+                ui.label("Загрузится недостающая история за пять лет и пересчитаются рейтинги всех пилотов. Это может занять несколько часов и потребовать значительного объёма загрузки. Операцию можно остановить: уже загруженные дни сохранятся для продолжения.");
+                ui.horizontal(|ui|{
+                    if ui.button("Начать обновление SOLO").clicked(){action=Some(Action::SyncSolo);ui.memory_mut(|m|m.data.insert_temp(confirmation,false));}
+                    if ui.button("Отмена").clicked(){ui.memory_mut(|m|m.data.insert_temp(confirmation,false));}
+                });
+            });
+        }
     }
     section(ui, "ВЫБОРКА СБОРОК");
     ui.columns(if ui.available_width() < 380. { 1 } else { 2 }, |cols| {

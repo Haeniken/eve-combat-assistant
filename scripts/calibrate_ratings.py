@@ -21,7 +21,7 @@ COLORS = [
 
 
 def pilot_score(strength, knots):
-    index=bisect.bisect_left([k[0] for k in knots],strength)
+    index=bisect.bisect_left(knots,strength,key=lambda k:k[0])
     if index==0:
         percentile=0
     elif index==len(knots):
@@ -74,8 +74,8 @@ def main():
             'boundaries':elo_boundaries,'reference_profiles':len(scores),
             'reference_model':reference['version'],'reference_percentiles':percentiles,'unrounded_boundaries':elo_quantiles,
             'tier_reference_counts':count(scores,elo_boundaries),
-            'scope':'rolling_365_days','period_start':reference['period_start'],'period_end':reference['period_end'],'reference_participants':len(reference['players']),'qualifying_outcomes':reference['evidence']['filtered_outcomes'],'score_min':1000,'score_max':8999,'reserved':[9000,9998],
-            'method':'Empirical percentiles of annual regularized player strength, with joint hull and matchup effects. Score quantiles at 12.5,25,37.5,62.5,75,87.5 percent, rounded upwards to a hundred; the central quarter is green.',
+            'scope':f"rolling_{reference.get('window_days',365)}_days",'period_start':reference['period_start'],'period_end':reference['period_end'],'reference_participants':len(reference['players']),'qualifying_outcomes':reference['evidence']['filtered_outcomes'],'score_min':1000,'score_max':8999,'reserved':[9000,9998],
+            'method':'Empirical percentiles of regularized player strength, with joint hull and matchup effects. Score quantiles at 12.5,25,37.5,62.5,75,87.5 percent, rounded upwards to a hundred; the central quarter is green.',
         },
     }
     (root/'resources/rating-tiers.json').write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')

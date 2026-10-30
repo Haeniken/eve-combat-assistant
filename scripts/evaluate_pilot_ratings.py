@@ -23,13 +23,13 @@ def pair_codes(rows):
             | np.maximum(rows['winner'], rows['loser']).astype(np.uint64))
 
 
-def established_players(rows):
+def established_players(rows, minimum_battles=20, minimum_opponents=5):
     players, games = np.unique(np.concatenate((rows['winner'], rows['loser'])), return_counts=True)
     pairs = np.unique(pair_codes(rows))
     neighbors = np.concatenate(((pairs >> np.uint64(32)).astype(np.int64),
                                 (pairs & np.uint64(2**32-1)).astype(np.int64)))
     counts = np.bincount(np.searchsorted(players, neighbors), minlength=len(players))
-    return players[(games >= 20) & (counts >= 5)]
+    return players[(games >= minimum_battles) & (counts >= minimum_opponents)]
 
 
 def calibration(rows, prediction):

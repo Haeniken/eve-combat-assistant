@@ -54,6 +54,10 @@ pub struct Args {
     seed_database: Option<PathBuf>,
     #[arg(long, hide = true)]
     annual_rating_diagnostic: Option<i64>,
+    #[arg(long, hide = true)]
+    rebuild_pilot_model: bool,
+    #[arg(long, hide = true, requires = "rebuild_pilot_model")]
+    cold_pilot_model: bool,
     #[arg(long)]
     analyze: bool,
     #[arg(long)]
@@ -92,6 +96,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     std::fs::create_dir_all(&directory)?;
+    if let Err(error) = annual_rating::load_local(&directory) {
+        eprintln!("SOLO: {error}");
+    }
+    if args.rebuild_pilot_model {
+        let store = store::Store::open_with_seed(&directory, args.seed_database.as_deref())?;
+        let end = args
+            .archive_to
+            .as_deref()
+            .map(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d"))
+            .transpose()?
+            .unwrap_or_else(|| chrono::Utc::now().date_naive() - chrono::TimeDelta::days(1));
+        let start = end - chrono::TimeDelta::days(annual_rating::window_days() - 1);
+        let mut day = start;
+        while day <= end {
+            if store
+                .annual_day_covered(&day.format("%Y%m%d").to_string())
+                .is_none()
+            {
+                return Err(format!("Нет полного дня {day}").into());
+            }
+            day += chrono::TimeDelta::days(1);
+        }
+        let rows = store.all_annual_duels(
+            start.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp(),
+            end.and_hms_opt(23, 59, 59).unwrap().and_utc().timestamp(),
+        )?;
+        let began = std::time::Instant::now();
+        let count = annual_rating::rebuild(
+            rows,
+            &directory,
+            end,
+            &std::sync::atomic::AtomicBool::new(false),
+            args.cold_pilot_model,
+            &mut |iteration| eprintln!("SOLO iteration {iteration}"),
+        )?;
+        let value = serde_json::json!({"rated_players":count,"model":annual_rating::version(),"elapsed_ms":began.elapsed().as_millis(),"own":annual_rating::prepared(2112101671)});
+        std::fs::write(
+            directory.join("pilot-model-rebuild.json"),
+            serde_json::to_vec_pretty(&value)?,
+        )?;
+        println!("{value}");
+        return Ok(());
+    }
     if let Some(character) = args.annual_rating_diagnostic {
         let prepared = annual_rating::prepared(character);
         let at = prepared

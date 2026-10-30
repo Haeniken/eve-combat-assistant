@@ -100,7 +100,8 @@ impl State {
             Event::Profile(result) => {
                 self.profile_pending = false;
                 match result {
-                    Ok(profile) => {
+                    Ok(mut profile) => {
+                        crate::pilot::align_current_model(&mut profile.rating);
                         self.input = profile.name.clone();
                         self.profile = Some(profile);
                     }
@@ -117,7 +118,8 @@ impl State {
                     Err(error) => self.loss_error = Some(error),
                 }
             }
-            Event::Activity(rating) => {
+            Event::Activity(mut rating) => {
+                crate::pilot::align_current_model(&mut rating);
                 if let Some(profile) = &mut self.profile
                     && profile.rating.character_id == rating.character_id
                 {

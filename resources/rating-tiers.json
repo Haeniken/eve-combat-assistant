@@ -111,8 +111,8 @@
       7000,
       8000
     ],
-    "reference_profiles": 9164,
-    "reference_model": "annual-pairwise-v1-20261029-c48ba194-fbe458c0-2af5b3b8",
+    "reference_profiles": 140071,
+    "reference_model": "annual-pairwise-v1-20261029-13b5f47a-dc64d334-5ca00eaf",
     "reference_percentiles": [
       0.125,
       0.25,
@@ -122,33 +122,33 @@
       0.875
     ],
     "unrounded_boundaries": [
-      1999.375,
+      1999.0,
       2999.0,
-      3999.125,
-      5998.875,
+      3999.0,
+      5999.0,
       6999.0,
-      7998.625
+      7999.0
     ],
     "tier_reference_counts": [
-      1146,
-      1146,
-      1145,
-      2291,
-      1146,
-      1145,
-      1145
+      17511,
+      17511,
+      17511,
+      35022,
+      17511,
+      17511,
+      17494
     ],
-    "scope": "rolling_365_days",
-    "period_start": "2025-10-30",
+    "scope": "rolling_1826_days",
+    "period_start": "2021-10-30",
     "period_end": "2026-10-29",
-    "reference_participants": 157673,
-    "qualifying_outcomes": 526673,
+    "reference_participants": 501998,
+    "qualifying_outcomes": 2628116,
     "score_min": 1000,
     "score_max": 8999,
     "reserved": [
       9000,
       9998
     ],
-    "method": "Empirical percentiles of annual regularized player strength, with joint hull and matchup effects. Score quantiles at 12.5,25,37.5,62.5,75,87.5 percent, rounded upwards to a hundred; the central quarter is green."
+    "method": "Empirical percentiles of regularized player strength, with joint hull and matchup effects. Score quantiles at 12.5,25,37.5,62.5,75,87.5 percent, rounded upwards to a hundred; the central quarter is green."
   }
 }

@@ -242,14 +242,14 @@ impl Rating {
             return "Статистика zKillboard для персонажа пока недоступна".into();
         }
         let mut hint = if self.score.is_some() {
-            "Годовая соло-оценка по результатам против игроков с учётом корпусов.\n"
+            "Соло-оценка за пять лет по результатам против игроков с учётом корпусов.\n"
         } else {
             "Недостаточно соло-данных для оценки.\n"
         }
         .to_string();
         if let Some(annual) = &self.annual {
             hint += &format!(
-                "За 365 дней: {} побед · {} потерь\nРазных соперников: {}\n",
+                "За 5 лет: {} побед · {} потерь\nРазных соперников: {}\n",
                 annual.wins, annual.losses, annual.opponents
             );
         }
@@ -290,6 +290,16 @@ pub fn cached_character(store: &Store, character: i64) -> Option<Rating> {
     }
     (rating.character_id == character).then_some(rating)
 }
+pub fn align_current_model(rating: &mut Rating) {
+    if rating
+        .annual
+        .as_ref()
+        .is_none_or(|e| e.model != crate::annual_rating::version())
+    {
+        rating.annual = crate::annual_rating::prepared(rating.character_id);
+        rating.score = rating.annual.as_ref().and_then(|e| e.score);
+    }
+}
 pub fn apply_annual(store: &Store, rating: &mut Rating) {
     let now = crate::store::timestamp();
     rating.annual = store
@@ -298,7 +308,7 @@ pub fn apply_annual(store: &Store, rating: &mut Rating) {
         .filter(|e| {
             e.character_id == rating.character_id
                 && e.model == crate::annual_rating::version()
-                && (0..crate::annual_rating::WINDOW).contains(&now.saturating_sub(e.checked_at))
+                && (0..(365 * 86400)).contains(&now.saturating_sub(e.checked_at))
         })
         .or_else(|| crate::annual_rating::prepared(rating.character_id));
     rating.score = rating.annual.as_ref().and_then(|e| e.score);

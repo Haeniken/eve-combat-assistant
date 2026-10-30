@@ -9,18 +9,30 @@ use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     io::Read,
-    sync::OnceLock,
+    sync::{Arc, OnceLock, RwLock},
 };
 
-pub const WINDOW: i64 = 365 * 86400;
+pub fn window_days() -> i64 {
+    model().window_days
+}
+pub fn window() -> i64 {
+    window_days() * 86400
+}
+fn default_window_days() -> i64 {
+    365
+}
 type Player = (i64, f64, u64, u64, u32, i64);
 
-#[derive(Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Specification {
     player_penalty: f64,
     half_life_days: f64,
+    hull_penalty: f64,
+    pair_penalty: f64,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Model {
     schema: u32,
     version: String,
@@ -28,6 +40,8 @@ struct Model {
     period_start: String,
     period_end: String,
     anchor: i64,
+    #[serde(default = "default_window_days")]
+    window_days: i64,
     specification: Specification,
     minimum_battles: u64,
     minimum_opponents: u32,
@@ -39,28 +53,131 @@ struct Model {
     combat_items: Vec<i32>,
     #[serde(default)]
     excluded_hulls: Vec<i32>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
-fn model() -> &'static Model {
-    static MODEL: OnceLock<Model> = OnceLock::new();
-    MODEL.get_or_init(|| {
-        let mut bytes = Vec::new();
-        flate2::read::GzDecoder::new(
-            &include_bytes!("../resources/pilot-rating-model.json.gz")[..],
-        )
+#[path = "pilot_model_fit.rs"]
+mod fit;
+static MODEL: OnceLock<RwLock<Arc<Model>>> = OnceLock::new();
+fn validate(m: &Model) -> Result<(), String> {
+    if m.schema != 1
+        || m.policy != "pilot-evidence-v3"
+        || !(1..=3660).contains(&m.window_days)
+        || !m.specification.player_penalty.is_finite()
+        || m.specification.player_penalty <= 0.
+        || !m.specification.hull_penalty.is_finite()
+        || m.specification.hull_penalty <= 0.
+        || !m.specification.pair_penalty.is_finite()
+        || m.specification.pair_penalty <= 0.
+        || m.specification.half_life_days != 0.
+        || m.calibration_knots.len() < 100
+        || m.minimum_battles == 0
+        || m.minimum_opponents == 0
+        || !m.players.windows(2).all(|w| w[0].0 < w[1].0)
+        || !m.hulls.windows(2).all(|w| w[0].0 < w[1].0)
+        || !m
+            .pairs
+            .windows(2)
+            .all(|w| (w[0].0, w[0].1) < (w[1].0, w[1].1))
+        || !m
+            .calibration_knots
+            .windows(2)
+            .all(|w| w[0][0] < w[1][0] && w[0][1] <= w[1][1])
+        || m.players.iter().any(|p| !p.1.is_finite())
+    {
+        return Err("Некорректная модель SOLO".into());
+    }
+    Ok(())
+}
+fn decode(bytes: &[u8]) -> Result<Model, String> {
+    let mut raw = Vec::new();
+    flate2::read::GzDecoder::new(bytes)
         .take(64 * 1024 * 1024)
-        .read_to_end(&mut bytes)
-        .expect("bundled annual rating gzip");
-        let model: Model = serde_json::from_slice(&bytes).expect("bundled annual rating model");
-        assert_eq!(model.schema, 1);
-        assert_eq!(model.policy, "pilot-evidence-v3");
-        assert!(model.specification.player_penalty > 0.);
-        assert!(model.players.windows(2).all(|w| w[0].0 < w[1].0));
-        assert!(model.calibration_knots.len() >= 100);
-        model
+        .read_to_end(&mut raw)
+        .map_err(|e| e.to_string())?;
+    let model: Model = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    validate(&model)?;
+    Ok(model)
+}
+fn state() -> &'static RwLock<Arc<Model>> {
+    MODEL.get_or_init(|| {
+        RwLock::new(Arc::new(
+            decode(include_bytes!("../resources/pilot-rating-model.json.gz"))
+                .expect("bundled SOLO model"),
+        ))
     })
 }
-pub fn version() -> &'static str {
-    &model().version
+fn model() -> Arc<Model> {
+    state().read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+pub fn version() -> String {
+    model().version.clone()
+}
+pub fn load_local(directory: &std::path::Path) -> Result<(), String> {
+    let path = directory.join("pilot-rating-model.json.gz");
+    if !path.exists() {
+        return Ok(());
+    }
+    if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() > 64 * 1024 * 1024 {
+        return Err("Слишком большой файл модели SOLO".into());
+    }
+    let local = decode(&std::fs::read(path).map_err(|e| e.to_string())?)?;
+    if local.anchor >= model().anchor {
+        *state().write().map_err(|e| e.to_string())? = Arc::new(local);
+    }
+    Ok(())
+}
+pub fn rebuild(
+    rows: Vec<Duel>,
+    directory: &std::path::Path,
+    end: chrono::NaiveDate,
+    cancel: &std::sync::atomic::AtomicBool,
+    cold: bool,
+    progress: &mut dyn FnMut(usize),
+) -> Result<usize, String> {
+    use std::io::Write;
+    let template = if cold {
+        let mut m = (*model()).clone();
+        for p in &mut m.players {
+            p.1 = 0.;
+        }
+        for h in &mut m.hulls {
+            h.1 = 0.;
+        }
+        for p in &mut m.pairs {
+            p.2 = 0.;
+        }
+        Arc::new(m)
+    } else {
+        model()
+    };
+    let updated = fit::train(rows, &template, end, cancel, progress)?;
+    validate(&updated)?;
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("Пересчёт SOLO остановлен".into());
+    }
+    let mut zipped = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    serde_json::to_writer(&mut zipped, &updated).map_err(|e| e.to_string())?;
+    let bytes = zipped.finish().map_err(|e| e.to_string())?;
+    let temporary = directory.join("pilot-rating-model.json.gz.new");
+    let mut file = std::fs::File::create(&temporary).map_err(|e| e.to_string())?;
+    file.write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| e.to_string())?;
+    drop(file);
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = std::fs::remove_file(temporary);
+        return Err("Пересчёт SOLO остановлен".into());
+    }
+    std::fs::rename(temporary, directory.join("pilot-rating-model.json.gz"))
+        .map_err(|e| e.to_string())?;
+    let count = updated
+        .players
+        .iter()
+        .filter(|p| p.2 + p.3 >= updated.minimum_battles && p.4 >= updated.minimum_opponents)
+        .count();
+    *state().write().map_err(|e| e.to_string())? = Arc::new(updated);
+    Ok(count)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -232,6 +349,7 @@ pub struct Delta {
 }
 pub struct Evidence {
     character: i64,
+    model: Arc<Model>,
     now: i64,
     seen: HashSet<i64>,
     observations: Vec<Observation>,
@@ -240,6 +358,7 @@ impl Evidence {
     pub fn new(character: i64, now: i64) -> Self {
         Self {
             character,
+            model: model(),
             now,
             seen: HashSet::new(),
             observations: Vec::new(),
@@ -251,7 +370,7 @@ impl Evidence {
     pub fn extend(&mut self, rows: &[Value], catalog: &Catalog) -> Delta {
         let entries: Vec<_> = collect(rows, catalog)
             .into_iter()
-            .filter(|e| e.at >= self.now - WINDOW && e.at <= self.now)
+            .filter(|e| e.at >= self.now - window() && e.at <= self.now)
             .collect();
         let accepted: HashSet<_> = entries.iter().map(|e| e.id).collect();
         let observed: HashMap<_, _> = rows
@@ -262,7 +381,7 @@ impl Evidence {
                     .as_str()
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())?
                     .timestamp();
-                (identity > 0 && at >= self.now - WINDOW && at <= self.now)
+                (identity > 0 && at >= self.now - window() && at <= self.now)
                     .then_some((identity, at))
             })
             .collect();
@@ -279,9 +398,9 @@ impl Evidence {
         }
     }
     pub fn extend_duels(&mut self, entries: &[Duel]) {
-        let m = model();
+        let m = &self.model;
         for row in entries {
-            if row.at < self.now - WINDOW
+            if row.at < self.now - window()
                 || row.at > self.now
                 || !self.seen.insert(row.id)
                 || (row.winner != self.character && row.loser != self.character)
@@ -307,7 +426,7 @@ impl Evidence {
         }
     }
     pub fn finish(self) -> Estimate {
-        let m = model();
+        let m = &self.model;
         let mut repeats = HashMap::new();
         let mut opponents = HashSet::new();
         let mut wins = 0;
@@ -342,9 +461,9 @@ impl Evidence {
             character_id: self.character,
             model: m.version.clone(),
             checked_at: self.now,
-            period_start: (date - TimeDelta::days(365)).to_string(),
+            period_start: (date - TimeDelta::days(window_days())).to_string(),
             period_end: date.to_string(),
-            source: "complete_personal_year".into(),
+            source: "complete_personal_period".into(),
             strength,
             wins,
             losses,
@@ -389,13 +508,17 @@ mod tests {
         assert!(posterior(&few, 4.) < posterior(&few.repeat(10), 4.));
     }
     #[test]
-    fn bundled_model_has_an_annual_window_and_separates_insufficient_evidence() {
+    fn bundled_model_has_the_configured_window_and_separates_insufficient_evidence() {
         let m = model();
         let start = chrono::NaiveDate::parse_from_str(&m.period_start, "%Y-%m-%d").unwrap();
         let end = chrono::NaiveDate::parse_from_str(&m.period_end, "%Y-%m-%d").unwrap();
-        assert_eq!((end - start).num_days(), 364);
+        assert_eq!((end - start).num_days() + 1, m.window_days);
+        assert_eq!((m.minimum_battles, m.minimum_opponents), (5, 3));
         assert!(m.players.len() > 10000);
         assert_eq!(m.score(0., 1, 1, 2), None);
+        assert_eq!(m.score(0., 2, 2, 3), None);
+        assert_eq!(m.score(0., 3, 2, 2), None);
+        assert!(m.score(0., 3, 2, 3).is_some());
         assert_eq!(m.score(0., 100, 0, 1), None);
         assert!(m.score(-100., 100, 100, 10).is_some_and(|r| r == 1000));
         assert!(m.score(100., 100, 100, 10).is_some_and(|r| r == 8999));

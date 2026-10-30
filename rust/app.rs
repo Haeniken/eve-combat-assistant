@@ -308,6 +308,7 @@ impl CombatApp {
                 settings: self.settings.clone(),
                 target,
                 global: false,
+                solo_model: false,
                 own_character: None,
             });
         }
@@ -337,7 +338,7 @@ impl CombatApp {
             self.configure_ocr();
         }
     }
-    fn sync(&mut self, settings: Settings) {
+    fn sync(&mut self, settings: Settings, solo_model: bool) {
         if self.syncing {
             return;
         }
@@ -359,6 +360,7 @@ impl CombatApp {
             settings,
             target,
             global: true,
+            solo_model,
             own_character: None,
         });
     }
@@ -388,6 +390,7 @@ impl CombatApp {
                     angular: 0.,
                 },
                 global: false,
+                solo_model: false,
                 own_character: Some(character),
             });
             if result.is_err() {
@@ -563,7 +566,8 @@ impl CombatApp {
                 Message::OwnPilotRating(character, result) => {
                     if character == self.profile.character_id {
                         match result {
-                            Ok(rating) => {
+                            Ok(mut rating) => {
+                                crate::pilot::align_current_model(&mut rating);
                                 self.own_rating = Some(rating);
                                 self.own_rating_error = None;
                             }
@@ -698,6 +702,7 @@ impl CombatApp {
                         self.rating_pilot = pilot;
                         match result {
                             Ok(mut rating) => {
+                                crate::pilot::align_current_model(&mut rating);
                                 if let Some(previous) = self
                                     .pilot_rating
                                     .as_ref()
@@ -737,12 +742,22 @@ impl CombatApp {
                     }
                 }
                 Message::SyncProgress(progress) => self.sync_progress = Some(progress),
-                Message::SyncDone(result) => {
+                Message::SyncDone(result, solo_model) => {
                     self.syncing = false;
                     self.status = match result {
-                        Ok(count) => format!("Добавлено записей: {count}"),
+                        Ok(count) => {
+                            if solo_model {
+                                format!("SOLO обновлён · {count} пилотов")
+                            } else {
+                                format!("Добавлено записей: {count}")
+                            }
+                        }
                         Err(e) => e,
                     };
+                    if solo_model {
+                        self.own_rating_character = 0;
+                        self.next_own_rating_check = Instant::now();
+                    }
                     self.recalculate();
                 }
                 Message::DesktopCaptured(result) => {
@@ -1261,13 +1276,12 @@ impl CombatApp {
             style::caption(
                 ui,
                 &format!(
-                    "РЕЗИСТЫ / {}  ·  {}",
+                    "РЕЗИСТЫ / {}",
                     match layer {
                         "armor" => "БРОНЯ",
                         "shield" => "ЩИТ",
                         _ => "КОРПУС",
-                    },
-                    tactics::resistance_note(&resistances)
+                    }
                 ),
             );
             let base = &result["base_defense"][layer]["resist"];
@@ -1619,8 +1633,12 @@ impl CombatApp {
                 }
                 self.draft = Some(draft);
             }
+            Some(Action::SyncSolo) => {
+                self.sync(draft.clone(), true);
+                self.draft = Some(draft);
+            }
             Some(Action::Sync) => {
-                self.sync(draft.clone());
+                self.sync(draft.clone(), false);
                 self.draft = Some(draft);
             }
             Some(Action::Save) => {

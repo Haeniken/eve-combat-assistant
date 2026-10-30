@@ -25,13 +25,16 @@ def main():
     db.execute('PRAGMA cache_size=-16384')
     db.execute('ATTACH DATABASE ? AS annual_source',(args.observations.resolve().as_uri()+'?mode=ro',))
     days=db.execute('SELECT count(*),min(day),max(day) FROM annual_source.annual_rating_days WHERE policy=?',(model['policy'],)).fetchone()
-    if days!=(365,model['period_start'].replace('-',''),model['period_end'].replace('-','')):
+    window_days=(dt.date.fromisoformat(model['period_end'])-dt.date.fromisoformat(model['period_start'])).days+1
+    if window_days<1 or model.get('window_days',window_days)!=window_days:
+        raise ValueError('Model window differs from its date range')
+    if days!=(window_days,model['period_start'].replace('-',''),model['period_end'].replace('-','')):
         raise ValueError('Incomplete/mismatched annual source dates')
     count=db.execute('SELECT count(*) FROM annual_source.annual_rating_duels').fetchone()[0]
     if count!=model['evidence']['filtered_outcomes']:
         raise ValueError('Observation count differs from model fitting data')
     info={'model':model['version'],'model_sha256':hashlib.sha256(args.model.read_bytes()).hexdigest(),
-          'days':365,'period_start':model['period_start'],'period_end':model['period_end'],
+          'days':window_days,'period_start':model['period_start'],'period_end':model['period_end'],
           'policy':model['policy'],'outcomes':count,'participants':len(model['players']),
           'rated_players':model['calibration_players'],'source_records':model['evidence']['source_records']}
     built=dt.datetime.now(dt.timezone.utc).isoformat()

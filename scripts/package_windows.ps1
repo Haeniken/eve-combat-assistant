@@ -17,7 +17,7 @@ $manifest = Get-Content $seedManifest -Raw | ConvertFrom-Json
 $upstream = Get-Content (Join-Path $root 'native\upstream.json') -Raw | ConvertFrom-Json
 if ($manifest.schema_version -ne 1 -or $manifest.sde_build -ne $upstream.sde_build -or $manifest.complete_days -lt 90 -or $manifest.prepared_populations -ne $manifest.known_hulls) { throw 'Incomplete or incompatible starter database' }
 if (-not $manifest.hull_matchups -or $manifest.hull_matchups.days -lt 365 -or $manifest.hull_matchups.policy -ne 'hull-solo-v1') { throw 'Prepare and attach the verified annual hull matchup dataset with --matchup-directory before packaging' }
-if (-not $manifest.pilot_rating -or $manifest.pilot_rating.days -ne 365 -or $manifest.pilot_rating.policy -ne 'pilot-evidence-v3') { throw 'Attach compact annual pilot observations with install_pilot_seed.py before packaging' }
+if (-not $manifest.pilot_rating -or $manifest.pilot_rating.days -lt 1825 -or $manifest.pilot_rating.policy -ne 'pilot-evidence-v3') { throw 'Attach compact annual pilot observations with install_pilot_seed.py before packaging' }
 if ((Get-FileHash (Join-Path $root 'resources\pilot-rating-model.json.gz') -Algorithm SHA256).Hash.ToLower() -ne $manifest.pilot_rating.model_sha256) { throw 'Pilot observations and embedded model do not match' }
 if ((Get-FileHash $seedDatabase -Algorithm SHA256).Hash -ne $manifest.sha256) { throw 'Starter database hash mismatch' }
 $dist = Join-Path $root 'dist'

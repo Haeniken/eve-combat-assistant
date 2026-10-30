@@ -46,7 +46,7 @@ pub enum Message {
     PilotStatus(u64, String, String, String),
     PilotRating(u64, String, Result<crate::pilot::Rating, String>),
     OwnPilotRating(i64, Result<crate::pilot::Rating, String>),
-    SyncDone(Result<usize, String>),
+    SyncDone(Result<usize, String>, bool),
     SyncProgress(crate::sources::UpdateProgress),
     Ocr(u64, Result<Option<Target>, String>, Option<String>),
     OcrState(u64, String),
@@ -78,6 +78,7 @@ pub struct NetworkRequest {
     pub settings: Settings,
     pub target: Target,
     pub global: bool,
+    pub solo_model: bool,
     pub own_character: Option<i64>,
 }
 fn next_network_request(
@@ -534,7 +535,7 @@ impl Workers {
                     if !request.global && request.own_character.is_none() && ship.is_none() {
                         continue;
                     }
-                    let trace=fit_trace.job(request.settings.ocr_debug,json!({"correlation":format!("{}-{}",std::process::id(),request.generation),"generation":request.generation,"job":if request.global{"all_hull_update"}else if request.own_character.is_some(){"own_pilot_rating"}else{"pilot_lookup"},"job_id":crate::diagnostics::trace_id("network"),"target_ship":request.target.ship,"pilot":request.target.pilot}));
+                    let trace=fit_trace.job(request.settings.ocr_debug,json!({"correlation":format!("{}-{}",std::process::id(),request.generation),"generation":request.generation,"job":if request.solo_model{"solo_model_update"}else if request.global{"all_hull_update"}else if request.own_character.is_some(){"own_pilot_rating"}else{"pilot_lookup"},"job_id":crate::diagnostics::trace_id("network"),"target_ship":request.target.ship,"pilot":request.target.pilot}));
                     trace.event(
                         "network_start",
                         json!({"queue_ms":request.queued_at.elapsed().as_millis()}),
@@ -600,13 +601,21 @@ impl Workers {
                         source.set_update_progress(move |progress| {
                             emit(&update_tx, &update_ctx, Message::SyncProgress(progress))
                         });
-                        let result = source.refresh_statistics(&request.settings, &progress);
+                        let result = if request.solo_model {
+                            source.refresh_solo_model(&directory, &progress)
+                        } else {
+                            source.refresh_statistics(&request.settings, &progress)
+                        };
                         source.finish_update(result.as_ref().err().cloned());
                         trace.event(
                             "network_end",
                             json!({"result":result.as_ref().ok(),"error":result.as_ref().err()}),
                         );
-                        emit(&event_tx, &ctx, Message::SyncDone(result));
+                        emit(
+                            &event_tx,
+                            &ctx,
+                            Message::SyncDone(result, request.solo_model),
+                        );
                     } else {
                         let started = std::time::Instant::now();
                         let mut activity_rating = None;
@@ -1021,6 +1030,7 @@ mod tests {
             tx.send(NetworkRequest {
                 generation,
                 global,
+                solo_model: false,
                 own_character,
                 queued_at: std::time::Instant::now(),
                 settings: Settings::default(),
