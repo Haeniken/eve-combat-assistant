@@ -31,6 +31,10 @@ $licenses = Join-Path $destination 'licenses'
 New-Item -ItemType Directory -Path $licenses -Force | Out-Null
 Copy-Item (Join-Path $LicenseDirectory '*') $licenses -Recurse -Force
 Copy-Item (Join-Path $root 'resources\WINDOWS_README.txt') (Join-Path $destination 'README.txt') -Force
+$guide = [System.IO.File]::ReadAllText((Join-Path $root 'docs\usage.md'))
+$guide = $guide.Replace('](pilot-rating.md)', '](PILOT_RATING.md)').Replace('](fit-metrics.md)', '](FIT_METRICS.md)').Replace('](../THIRD_PARTY_NOTICES.md)', '](THIRD_PARTY_NOTICES.md)')
+$guide = $guide.Replace('](development.md)', '](https://github.com/Haeniken/eve-combat-assistant/blob/main/docs/development.md)').Replace('](architecture.md)', '](https://github.com/Haeniken/eve-combat-assistant/blob/main/docs/architecture.md)')
+[System.IO.File]::WriteAllText((Join-Path $destination 'USER_GUIDE.md'), $guide, [System.Text.UTF8Encoding]::new($false))
 Copy-Item (Join-Path $root 'docs\pilot-rating.md') (Join-Path $destination 'PILOT_RATING.md') -Force
 Copy-Item (Join-Path $root 'docs\fit-metrics.md') (Join-Path $destination 'FIT_METRICS.md') -Force
 Get-ChildItem $destination -Recurse -File | Where-Object { $_.LastWriteTime.Year -lt 1980 -or $_.LastWriteTime.Year -gt 2107 } | ForEach-Object { $_.LastWriteTime = [datetime]'2000-01-01' }
