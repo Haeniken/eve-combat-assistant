@@ -1,0 +1,3638 @@
+{
+  "selected": "players_hulls_pairs16",
+  "selection_subset": "established_repeat_capped",
+  "selection_period": "2026 validation only; no held-out labels used",
+  "years": {
+    "2026": {
+      "outcomes": 41616,
+      "established_outcomes": 5973,
+      "metrics": {
+        "players_hulls_pairs16": {
+          "all": {
+            "outcomes": 41616,
+            "log_loss": 0.25258861312825887,
+            "brier": 0.0778273312532706,
+            "accuracy": 0.8917363514033064
+          },
+          "repeat_capped": {
+            "outcomes": 41616,
+            "log_loss": 0.25263193513235227,
+            "brier": 0.07778953261800294,
+            "accuracy": 0.891872031055123
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 7252,
+              "prediction": 0.032310537207464275,
+              "observed": 0.014892443463872035
+            },
+            {
+              "bin": 1,
+              "n": 2315,
+              "prediction": 0.14565497574882438,
+              "observed": 0.1287257019438445
+            },
+            {
+              "bin": 2,
+              "n": 1628,
+              "prediction": 0.24953411094174333,
+              "observed": 0.22727272727272727
+            },
+            {
+              "bin": 3,
+              "n": 1740,
+              "prediction": 0.35179419131270795,
+              "observed": 0.3850574712643678
+            },
+            {
+              "bin": 4,
+              "n": 1918,
+              "prediction": 0.4514789180823552,
+              "observed": 0.49739311783107404
+            },
+            {
+              "bin": 5,
+              "n": 2177,
+              "prediction": 0.5477199901228745,
+              "observed": 0.6531924666972898
+            },
+            {
+              "bin": 6,
+              "n": 2096,
+              "prediction": 0.650543456435716,
+              "observed": 0.7533396946564885
+            },
+            {
+              "bin": 7,
+              "n": 2397,
+              "prediction": 0.7510192237972981,
+              "observed": 0.8256153525239883
+            },
+            {
+              "bin": 8,
+              "n": 3828,
+              "prediction": 0.8547355414431493,
+              "observed": 0.9357366771159875
+            },
+            {
+              "bin": 9,
+              "n": 16265,
+              "prediction": 0.9730861373926104,
+              "observed": 0.9902858899477406
+            }
+          ],
+          "known_players": {
+            "outcomes": 22479,
+            "log_loss": 0.278061461924765,
+            "brier": 0.08650205249083597,
+            "accuracy": 0.8791316339694826
+          },
+          "unseen_pairing": {
+            "outcomes": 40263,
+            "log_loss": 0.25248659683268176,
+            "brier": 0.07777722145628484,
+            "accuracy": 0.8918982688821002
+          },
+          "same_hull": {
+            "outcomes": 1629,
+            "log_loss": 0.5591394702069765,
+            "brier": 0.1881529852559206,
+            "accuracy": 0.7148557397176182
+          },
+          "established_players": {
+            "outcomes": 5973,
+            "log_loss": 0.34482213776757875,
+            "brier": 0.1104514462086999,
+            "accuracy": 0.8404486857525532
+          },
+          "established_repeat_capped": {
+            "outcomes": 5973,
+            "log_loss": 0.34283471500709456,
+            "brier": 0.10969297799360476,
+            "accuracy": 0.8414349901713001
+          },
+          "established_same_hull": {
+            "outcomes": 379,
+            "log_loss": 0.5626667542521895,
+            "brier": 0.18854373168438787,
+            "accuracy": 0.7203166226912929
+          }
+        },
+        "elo_k48": {
+          "all": {
+            "outcomes": 41616,
+            "log_loss": 0.4775182317599356,
+            "brier": 0.15746185123252515,
+            "accuracy": 0.7637086697424068
+          },
+          "repeat_capped": {
+            "outcomes": 41616,
+            "log_loss": 0.4761326214812234,
+            "brier": 0.1568777866994718,
+            "accuracy": 0.7656582358214017
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 2296,
+              "prediction": 0.05591061959077693,
+              "observed": 0.06097560975609756
+            },
+            {
+              "bin": 1,
+              "n": 2449,
+              "prediction": 0.14777154355201103,
+              "observed": 0.17109024091465905
+            },
+            {
+              "bin": 2,
+              "n": 2305,
+              "prediction": 0.2507104075763677,
+              "observed": 0.23253796095444684
+            },
+            {
+              "bin": 3,
+              "n": 2643,
+              "prediction": 0.3546741267767915,
+              "observed": 0.3711691259931896
+            },
+            {
+              "bin": 4,
+              "n": 4555,
+              "prediction": 0.4561041553456459,
+              "observed": 0.544676180021954
+            },
+            {
+              "bin": 5,
+              "n": 7509,
+              "prediction": 0.533492661217761,
+              "observed": 0.6771873751498202
+            },
+            {
+              "bin": 6,
+              "n": 4069,
+              "prediction": 0.650298971412438,
+              "observed": 0.761857950356353
+            },
+            {
+              "bin": 7,
+              "n": 4058,
+              "prediction": 0.7512428519418802,
+              "observed": 0.8260226712666338
+            },
+            {
+              "bin": 8,
+              "n": 5139,
+              "prediction": 0.8543534764549137,
+              "observed": 0.9056236621910878
+            },
+            {
+              "bin": 9,
+              "n": 6593,
+              "prediction": 0.9500235735075381,
+              "observed": 0.9587441225542241
+            }
+          ],
+          "known_players": {
+            "outcomes": 22479,
+            "log_loss": 0.4753301693876865,
+            "brier": 0.15623111453576943,
+            "accuracy": 0.7744561590818096
+          },
+          "unseen_pairing": {
+            "outcomes": 40263,
+            "log_loss": 0.48248383232828485,
+            "brier": 0.15923331016761205,
+            "accuracy": 0.7606611529195539
+          },
+          "same_hull": {
+            "outcomes": 1629,
+            "log_loss": 0.5483973449970567,
+            "brier": 0.1836723243073523,
+            "accuracy": 0.7179251074278699
+          },
+          "established_players": {
+            "outcomes": 5973,
+            "log_loss": 0.48729451701719595,
+            "brier": 0.1628330780475023,
+            "accuracy": 0.7522183157542274
+          },
+          "established_repeat_capped": {
+            "outcomes": 5973,
+            "log_loss": 0.4857734287957544,
+            "brier": 0.1621529346739405,
+            "accuracy": 0.7539932603201348
+          },
+          "established_same_hull": {
+            "outcomes": 379,
+            "log_loss": 0.6045992770970621,
+            "brier": 0.20668724138244401,
+            "accuracy": 0.6807387862796834
+          }
+        },
+        "smoothed_win_loss": {
+          "all": {
+            "outcomes": 41616,
+            "log_loss": 0.5012763011886006,
+            "brier": 0.16677996589593075,
+            "accuracy": 0.74405276816609
+          },
+          "repeat_capped": {
+            "outcomes": 41616,
+            "log_loss": 0.5002869482004675,
+            "brier": 0.16636024996701645,
+            "accuracy": 0.7456046951086561
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 1319,
+              "prediction": 0.06096235693748183,
+              "observed": 0.043214556482183475
+            },
+            {
+              "bin": 1,
+              "n": 2019,
+              "prediction": 0.15179588762987073,
+              "observed": 0.1258048538880634
+            },
+            {
+              "bin": 2,
+              "n": 2743,
+              "prediction": 0.2534315050900845,
+              "observed": 0.24498724024790375
+            },
+            {
+              "bin": 3,
+              "n": 3649,
+              "prediction": 0.35124631343325063,
+              "observed": 0.38531104412167716
+            },
+            {
+              "bin": 4,
+              "n": 4296,
+              "prediction": 0.44711535172582023,
+              "observed": 0.5609869646182495
+            },
+            {
+              "bin": 5,
+              "n": 7713,
+              "prediction": 0.5322422619866385,
+              "observed": 0.6595358485673538
+            },
+            {
+              "bin": 6,
+              "n": 5103,
+              "prediction": 0.6489123631028124,
+              "observed": 0.7440721144424848
+            },
+            {
+              "bin": 7,
+              "n": 5103,
+              "prediction": 0.7486538170484683,
+              "observed": 0.8491083676268861
+            },
+            {
+              "bin": 8,
+              "n": 5256,
+              "prediction": 0.8490378013072372,
+              "observed": 0.9079147640791476
+            },
+            {
+              "bin": 9,
+              "n": 4415,
+              "prediction": 0.9461472619568017,
+              "observed": 0.9696489241223103
+            }
+          ],
+          "known_players": {
+            "outcomes": 22479,
+            "log_loss": 0.4758543394891411,
+            "brier": 0.15608244470173444,
+            "accuracy": 0.7713421415543396
+          },
+          "unseen_pairing": {
+            "outcomes": 40263,
+            "log_loss": 0.5069548449300811,
+            "brier": 0.1688505193757126,
+            "accuracy": 0.7402702232819214
+          },
+          "same_hull": {
+            "outcomes": 1629,
+            "log_loss": 0.5983196931456848,
+            "brier": 0.20151343309172295,
+            "accuracy": 0.6958256599140578
+          },
+          "established_players": {
+            "outcomes": 5973,
+            "log_loss": 0.4790974972626511,
+            "brier": 0.15911585936674333,
+            "accuracy": 0.7564038171772979
+          },
+          "established_repeat_capped": {
+            "outcomes": 5973,
+            "log_loss": 0.4784153471081434,
+            "brier": 0.15881140840686087,
+            "accuracy": 0.7578685762426285
+          },
+          "established_same_hull": {
+            "outcomes": 379,
+            "log_loss": 0.6297978181707873,
+            "brier": 0.2115430149089851,
+            "accuracy": 0.6807387862796834
+          }
+        },
+        "old_strength_proxy": {
+          "all": {
+            "outcomes": 41616,
+            "log_loss": 0.48810844145372934,
+            "brier": 0.160296109234846,
+            "accuracy": 0.7665080738177624
+          },
+          "repeat_capped": {
+            "outcomes": 41616,
+            "log_loss": 0.4872569465222476,
+            "brier": 0.15997103974767043,
+            "accuracy": 0.7669046926859994
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 2295,
+              "prediction": 0.06964258138141896,
+              "observed": 0.1028322440087146
+            },
+            {
+              "bin": 1,
+              "n": 2861,
+              "prediction": 0.14587520673784754,
+              "observed": 0.19573575672841664
+            },
+            {
+              "bin": 2,
+              "n": 2441,
+              "prediction": 0.2508805188618293,
+              "observed": 0.2736583367472347
+            },
+            {
+              "bin": 3,
+              "n": 2377,
+              "prediction": 0.35172413447366674,
+              "observed": 0.3693731594446782
+            },
+            {
+              "bin": 4,
+              "n": 4000,
+              "prediction": 0.4625545055363355,
+              "observed": 0.5035
+            },
+            {
+              "bin": 5,
+              "n": 7168,
+              "prediction": 0.5279920905396305,
+              "observed": 0.6700613839285714
+            },
+            {
+              "bin": 6,
+              "n": 3764,
+              "prediction": 0.6485213293864776,
+              "observed": 0.7763018065887354
+            },
+            {
+              "bin": 7,
+              "n": 4407,
+              "prediction": 0.7522452772987055,
+              "observed": 0.8275470841842524
+            },
+            {
+              "bin": 8,
+              "n": 5855,
+              "prediction": 0.8554909996570668,
+              "observed": 0.8862510674637062
+            },
+            {
+              "bin": 9,
+              "n": 6448,
+              "prediction": 0.9351525779514422,
+              "observed": 0.9540942928039702
+            }
+          ],
+          "known_players": {
+            "outcomes": 22479,
+            "log_loss": 0.5129777691292986,
+            "brier": 0.17049464520010787,
+            "accuracy": 0.7523911206014502
+          },
+          "unseen_pairing": {
+            "outcomes": 40263,
+            "log_loss": 0.49150326601624345,
+            "brier": 0.16141034811032698,
+            "accuracy": 0.7652435238308124
+          },
+          "same_hull": {
+            "outcomes": 1629,
+            "log_loss": 0.5467900216541381,
+            "brier": 0.18303813769396682,
+            "accuracy": 0.7237569060773481
+          },
+          "established_players": {
+            "outcomes": 5973,
+            "log_loss": 0.5404635015071709,
+            "brier": 0.1843508009569463,
+            "accuracy": 0.7068474803281433
+          },
+          "established_repeat_capped": {
+            "outcomes": 5973,
+            "log_loss": 0.5396047206500585,
+            "brier": 0.18396553132849752,
+            "accuracy": 0.7077759056444818
+          },
+          "established_same_hull": {
+            "outcomes": 379,
+            "log_loss": 0.6011121004970162,
+            "brier": 0.20704757478324437,
+            "accuracy": 0.6754617414248021
+          }
+        },
+        "hulls_only_pairs16": {
+          "all": {
+            "outcomes": 41616,
+            "log_loss": 0.31800954339654186,
+            "brier": 0.10262984353431462,
+            "accuracy": 0.8428368896578239
+          },
+          "repeat_capped": {
+            "outcomes": 41616,
+            "log_loss": 0.31866748980504495,
+            "brier": 0.1028039008169827,
+            "accuracy": 0.842675443690322
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 6969,
+              "prediction": 0.03515747198351041,
+              "observed": 0.03572965992251399
+            },
+            {
+              "bin": 1,
+              "n": 2033,
+              "prediction": 0.1458601110943527,
+              "observed": 0.16969995081160846
+            },
+            {
+              "bin": 2,
+              "n": 1634,
+              "prediction": 0.2524677254092283,
+              "observed": 0.3200734394124847
+            },
+            {
+              "bin": 3,
+              "n": 1782,
+              "prediction": 0.3517869371767482,
+              "observed": 0.49158249158249157
+            },
+            {
+              "bin": 4,
+              "n": 2669,
+              "prediction": 0.4487152025280557,
+              "observed": 0.5522667665792431
+            },
+            {
+              "bin": 5,
+              "n": 4371,
+              "prediction": 0.5318064175421151,
+              "observed": 0.6437886067261496
+            },
+            {
+              "bin": 6,
+              "n": 2236,
+              "prediction": 0.6474153322080397,
+              "observed": 0.7361359570661896
+            },
+            {
+              "bin": 7,
+              "n": 2273,
+              "prediction": 0.7481270929694133,
+              "observed": 0.8297404311482622
+            },
+            {
+              "bin": 8,
+              "n": 3125,
+              "prediction": 0.8554490373981413,
+              "observed": 0.92448
+            },
+            {
+              "bin": 9,
+              "n": 14524,
+              "prediction": 0.969020257394551,
+              "observed": 0.9891903057009088
+            }
+          ],
+          "known_players": {
+            "outcomes": 22479,
+            "log_loss": 0.35468745842350297,
+            "brier": 0.1153941189663315,
+            "accuracy": 0.8223675430401708
+          },
+          "unseen_pairing": {
+            "outcomes": 40263,
+            "log_loss": 0.3144623861809031,
+            "brier": 0.10135770497363875,
+            "accuracy": 0.8453294588083352
+          },
+          "same_hull": {
+            "outcomes": 1629,
+            "log_loss": 0.6931471805599452,
+            "brier": 0.25,
+            "accuracy": 0.5
+          },
+          "established_players": {
+            "outcomes": 5973,
+            "log_loss": 0.4454351433614443,
+            "brier": 0.14892602728755835,
+            "accuracy": 0.7606730286288297
+          },
+          "established_repeat_capped": {
+            "outcomes": 5973,
+            "log_loss": 0.44380603808606417,
+            "brier": 0.14827082223993568,
+            "accuracy": 0.7621173827576523
+          },
+          "established_same_hull": {
+            "outcomes": 379,
+            "log_loss": 0.6931471805599452,
+            "brier": 0.25,
+            "accuracy": 0.5
+          }
+        },
+        "players_ridge1": {
+          "all": {
+            "outcomes": 41616,
+            "log_loss": 0.45971795792082576,
+            "brier": 0.1505642473497062,
+            "accuracy": 0.7716022683583237
+          },
+          "repeat_capped": {
+            "outcomes": 41616,
+            "log_loss": 0.45888655264970035,
+            "brier": 0.1502151816395586,
+            "accuracy": 0.7722587639605591
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 2363,
+              "prediction": 0.05536781219377621,
+              "observed": 0.05670757511637749
+            },
+            {
+              "bin": 1,
+              "n": 2901,
+              "prediction": 0.14984359518622253,
+              "observed": 0.14856945880730782
+            },
+            {
+              "bin": 2,
+              "n": 2452,
+              "prediction": 0.24957578665899735,
+              "observed": 0.25407830342577487
+            },
+            {
+              "bin": 3,
+              "n": 2797,
+              "prediction": 0.35176339851408855,
+              "observed": 0.41580264569181263
+            },
+            {
+              "bin": 4,
+              "n": 3279,
+              "prediction": 0.4510543294673318,
+              "observed": 0.5532174443427874
+            },
+            {
+              "bin": 5,
+              "n": 6033,
+              "prediction": 0.5323506752623768,
+              "observed": 0.6532405105254434
+            },
+            {
+              "bin": 6,
+              "n": 3726,
+              "prediction": 0.6499757537125594,
+              "observed": 0.7147074610842726
+            },
+            {
+              "bin": 7,
+              "n": 4320,
+              "prediction": 0.7533954161278483,
+              "observed": 0.80625
+            },
+            {
+              "bin": 8,
+              "n": 5965,
+              "prediction": 0.8527810381441134,
+              "observed": 0.897569153394803
+            },
+            {
+              "bin": 9,
+              "n": 7780,
+              "prediction": 0.9489828818376154,
+              "observed": 0.959254498714653
+            }
+          ],
+          "known_players": {
+            "outcomes": 22479,
+            "log_loss": 0.4543009869024769,
+            "brier": 0.14810976572010295,
+            "accuracy": 0.7826415765825881
+          },
+          "unseen_pairing": {
+            "outcomes": 40263,
+            "log_loss": 0.46440162542122915,
+            "brier": 0.1522754177980658,
+            "accuracy": 0.7685219680600055
+          },
+          "same_hull": {
+            "outcomes": 1629,
+            "log_loss": 0.5507484201470224,
+            "brier": 0.182626047903479,
+            "accuracy": 0.7191528545119705
+          },
+          "established_players": {
+            "outcomes": 5973,
+            "log_loss": 0.4735492418133404,
+            "brier": 0.15683260236590568,
+            "accuracy": 0.7620960991126737
+          },
+          "established_repeat_capped": {
+            "outcomes": 5973,
+            "log_loss": 0.4722871019531034,
+            "brier": 0.15626091119757812,
+            "accuracy": 0.7632097725358045
+          },
+          "established_same_hull": {
+            "outcomes": 379,
+            "log_loss": 0.6086075065655338,
+            "brier": 0.2004586848456557,
+            "accuracy": 0.6912928759894459
+          }
+        }
+      },
+      "day_block_comparisons": {
+        "elo_k48": {
+          "baseline_minus_selected_log_loss": 0.1429387137886599,
+          "ci95": [
+            0.1301565533823995,
+            0.15522409539628987
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "smoothed_win_loss": {
+          "baseline_minus_selected_log_loss": 0.13558063210104881,
+          "ci95": [
+            0.1214961425797059,
+            0.1492290263464363
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "old_strength_proxy": {
+          "baseline_minus_selected_log_loss": 0.1967700056429639,
+          "ci95": [
+            0.1835577385537207,
+            0.20883076031560238
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "hulls_only_pairs16": {
+          "baseline_minus_selected_log_loss": 0.1009713230789696,
+          "ci95": [
+            0.09054147198283433,
+            0.11239572592297907
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "players_ridge1": {
+          "baseline_minus_selected_log_loss": 0.12945238694600886,
+          "ci95": [
+            0.11601546025094409,
+            0.141791273324073
+          ],
+          "days": 31,
+          "resamples": 3000
+        }
+      }
+    },
+    "2025": {
+      "outcomes": 41419,
+      "established_outcomes": 6263,
+      "metrics": {
+        "players_hulls_pairs16": {
+          "all": {
+            "outcomes": 41419,
+            "log_loss": 0.25727815370567925,
+            "brier": 0.07913405382728497,
+            "accuracy": 0.8911127743306212
+          },
+          "repeat_capped": {
+            "outcomes": 41419,
+            "log_loss": 0.2570589540472096,
+            "brier": 0.0790372036522363,
+            "accuracy": 0.8913174476294575
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 7507,
+              "prediction": 0.032801945219144084,
+              "observed": 0.017983215665378978
+            },
+            {
+              "bin": 1,
+              "n": 2389,
+              "prediction": 0.14486719211072985,
+              "observed": 0.13604018417748012
+            },
+            {
+              "bin": 2,
+              "n": 1744,
+              "prediction": 0.2489486776901317,
+              "observed": 0.24770642201834864
+            },
+            {
+              "bin": 3,
+              "n": 1688,
+              "prediction": 0.3494378893976716,
+              "observed": 0.370260663507109
+            },
+            {
+              "bin": 4,
+              "n": 1741,
+              "prediction": 0.45153669216093223,
+              "observed": 0.48994830557151064
+            },
+            {
+              "bin": 5,
+              "n": 2033,
+              "prediction": 0.5476886126329271,
+              "observed": 0.6414166256763404
+            },
+            {
+              "bin": 6,
+              "n": 2088,
+              "prediction": 0.6504224999581416,
+              "observed": 0.7452107279693486
+            },
+            {
+              "bin": 7,
+              "n": 2404,
+              "prediction": 0.7519867033742829,
+              "observed": 0.8348585690515807
+            },
+            {
+              "bin": 8,
+              "n": 3860,
+              "prediction": 0.8550110434188264,
+              "observed": 0.9176165803108808
+            },
+            {
+              "bin": 9,
+              "n": 15965,
+              "prediction": 0.9710454299602391,
+              "observed": 0.9902286251174444
+            }
+          ],
+          "known_players": {
+            "outcomes": 22685,
+            "log_loss": 0.2734415198067805,
+            "brier": 0.084485406702997,
+            "accuracy": 0.8830945558739255
+          },
+          "unseen_pairing": {
+            "outcomes": 40493,
+            "log_loss": 0.25560618508963545,
+            "brier": 0.07850171118442248,
+            "accuracy": 0.8922035907440792
+          },
+          "same_hull": {
+            "outcomes": 1325,
+            "log_loss": 0.5596619035240277,
+            "brier": 0.1897278818486969,
+            "accuracy": 0.7116981132075472
+          },
+          "established_players": {
+            "outcomes": 6263,
+            "log_loss": 0.34698179696328507,
+            "brier": 0.11148214327667934,
+            "accuracy": 0.8398531055404758
+          },
+          "established_repeat_capped": {
+            "outcomes": 6263,
+            "log_loss": 0.3463837809612523,
+            "brier": 0.11125871985875334,
+            "accuracy": 0.840240192153723
+          },
+          "established_same_hull": {
+            "outcomes": 342,
+            "log_loss": 0.5740450671093429,
+            "brier": 0.197008505375835,
+            "accuracy": 0.672514619883041
+          }
+        },
+        "elo_k48": {
+          "all": {
+            "outcomes": 41419,
+            "log_loss": 0.49008971850539546,
+            "brier": 0.1615197589329242,
+            "accuracy": 0.7659890388469061
+          },
+          "repeat_capped": {
+            "outcomes": 41419,
+            "log_loss": 0.4893563358833227,
+            "brier": 0.16123647350128884,
+            "accuracy": 0.7665938829314054
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 2417,
+              "prediction": 0.0544364938482192,
+              "observed": 0.07281754240794373
+            },
+            {
+              "bin": 1,
+              "n": 2374,
+              "prediction": 0.14877548400363574,
+              "observed": 0.17565290648694187
+            },
+            {
+              "bin": 2,
+              "n": 2394,
+              "prediction": 0.2501965562768248,
+              "observed": 0.2502088554720134
+            },
+            {
+              "bin": 3,
+              "n": 2725,
+              "prediction": 0.352879787764198,
+              "observed": 0.36220183486238533
+            },
+            {
+              "bin": 4,
+              "n": 4527,
+              "prediction": 0.4554695235031155,
+              "observed": 0.5069582504970179
+            },
+            {
+              "bin": 5,
+              "n": 7445,
+              "prediction": 0.5347975416502923,
+              "observed": 0.6830087306917394
+            },
+            {
+              "bin": 6,
+              "n": 4096,
+              "prediction": 0.6478698963691425,
+              "observed": 0.771728515625
+            },
+            {
+              "bin": 7,
+              "n": 4268,
+              "prediction": 0.7497296727857937,
+              "observed": 0.8362230552952202
+            },
+            {
+              "bin": 8,
+              "n": 5183,
+              "prediction": 0.8509323069276359,
+              "observed": 0.8890603897356744
+            },
+            {
+              "bin": 9,
+              "n": 5990,
+              "prediction": 0.9476738337438734,
+              "observed": 0.9500834724540902
+            }
+          ],
+          "known_players": {
+            "outcomes": 22685,
+            "log_loss": 0.48651047134203196,
+            "brier": 0.15938332270711567,
+            "accuracy": 0.7727793696275072
+          },
+          "unseen_pairing": {
+            "outcomes": 40493,
+            "log_loss": 0.4904906254790724,
+            "brier": 0.16168379039093256,
+            "accuracy": 0.7656508532338923
+          },
+          "same_hull": {
+            "outcomes": 1325,
+            "log_loss": 0.5516490084440983,
+            "brier": 0.1850412572291505,
+            "accuracy": 0.7071698113207547
+          },
+          "established_players": {
+            "outcomes": 6263,
+            "log_loss": 0.5224077403367655,
+            "brier": 0.17328155438597287,
+            "accuracy": 0.7406993453616477
+          },
+          "established_repeat_capped": {
+            "outcomes": 6263,
+            "log_loss": 0.5220015581424342,
+            "brier": 0.17319748282744069,
+            "accuracy": 0.740640512409928
+          },
+          "established_same_hull": {
+            "outcomes": 342,
+            "log_loss": 0.5930480762106225,
+            "brier": 0.19854101738855742,
+            "accuracy": 0.6842105263157895
+          }
+        },
+        "smoothed_win_loss": {
+          "all": {
+            "outcomes": 41419,
+            "log_loss": 0.5137446972301933,
+            "brier": 0.17168026657827426,
+            "accuracy": 0.7400830536710206
+          },
+          "repeat_capped": {
+            "outcomes": 41419,
+            "log_loss": 0.5130467564902083,
+            "brier": 0.17137880327002353,
+            "accuracy": 0.7409254856292559
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 1288,
+              "prediction": 0.05951347501131671,
+              "observed": 0.05046583850931677
+            },
+            {
+              "bin": 1,
+              "n": 2175,
+              "prediction": 0.15264111572725408,
+              "observed": 0.12735632183908047
+            },
+            {
+              "bin": 2,
+              "n": 2678,
+              "prediction": 0.25253683521112896,
+              "observed": 0.2714712471994025
+            },
+            {
+              "bin": 3,
+              "n": 3372,
+              "prediction": 0.3520832663727314,
+              "observed": 0.38523131672597866
+            },
+            {
+              "bin": 4,
+              "n": 4574,
+              "prediction": 0.4476244630364096,
+              "observed": 0.5284215128989943
+            },
+            {
+              "bin": 5,
+              "n": 8182,
+              "prediction": 0.5348908723535597,
+              "observed": 0.6591297971156197
+            },
+            {
+              "bin": 6,
+              "n": 5130,
+              "prediction": 0.6471677116352043,
+              "observed": 0.7559454191033138
+            },
+            {
+              "bin": 7,
+              "n": 5182,
+              "prediction": 0.7471877738013973,
+              "observed": 0.8294094944037051
+            },
+            {
+              "bin": 8,
+              "n": 5038,
+              "prediction": 0.8491676091427046,
+              "observed": 0.9094878920206431
+            },
+            {
+              "bin": 9,
+              "n": 3800,
+              "prediction": 0.9437949725438292,
+              "observed": 0.9610526315789474
+            }
+          ],
+          "known_players": {
+            "outcomes": 22685,
+            "log_loss": 0.48946086699669134,
+            "brier": 0.16101148927775452,
+            "accuracy": 0.7695834251708177
+          },
+          "unseen_pairing": {
+            "outcomes": 40493,
+            "log_loss": 0.5147371886194155,
+            "brier": 0.17204938438873024,
+            "accuracy": 0.739485837058257
+          },
+          "same_hull": {
+            "outcomes": 1325,
+            "log_loss": 0.5660148770501098,
+            "brier": 0.19336595570809983,
+            "accuracy": 0.6916981132075471
+          },
+          "established_players": {
+            "outcomes": 6263,
+            "log_loss": 0.5186265803159538,
+            "brier": 0.1728882962942257,
+            "accuracy": 0.7481239022832509
+          },
+          "established_repeat_capped": {
+            "outcomes": 6263,
+            "log_loss": 0.5187242029725592,
+            "brier": 0.17295200221937918,
+            "accuracy": 0.7479263410728583
+          },
+          "established_same_hull": {
+            "outcomes": 342,
+            "log_loss": 0.5823018120819293,
+            "brier": 0.20089424353606253,
+            "accuracy": 0.6915204678362573
+          }
+        },
+        "old_strength_proxy": {
+          "all": {
+            "outcomes": 41419,
+            "log_loss": 0.5000507441716052,
+            "brier": 0.1642750966973545,
+            "accuracy": 0.7674255776334532
+          },
+          "repeat_capped": {
+            "outcomes": 41419,
+            "log_loss": 0.4999220958574342,
+            "brier": 0.16424809803356258,
+            "accuracy": 0.7674470700503015
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 2177,
+              "prediction": 0.07121806244483829,
+              "observed": 0.10748736793752871
+            },
+            {
+              "bin": 1,
+              "n": 3129,
+              "prediction": 0.14867176569738477,
+              "observed": 0.21029082774049218
+            },
+            {
+              "bin": 2,
+              "n": 2576,
+              "prediction": 0.24831285958517615,
+              "observed": 0.2628105590062112
+            },
+            {
+              "bin": 3,
+              "n": 2583,
+              "prediction": 0.3520174023966527,
+              "observed": 0.35036778939217966
+            },
+            {
+              "bin": 4,
+              "n": 3818,
+              "prediction": 0.46078745190274084,
+              "observed": 0.49423782084861184
+            },
+            {
+              "bin": 5,
+              "n": 7018,
+              "prediction": 0.5292461163569943,
+              "observed": 0.6880877742946708
+            },
+            {
+              "bin": 6,
+              "n": 3844,
+              "prediction": 0.6474827161246525,
+              "observed": 0.7684703433922997
+            },
+            {
+              "bin": 7,
+              "n": 4355,
+              "prediction": 0.7530728509983645,
+              "observed": 0.8257175660160735
+            },
+            {
+              "bin": 8,
+              "n": 6064,
+              "prediction": 0.8522642914421241,
+              "observed": 0.8797823218997362
+            },
+            {
+              "bin": 9,
+              "n": 5855,
+              "prediction": 0.930563727762507,
+              "observed": 0.9415883859948762
+            }
+          ],
+          "known_players": {
+            "outcomes": 22685,
+            "log_loss": 0.5217771673911996,
+            "brier": 0.173123168847834,
+            "accuracy": 0.7530967599735509
+          },
+          "unseen_pairing": {
+            "outcomes": 40493,
+            "log_loss": 0.4994271799429821,
+            "brier": 0.16399884853975502,
+            "accuracy": 0.768441459017608
+          },
+          "same_hull": {
+            "outcomes": 1325,
+            "log_loss": 0.560348127203668,
+            "brier": 0.18822866820875525,
+            "accuracy": 0.7113207547169811
+          },
+          "established_players": {
+            "outcomes": 6263,
+            "log_loss": 0.5744091134187025,
+            "brier": 0.1962092569970384,
+            "accuracy": 0.6941561551971899
+          },
+          "established_repeat_capped": {
+            "outcomes": 6263,
+            "log_loss": 0.5742712885277701,
+            "brier": 0.19615799940872689,
+            "accuracy": 0.6942834267413931
+          },
+          "established_same_hull": {
+            "outcomes": 342,
+            "log_loss": 0.6092538674514869,
+            "brier": 0.2112468830077573,
+            "accuracy": 0.6608187134502924
+          }
+        },
+        "hulls_only_pairs16": {
+          "all": {
+            "outcomes": 41419,
+            "log_loss": 0.3146024277500159,
+            "brier": 0.1003036072497797,
+            "accuracy": 0.8514329172601945
+          },
+          "repeat_capped": {
+            "outcomes": 41419,
+            "log_loss": 0.3146458524452962,
+            "brier": 0.10029725695012183,
+            "accuracy": 0.8516315672119791
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 7131,
+              "prediction": 0.0350248076902261,
+              "observed": 0.03688122282989763
+            },
+            {
+              "bin": 1,
+              "n": 2425,
+              "prediction": 0.1461188319116819,
+              "observed": 0.1892783505154639
+            },
+            {
+              "bin": 2,
+              "n": 1679,
+              "prediction": 0.24790716496231893,
+              "observed": 0.30077427039904703
+            },
+            {
+              "bin": 3,
+              "n": 2086,
+              "prediction": 0.35210626404224576,
+              "observed": 0.44103547459252157
+            },
+            {
+              "bin": 4,
+              "n": 2106,
+              "prediction": 0.4494964556757187,
+              "observed": 0.5451092117758785
+            },
+            {
+              "bin": 5,
+              "n": 3481,
+              "prediction": 0.5319846123041089,
+              "observed": 0.6363114047687446
+            },
+            {
+              "bin": 6,
+              "n": 2537,
+              "prediction": 0.649013475936163,
+              "observed": 0.7607410327158061
+            },
+            {
+              "bin": 7,
+              "n": 2228,
+              "prediction": 0.7522518025551542,
+              "observed": 0.8339317773788151
+            },
+            {
+              "bin": 8,
+              "n": 3535,
+              "prediction": 0.8556036145567583,
+              "observed": 0.9261669024045261
+            },
+            {
+              "bin": 9,
+              "n": 14211,
+              "prediction": 0.968862602958525,
+              "observed": 0.9862782351699387
+            }
+          ],
+          "known_players": {
+            "outcomes": 22685,
+            "log_loss": 0.34090445456027907,
+            "brier": 0.10937850625461007,
+            "accuracy": 0.8376239806039233
+          },
+          "unseen_pairing": {
+            "outcomes": 40493,
+            "log_loss": 0.31177907208235706,
+            "brier": 0.09925337451617487,
+            "accuracy": 0.853209196651273
+          },
+          "same_hull": {
+            "outcomes": 1325,
+            "log_loss": 0.6931471805599453,
+            "brier": 0.25,
+            "accuracy": 0.5
+          },
+          "established_players": {
+            "outcomes": 6263,
+            "log_loss": 0.4261384809426509,
+            "brier": 0.14068763039942442,
+            "accuracy": 0.7852466868912662
+          },
+          "established_repeat_capped": {
+            "outcomes": 6263,
+            "log_loss": 0.42611044046750873,
+            "brier": 0.14067522036653085,
+            "accuracy": 0.7852802241793434
+          },
+          "established_same_hull": {
+            "outcomes": 342,
+            "log_loss": 0.6931471805599454,
+            "brier": 0.25,
+            "accuracy": 0.5
+          }
+        },
+        "players_ridge1": {
+          "all": {
+            "outcomes": 41419,
+            "log_loss": 0.4698922079806771,
+            "brier": 0.1537013164247075,
+            "accuracy": 0.7748979936744006
+          },
+          "repeat_capped": {
+            "outcomes": 41419,
+            "log_loss": 0.46936388101339976,
+            "brier": 0.1535354403816885,
+            "accuracy": 0.7748184450159316
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 2460,
+              "prediction": 0.055620903793967835,
+              "observed": 0.06707317073170732
+            },
+            {
+              "bin": 1,
+              "n": 2769,
+              "prediction": 0.14765639346297568,
+              "observed": 0.16034669555796316
+            },
+            {
+              "bin": 2,
+              "n": 2556,
+              "prediction": 0.25008910446773114,
+              "observed": 0.2687793427230047
+            },
+            {
+              "bin": 3,
+              "n": 2824,
+              "prediction": 0.35205199403484777,
+              "observed": 0.36473087818696887
+            },
+            {
+              "bin": 4,
+              "n": 3426,
+              "prediction": 0.4499404798478375,
+              "observed": 0.514302393461763
+            },
+            {
+              "bin": 5,
+              "n": 6002,
+              "prediction": 0.5342749695077612,
+              "observed": 0.6604465178273908
+            },
+            {
+              "bin": 6,
+              "n": 3917,
+              "prediction": 0.6496959052144201,
+              "observed": 0.7378095481235639
+            },
+            {
+              "bin": 7,
+              "n": 4429,
+              "prediction": 0.7523085719703951,
+              "observed": 0.8189207496048769
+            },
+            {
+              "bin": 8,
+              "n": 6048,
+              "prediction": 0.8516987225755185,
+              "observed": 0.8855820105820106
+            },
+            {
+              "bin": 9,
+              "n": 6988,
+              "prediction": 0.9460253755409569,
+              "observed": 0.9534917000572409
+            }
+          ],
+          "known_players": {
+            "outcomes": 22685,
+            "log_loss": 0.4649061791764247,
+            "brier": 0.15134271630632967,
+            "accuracy": 0.7839761957240468
+          },
+          "unseen_pairing": {
+            "outcomes": 40493,
+            "log_loss": 0.46999491355911577,
+            "brier": 0.15373512600794162,
+            "accuracy": 0.7744918874867261
+          },
+          "same_hull": {
+            "outcomes": 1325,
+            "log_loss": 0.538196844228958,
+            "brier": 0.1806945921172153,
+            "accuracy": 0.7283018867924528
+          },
+          "established_players": {
+            "outcomes": 6263,
+            "log_loss": 0.5088940708034945,
+            "brier": 0.168533260348682,
+            "accuracy": 0.7560274628772153
+          },
+          "established_repeat_capped": {
+            "outcomes": 6263,
+            "log_loss": 0.5086918517721769,
+            "brier": 0.16852236154172875,
+            "accuracy": 0.7558526821457165
+          },
+          "established_same_hull": {
+            "outcomes": 342,
+            "log_loss": 0.5578827916283584,
+            "brier": 0.190545839524695,
+            "accuracy": 0.7105263157894737
+          }
+        }
+      },
+      "day_block_comparisons": {
+        "elo_k48": {
+          "baseline_minus_selected_log_loss": 0.1756177771811819,
+          "ci95": [
+            0.1589532041457298,
+            0.19108161928783118
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "smoothed_win_loss": {
+          "baseline_minus_selected_log_loss": 0.17234042201130673,
+          "ci95": [
+            0.15848797221743424,
+            0.18601838947605442
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "old_strength_proxy": {
+          "baseline_minus_selected_log_loss": 0.2278875075665178,
+          "ci95": [
+            0.21767688846282043,
+            0.23762215401407133
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "hulls_only_pairs16": {
+          "baseline_minus_selected_log_loss": 0.0797266595062564,
+          "ci95": [
+            0.07133655714071903,
+            0.08802327766256339
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "players_ridge1": {
+          "baseline_minus_selected_log_loss": 0.16230807081092463,
+          "ci95": [
+            0.14952098329066496,
+            0.17509802580755
+          ],
+          "days": 31,
+          "resamples": 3000
+        }
+      }
+    },
+    "2024": {
+      "outcomes": 42161,
+      "established_outcomes": 6282,
+      "metrics": {
+        "players_hulls_pairs16": {
+          "all": {
+            "outcomes": 42161,
+            "log_loss": 0.2460744872783788,
+            "brier": 0.07519214355177498,
+            "accuracy": 0.8963141291715092
+          },
+          "repeat_capped": {
+            "outcomes": 42161,
+            "log_loss": 0.2460797869932821,
+            "brier": 0.07518468044908133,
+            "accuracy": 0.8962980028728174
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 7658,
+              "prediction": 0.03159323104411929,
+              "observed": 0.024157743536171325
+            },
+            {
+              "bin": 1,
+              "n": 2357,
+              "prediction": 0.14541222419558797,
+              "observed": 0.13406873143826897
+            },
+            {
+              "bin": 2,
+              "n": 1702,
+              "prediction": 0.24659960806485415,
+              "observed": 0.2591069330199765
+            },
+            {
+              "bin": 3,
+              "n": 1585,
+              "prediction": 0.3505652131552656,
+              "observed": 0.3917981072555205
+            },
+            {
+              "bin": 4,
+              "n": 1755,
+              "prediction": 0.4517140733183884,
+              "observed": 0.5065527065527066
+            },
+            {
+              "bin": 5,
+              "n": 1982,
+              "prediction": 0.546902375770137,
+              "observed": 0.6664984863773966
+            },
+            {
+              "bin": 6,
+              "n": 1917,
+              "prediction": 0.6505252139522871,
+              "observed": 0.7386541471048513
+            },
+            {
+              "bin": 7,
+              "n": 2291,
+              "prediction": 0.7526830494956762,
+              "observed": 0.8494107376691401
+            },
+            {
+              "bin": 8,
+              "n": 3958,
+              "prediction": 0.8557616631654453,
+              "observed": 0.9295098534613441
+            },
+            {
+              "bin": 9,
+              "n": 16956,
+              "prediction": 0.9729566354126045,
+              "observed": 0.9926279782967681
+            }
+          ],
+          "known_players": {
+            "outcomes": 22517,
+            "log_loss": 0.2645068954336268,
+            "brier": 0.08141564825518093,
+            "accuracy": 0.888706310787405
+          },
+          "unseen_pairing": {
+            "outcomes": 40973,
+            "log_loss": 0.24388721776415626,
+            "brier": 0.07439811794551252,
+            "accuracy": 0.8974812681521978
+          },
+          "same_hull": {
+            "outcomes": 1470,
+            "log_loss": 0.5346741379775429,
+            "brier": 0.1788472851289061,
+            "accuracy": 0.7438775510204082
+          },
+          "established_players": {
+            "outcomes": 6282,
+            "log_loss": 0.3218496738470915,
+            "brier": 0.10137478623059812,
+            "accuracy": 0.8605539637058262
+          },
+          "established_repeat_capped": {
+            "outcomes": 6282,
+            "log_loss": 0.3218414262049557,
+            "brier": 0.10136814912293954,
+            "accuracy": 0.8604936477018346
+          },
+          "established_same_hull": {
+            "outcomes": 398,
+            "log_loss": 0.5336427524411929,
+            "brier": 0.17810444724864558,
+            "accuracy": 0.7462311557788944
+          }
+        },
+        "elo_k48": {
+          "all": {
+            "outcomes": 42161,
+            "log_loss": 0.46787466757549434,
+            "brier": 0.1535127520584989,
+            "accuracy": 0.7737008135480657
+          },
+          "repeat_capped": {
+            "outcomes": 42161,
+            "log_loss": 0.4676925396910791,
+            "brier": 0.15342488423865575,
+            "accuracy": 0.7739910527317724
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 2522,
+              "prediction": 0.0541296893748001,
+              "observed": 0.06938937351308486
+            },
+            {
+              "bin": 1,
+              "n": 2274,
+              "prediction": 0.1485799551646867,
+              "observed": 0.16402814423922604
+            },
+            {
+              "bin": 2,
+              "n": 2191,
+              "prediction": 0.24945260043621278,
+              "observed": 0.2546782291191237
+            },
+            {
+              "bin": 3,
+              "n": 2649,
+              "prediction": 0.35051186161988895,
+              "observed": 0.3725934314835787
+            },
+            {
+              "bin": 4,
+              "n": 4419,
+              "prediction": 0.4556989816809814,
+              "observed": 0.5102964471599909
+            },
+            {
+              "bin": 5,
+              "n": 7655,
+              "prediction": 0.5335486773675696,
+              "observed": 0.6679294578706728
+            },
+            {
+              "bin": 6,
+              "n": 4061,
+              "prediction": 0.6499841316099993,
+              "observed": 0.7776409751292785
+            },
+            {
+              "bin": 7,
+              "n": 4110,
+              "prediction": 0.7514433153833286,
+              "observed": 0.84330900243309
+            },
+            {
+              "bin": 8,
+              "n": 4862,
+              "prediction": 0.8522347710498421,
+              "observed": 0.906828465651995
+            },
+            {
+              "bin": 9,
+              "n": 7418,
+              "prediction": 0.9468667537763049,
+              "observed": 0.964006470746832
+            }
+          ],
+          "known_players": {
+            "outcomes": 22517,
+            "log_loss": 0.46751539861142855,
+            "brier": 0.1525889202857501,
+            "accuracy": 0.7828085446551495
+          },
+          "unseen_pairing": {
+            "outcomes": 40973,
+            "log_loss": 0.46810482018611604,
+            "brier": 0.153566700320199,
+            "accuracy": 0.7738266663412491
+          },
+          "same_hull": {
+            "outcomes": 1470,
+            "log_loss": 0.5216889970097585,
+            "brier": 0.17328950275869046,
+            "accuracy": 0.7391156462585035
+          },
+          "established_players": {
+            "outcomes": 6282,
+            "log_loss": 0.4987819475155081,
+            "brier": 0.16520013721559382,
+            "accuracy": 0.75772047118752
+          },
+          "established_repeat_capped": {
+            "outcomes": 6282,
+            "log_loss": 0.4978311081262994,
+            "brier": 0.16474904967413828,
+            "accuracy": 0.759002238567317
+          },
+          "established_same_hull": {
+            "outcomes": 398,
+            "log_loss": 0.5601612472586427,
+            "brier": 0.18770830372845937,
+            "accuracy": 0.7286432160804021
+          }
+        },
+        "smoothed_win_loss": {
+          "all": {
+            "outcomes": 42161,
+            "log_loss": 0.5015410796314161,
+            "brier": 0.16700716589391054,
+            "accuracy": 0.7460567823343849
+          },
+          "repeat_capped": {
+            "outcomes": 42161,
+            "log_loss": 0.5015208183538303,
+            "brier": 0.1669862661343694,
+            "accuracy": 0.7461379211878927
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 1421,
+              "prediction": 0.06026776524871066,
+              "observed": 0.057705840957072485
+            },
+            {
+              "bin": 1,
+              "n": 2219,
+              "prediction": 0.14964421499895755,
+              "observed": 0.138801261829653
+            },
+            {
+              "bin": 2,
+              "n": 2552,
+              "prediction": 0.25173759227727377,
+              "observed": 0.2938871473354232
+            },
+            {
+              "bin": 3,
+              "n": 3470,
+              "prediction": 0.35153917726104783,
+              "observed": 0.3976945244956772
+            },
+            {
+              "bin": 4,
+              "n": 4619,
+              "prediction": 0.44736865824360955,
+              "observed": 0.5334487984412211
+            },
+            {
+              "bin": 5,
+              "n": 7968,
+              "prediction": 0.5343437622876033,
+              "observed": 0.6669176706827309
+            },
+            {
+              "bin": 6,
+              "n": 5006,
+              "prediction": 0.6479481700072882,
+              "observed": 0.7594886136636037
+            },
+            {
+              "bin": 7,
+              "n": 4986,
+              "prediction": 0.749167409409175,
+              "observed": 0.8399518652226233
+            },
+            {
+              "bin": 8,
+              "n": 5408,
+              "prediction": 0.8515316648704399,
+              "observed": 0.9186390532544378
+            },
+            {
+              "bin": 9,
+              "n": 4512,
+              "prediction": 0.9403547463309537,
+              "observed": 0.9727393617021277
+            }
+          ],
+          "known_players": {
+            "outcomes": 22517,
+            "log_loss": 0.4747832347858518,
+            "brier": 0.15546269321350248,
+            "accuracy": 0.7758804458853311
+          },
+          "unseen_pairing": {
+            "outcomes": 40973,
+            "log_loss": 0.5027290401913692,
+            "brier": 0.16748909042437252,
+            "accuracy": 0.7450394162009127
+          },
+          "same_hull": {
+            "outcomes": 1470,
+            "log_loss": 0.5604226079025102,
+            "brier": 0.18998155300523695,
+            "accuracy": 0.7034013605442176
+          },
+          "established_players": {
+            "outcomes": 6282,
+            "log_loss": 0.49975790804574804,
+            "brier": 0.16602543275257467,
+            "accuracy": 0.7572429162687042
+          },
+          "established_repeat_capped": {
+            "outcomes": 6282,
+            "log_loss": 0.4992704830693305,
+            "brier": 0.16579275078320557,
+            "accuracy": 0.7580428525743524
+          },
+          "established_same_hull": {
+            "outcomes": 398,
+            "log_loss": 0.5740078535762494,
+            "brier": 0.19529682372744905,
+            "accuracy": 0.7110552763819096
+          }
+        },
+        "old_strength_proxy": {
+          "all": {
+            "outcomes": 42161,
+            "log_loss": 0.473686249190313,
+            "brier": 0.1548005630935929,
+            "accuracy": 0.7781954887218046
+          },
+          "repeat_capped": {
+            "outcomes": 42161,
+            "log_loss": 0.473437055547248,
+            "brier": 0.15469387798675358,
+            "accuracy": 0.7783932990671997
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 2583,
+              "prediction": 0.06953756474873606,
+              "observed": 0.09136662795199381
+            },
+            {
+              "bin": 1,
+              "n": 2764,
+              "prediction": 0.1485721430944656,
+              "observed": 0.18994211287988422
+            },
+            {
+              "bin": 2,
+              "n": 2266,
+              "prediction": 0.24879120033334343,
+              "observed": 0.28111209179170343
+            },
+            {
+              "bin": 3,
+              "n": 2321,
+              "prediction": 0.35195257289288123,
+              "observed": 0.36708315381301165
+            },
+            {
+              "bin": 4,
+              "n": 4001,
+              "prediction": 0.4627232772960806,
+              "observed": 0.4843789052736816
+            },
+            {
+              "bin": 5,
+              "n": 7163,
+              "prediction": 0.5281924210069651,
+              "observed": 0.6798827306994276
+            },
+            {
+              "bin": 6,
+              "n": 3813,
+              "prediction": 0.648904606465335,
+              "observed": 0.7770784159454498
+            },
+            {
+              "bin": 7,
+              "n": 4030,
+              "prediction": 0.752202982522678,
+              "observed": 0.8287841191066998
+            },
+            {
+              "bin": 8,
+              "n": 5636,
+              "prediction": 0.8552036994051819,
+              "observed": 0.8907026259758695
+            },
+            {
+              "bin": 9,
+              "n": 7584,
+              "prediction": 0.9326780713264143,
+              "observed": 0.9578059071729957
+            }
+          ],
+          "known_players": {
+            "outcomes": 22517,
+            "log_loss": 0.49927508246549157,
+            "brier": 0.16479487698710266,
+            "accuracy": 0.7647777234978017
+          },
+          "unseen_pairing": {
+            "outcomes": 40973,
+            "log_loss": 0.47293425325890853,
+            "brier": 0.15445221474285803,
+            "accuracy": 0.7789153833011984
+          },
+          "same_hull": {
+            "outcomes": 1470,
+            "log_loss": 0.5226581923852076,
+            "brier": 0.17457647609368157,
+            "accuracy": 0.7438775510204082
+          },
+          "established_players": {
+            "outcomes": 6282,
+            "log_loss": 0.5425963720943809,
+            "brier": 0.18323184696106698,
+            "accuracy": 0.7202324100604903
+          },
+          "established_repeat_capped": {
+            "outcomes": 6282,
+            "log_loss": 0.5421002747313264,
+            "brier": 0.18296806533419266,
+            "accuracy": 0.720946594179725
+          },
+          "established_same_hull": {
+            "outcomes": 398,
+            "log_loss": 0.6033091687127712,
+            "brier": 0.20896819317114473,
+            "accuracy": 0.6834170854271356
+          }
+        },
+        "hulls_only_pairs16": {
+          "all": {
+            "outcomes": 42161,
+            "log_loss": 0.31219215902104175,
+            "brier": 0.09983696958836819,
+            "accuracy": 0.8496714973553758
+          },
+          "repeat_capped": {
+            "outcomes": 42161,
+            "log_loss": 0.3123574560013171,
+            "brier": 0.09987979571390435,
+            "accuracy": 0.8496576361126976
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 7262,
+              "prediction": 0.034178546138632145,
+              "observed": 0.04199944918755164
+            },
+            {
+              "bin": 1,
+              "n": 2428,
+              "prediction": 0.1470864822700382,
+              "observed": 0.20881383855024713
+            },
+            {
+              "bin": 2,
+              "n": 1542,
+              "prediction": 0.24778431869647458,
+              "observed": 0.32555123216601817
+            },
+            {
+              "bin": 3,
+              "n": 1958,
+              "prediction": 0.3519209256548852,
+              "observed": 0.48314606741573035
+            },
+            {
+              "bin": 4,
+              "n": 2079,
+              "prediction": 0.45250246317783066,
+              "observed": 0.5786435786435786
+            },
+            {
+              "bin": 5,
+              "n": 3734,
+              "prediction": 0.5275224599734171,
+              "observed": 0.6432779860739154
+            },
+            {
+              "bin": 6,
+              "n": 2264,
+              "prediction": 0.6496327170443366,
+              "observed": 0.7619257950530035
+            },
+            {
+              "bin": 7,
+              "n": 2119,
+              "prediction": 0.7529505155122255,
+              "observed": 0.8253893345917885
+            },
+            {
+              "bin": 8,
+              "n": 3532,
+              "prediction": 0.8558903807859444,
+              "observed": 0.9170441676104191
+            },
+            {
+              "bin": 9,
+              "n": 15243,
+              "prediction": 0.9693854817617926,
+              "observed": 0.9884537164600145
+            }
+          ],
+          "known_players": {
+            "outcomes": 22517,
+            "log_loss": 0.3439016886745251,
+            "brier": 0.11121241504107908,
+            "accuracy": 0.8314384687125284
+          },
+          "unseen_pairing": {
+            "outcomes": 40973,
+            "log_loss": 0.30868810567684374,
+            "brier": 0.09854050865476847,
+            "accuracy": 0.8520733165743294
+          },
+          "same_hull": {
+            "outcomes": 1470,
+            "log_loss": 0.6931471805599453,
+            "brier": 0.25,
+            "accuracy": 0.5
+          },
+          "established_players": {
+            "outcomes": 6282,
+            "log_loss": 0.42072652996688564,
+            "brier": 0.13976234281873345,
+            "accuracy": 0.7819165870741802
+          },
+          "established_repeat_capped": {
+            "outcomes": 6282,
+            "log_loss": 0.42111904585657906,
+            "brier": 0.13988028622161344,
+            "accuracy": 0.7818815957787018
+          },
+          "established_same_hull": {
+            "outcomes": 398,
+            "log_loss": 0.6931471805599452,
+            "brier": 0.25,
+            "accuracy": 0.5
+          }
+        },
+        "players_ridge1": {
+          "all": {
+            "outcomes": 42161,
+            "log_loss": 0.45291044674265346,
+            "brier": 0.14772829861736234,
+            "accuracy": 0.7789544840018026
+          },
+          "repeat_capped": {
+            "outcomes": 42161,
+            "log_loss": 0.4528341728388801,
+            "brier": 0.14768836719577935,
+            "accuracy": 0.7791666666666667
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 2723,
+              "prediction": 0.05583622610521956,
+              "observed": 0.06793977230995225
+            },
+            {
+              "bin": 1,
+              "n": 2524,
+              "prediction": 0.14956585634973776,
+              "observed": 0.15729001584786054
+            },
+            {
+              "bin": 2,
+              "n": 2438,
+              "prediction": 0.2502211041896264,
+              "observed": 0.2723543888433142
+            },
+            {
+              "bin": 3,
+              "n": 2736,
+              "prediction": 0.3516353673673634,
+              "observed": 0.3958333333333333
+            },
+            {
+              "bin": 4,
+              "n": 3426,
+              "prediction": 0.4521234922583377,
+              "observed": 0.5265615878575598
+            },
+            {
+              "bin": 5,
+              "n": 6079,
+              "prediction": 0.5323693205414166,
+              "observed": 0.6443493995722981
+            },
+            {
+              "bin": 6,
+              "n": 3891,
+              "prediction": 0.6511035151737985,
+              "observed": 0.7396556155230019
+            },
+            {
+              "bin": 7,
+              "n": 4350,
+              "prediction": 0.7515308494110605,
+              "observed": 0.8268965517241379
+            },
+            {
+              "bin": 8,
+              "n": 5858,
+              "prediction": 0.8530130859686791,
+              "observed": 0.897746671218846
+            },
+            {
+              "bin": 9,
+              "n": 8136,
+              "prediction": 0.9453495476317457,
+              "observed": 0.9661996066863323
+            }
+          ],
+          "known_players": {
+            "outcomes": 22517,
+            "log_loss": 0.4506199157991969,
+            "brier": 0.146386968645058,
+            "accuracy": 0.7876937425056624
+          },
+          "unseen_pairing": {
+            "outcomes": 40973,
+            "log_loss": 0.45308413035223644,
+            "brier": 0.14778884743413934,
+            "accuracy": 0.778793351719425
+          },
+          "same_hull": {
+            "outcomes": 1470,
+            "log_loss": 0.5163373532219437,
+            "brier": 0.17220105612226735,
+            "accuracy": 0.7363945578231292
+          },
+          "established_players": {
+            "outcomes": 6282,
+            "log_loss": 0.4952591100942015,
+            "brier": 0.16367501943401191,
+            "accuracy": 0.7574021012416428
+          },
+          "established_repeat_capped": {
+            "outcomes": 6282,
+            "log_loss": 0.4947837066885864,
+            "brier": 0.1634635580168673,
+            "accuracy": 0.7582027502398465
+          },
+          "established_same_hull": {
+            "outcomes": 398,
+            "log_loss": 0.5556163955930896,
+            "brier": 0.18607973805732547,
+            "accuracy": 0.7261306532663316
+          }
+        }
+      },
+      "day_block_comparisons": {
+        "elo_k48": {
+          "baseline_minus_selected_log_loss": 0.17598968192134373,
+          "ci95": [
+            0.16310572508997787,
+            0.1892802149482324
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "smoothed_win_loss": {
+          "baseline_minus_selected_log_loss": 0.17742905686437474,
+          "ci95": [
+            0.1668000024864691,
+            0.18818959336659496
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "old_strength_proxy": {
+          "baseline_minus_selected_log_loss": 0.22025884852637068,
+          "ci95": [
+            0.20955689748344572,
+            0.23016568505979412
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "hulls_only_pairs16": {
+          "baseline_minus_selected_log_loss": 0.09927761965162336,
+          "ci95": [
+            0.09195100704559461,
+            0.10723005444717996
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "players_ridge1": {
+          "baseline_minus_selected_log_loss": 0.17294228048363058,
+          "ci95": [
+            0.1620927240992193,
+            0.18364777616172992
+          ],
+          "days": 31,
+          "resamples": 3000
+        }
+      }
+    },
+    "2023": {
+      "outcomes": 46458,
+      "established_outcomes": 7172,
+      "metrics": {
+        "players_hulls_pairs16": {
+          "all": {
+            "outcomes": 46458,
+            "log_loss": 0.24102433135419674,
+            "brier": 0.07403766719583252,
+            "accuracy": 0.8962826639114899
+          },
+          "repeat_capped": {
+            "outcomes": 46458,
+            "log_loss": 0.2412970483615199,
+            "brier": 0.07412439162025776,
+            "accuracy": 0.8961800833279364
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 8929,
+              "prediction": 0.030593275884607717,
+              "observed": 0.018255123754059806
+            },
+            {
+              "bin": 1,
+              "n": 2558,
+              "prediction": 0.14535195107277202,
+              "observed": 0.1434714620797498
+            },
+            {
+              "bin": 2,
+              "n": 1863,
+              "prediction": 0.24898039235189015,
+              "observed": 0.2758990874932904
+            },
+            {
+              "bin": 3,
+              "n": 1599,
+              "prediction": 0.35102226254132035,
+              "observed": 0.3889931207004378
+            },
+            {
+              "bin": 4,
+              "n": 1916,
+              "prediction": 0.4533376935326,
+              "observed": 0.5146137787056367
+            },
+            {
+              "bin": 5,
+              "n": 2137,
+              "prediction": 0.5474997254448798,
+              "observed": 0.6406176883481516
+            },
+            {
+              "bin": 6,
+              "n": 2103,
+              "prediction": 0.6527426052222319,
+              "observed": 0.755587256300523
+            },
+            {
+              "bin": 7,
+              "n": 2402,
+              "prediction": 0.7513047159590367,
+              "observed": 0.8363863447127394
+            },
+            {
+              "bin": 8,
+              "n": 3933,
+              "prediction": 0.85584169568008,
+              "observed": 0.9227053140096618
+            },
+            {
+              "bin": 9,
+              "n": 19018,
+              "prediction": 0.9736756161435446,
+              "observed": 0.9910085182458723
+            }
+          ],
+          "known_players": {
+            "outcomes": 25185,
+            "log_loss": 0.25488688964459383,
+            "brier": 0.07849664639324289,
+            "accuracy": 0.8898947786380782
+          },
+          "unseen_pairing": {
+            "outcomes": 45239,
+            "log_loss": 0.23982659742031198,
+            "brier": 0.07369615303376438,
+            "accuracy": 0.8966268043060192
+          },
+          "same_hull": {
+            "outcomes": 1811,
+            "log_loss": 0.5457351396631962,
+            "brier": 0.18360600786404835,
+            "accuracy": 0.7263942573163997
+          },
+          "established_players": {
+            "outcomes": 7172,
+            "log_loss": 0.3125813573543247,
+            "brier": 0.09873202099910132,
+            "accuracy": 0.8597322922476297
+          },
+          "established_repeat_capped": {
+            "outcomes": 7172,
+            "log_loss": 0.3126024351646353,
+            "brier": 0.0987503066070727,
+            "accuracy": 0.8597231930658465
+          },
+          "established_same_hull": {
+            "outcomes": 508,
+            "log_loss": 0.5312202162920258,
+            "brier": 0.17699903087574875,
+            "accuracy": 0.7421259842519685
+          }
+        },
+        "elo_k48": {
+          "all": {
+            "outcomes": 46458,
+            "log_loss": 0.4624938274285049,
+            "brier": 0.15069735322681402,
+            "accuracy": 0.780306943906324
+          },
+          "repeat_capped": {
+            "outcomes": 46458,
+            "log_loss": 0.4623656681320622,
+            "brier": 0.15064820023168168,
+            "accuracy": 0.7803585691772986
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 3270,
+              "prediction": 0.053218068213140686,
+              "observed": 0.06483180428134556
+            },
+            {
+              "bin": 1,
+              "n": 2920,
+              "prediction": 0.14722615885673954,
+              "observed": 0.13561643835616438
+            },
+            {
+              "bin": 2,
+              "n": 2413,
+              "prediction": 0.2501024612530929,
+              "observed": 0.2619146290924161
+            },
+            {
+              "bin": 3,
+              "n": 2641,
+              "prediction": 0.3518715307783448,
+              "observed": 0.35744036349867475
+            },
+            {
+              "bin": 4,
+              "n": 4672,
+              "prediction": 0.4552901107057321,
+              "observed": 0.523972602739726
+            },
+            {
+              "bin": 5,
+              "n": 8258,
+              "prediction": 0.5331749647827033,
+              "observed": 0.6930249455073868
+            },
+            {
+              "bin": 6,
+              "n": 4206,
+              "prediction": 0.6493432676442722,
+              "observed": 0.7646219686162625
+            },
+            {
+              "bin": 7,
+              "n": 4386,
+              "prediction": 0.7520446546844644,
+              "observed": 0.8481532147742818
+            },
+            {
+              "bin": 8,
+              "n": 5792,
+              "prediction": 0.8525440717130536,
+              "observed": 0.9045234806629834
+            },
+            {
+              "bin": 9,
+              "n": 7900,
+              "prediction": 0.9492953783056611,
+              "observed": 0.9575949367088608
+            }
+          ],
+          "known_players": {
+            "outcomes": 25185,
+            "log_loss": 0.45620760390134957,
+            "brier": 0.14749981511900326,
+            "accuracy": 0.7924161207067699
+          },
+          "unseen_pairing": {
+            "outcomes": 45239,
+            "log_loss": 0.46392654943543327,
+            "brier": 0.15130868881846524,
+            "accuracy": 0.7792502044695948
+          },
+          "same_hull": {
+            "outcomes": 1811,
+            "log_loss": 0.5386347150103354,
+            "brier": 0.18075291913404476,
+            "accuracy": 0.7197680839315296
+          },
+          "established_players": {
+            "outcomes": 7172,
+            "log_loss": 0.48134606116358575,
+            "brier": 0.15720402849552784,
+            "accuracy": 0.7702175125488009
+          },
+          "established_repeat_capped": {
+            "outcomes": 7172,
+            "log_loss": 0.481686882156912,
+            "brier": 0.15732432715512568,
+            "accuracy": 0.7700824828743185
+          },
+          "established_same_hull": {
+            "outcomes": 508,
+            "log_loss": 0.5354898603438641,
+            "brier": 0.17856776030729896,
+            "accuracy": 0.7381889763779528
+          }
+        },
+        "smoothed_win_loss": {
+          "all": {
+            "outcomes": 46458,
+            "log_loss": 0.4913898964950311,
+            "brier": 0.16218654353000575,
+            "accuracy": 0.7566296439795084
+          },
+          "repeat_capped": {
+            "outcomes": 46458,
+            "log_loss": 0.49131346183943836,
+            "brier": 0.1621606681825452,
+            "accuracy": 0.7566716318027762
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 1569,
+              "prediction": 0.06221499347209197,
+              "observed": 0.042702358189929894
+            },
+            {
+              "bin": 1,
+              "n": 2764,
+              "prediction": 0.1510037179366491,
+              "observed": 0.1183068017366136
+            },
+            {
+              "bin": 2,
+              "n": 3176,
+              "prediction": 0.2523669906756514,
+              "observed": 0.23016372795969772
+            },
+            {
+              "bin": 3,
+              "n": 3665,
+              "prediction": 0.3510452466467242,
+              "observed": 0.4002728512960437
+            },
+            {
+              "bin": 4,
+              "n": 4540,
+              "prediction": 0.4477746973042089,
+              "observed": 0.5352422907488987
+            },
+            {
+              "bin": 5,
+              "n": 8440,
+              "prediction": 0.5324948598145617,
+              "observed": 0.6727488151658768
+            },
+            {
+              "bin": 6,
+              "n": 5519,
+              "prediction": 0.6489222109884126,
+              "observed": 0.7582895452074652
+            },
+            {
+              "bin": 7,
+              "n": 5847,
+              "prediction": 0.7486553414738593,
+              "observed": 0.8414571575166753
+            },
+            {
+              "bin": 8,
+              "n": 6194,
+              "prediction": 0.850243695232817,
+              "observed": 0.9226670971908298
+            },
+            {
+              "bin": 9,
+              "n": 4744,
+              "prediction": 0.9411368549389576,
+              "observed": 0.9643760539629005
+            }
+          ],
+          "known_players": {
+            "outcomes": 25185,
+            "log_loss": 0.4622969059065526,
+            "brier": 0.14999263508833396,
+            "accuracy": 0.7861822513400833
+          },
+          "unseen_pairing": {
+            "outcomes": 45239,
+            "log_loss": 0.49358064998136447,
+            "brier": 0.16308496039214587,
+            "accuracy": 0.7550012157651583
+          },
+          "same_hull": {
+            "outcomes": 1811,
+            "log_loss": 0.5463164219771453,
+            "brier": 0.1843721517171741,
+            "accuracy": 0.7128658199889564
+          },
+          "established_players": {
+            "outcomes": 7172,
+            "log_loss": 0.4821795384716269,
+            "brier": 0.1583310151252479,
+            "accuracy": 0.770287228109314
+          },
+          "established_repeat_capped": {
+            "outcomes": 7172,
+            "log_loss": 0.48244756459920096,
+            "brier": 0.15844599966409856,
+            "accuracy": 0.7701523836152663
+          },
+          "established_same_hull": {
+            "outcomes": 508,
+            "log_loss": 0.525737466205249,
+            "brier": 0.17399967739587374,
+            "accuracy": 0.7539370078740157
+          }
+        },
+        "old_strength_proxy": {
+          "all": {
+            "outcomes": 46458,
+            "log_loss": 0.4759225031089782,
+            "brier": 0.1551677340193539,
+            "accuracy": 0.7781006500495071
+          },
+          "repeat_capped": {
+            "outcomes": 46458,
+            "log_loss": 0.47583925227411483,
+            "brier": 0.1551382396797451,
+            "accuracy": 0.7782300369147075
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 2998,
+              "prediction": 0.06937780899757638,
+              "observed": 0.08172114743162108
+            },
+            {
+              "bin": 1,
+              "n": 3494,
+              "prediction": 0.14775365976595087,
+              "observed": 0.18717801946193474
+            },
+            {
+              "bin": 2,
+              "n": 2720,
+              "prediction": 0.25194043569335506,
+              "observed": 0.27058823529411763
+            },
+            {
+              "bin": 3,
+              "n": 2708,
+              "prediction": 0.350483291222357,
+              "observed": 0.3836779911373708
+            },
+            {
+              "bin": 4,
+              "n": 4097,
+              "prediction": 0.4605174662116291,
+              "observed": 0.5015865267268733
+            },
+            {
+              "bin": 5,
+              "n": 7836,
+              "prediction": 0.5283016658738114,
+              "observed": 0.6912965798876978
+            },
+            {
+              "bin": 6,
+              "n": 4049,
+              "prediction": 0.6494362883607401,
+              "observed": 0.7799456655964435
+            },
+            {
+              "bin": 7,
+              "n": 4512,
+              "prediction": 0.7510648155470767,
+              "observed": 0.838209219858156
+            },
+            {
+              "bin": 8,
+              "n": 6545,
+              "prediction": 0.8528823191096135,
+              "observed": 0.8987012987012987
+            },
+            {
+              "bin": 9,
+              "n": 7499,
+              "prediction": 0.9324545212309177,
+              "observed": 0.9503933857847713
+            }
+          ],
+          "known_players": {
+            "outcomes": 25185,
+            "log_loss": 0.49430916835873556,
+            "brier": 0.16235794504986162,
+            "accuracy": 0.7698828667857852
+          },
+          "unseen_pairing": {
+            "outcomes": 45239,
+            "log_loss": 0.4758935254393688,
+            "brier": 0.1551599358346906,
+            "accuracy": 0.7779128627953756
+          },
+          "same_hull": {
+            "outcomes": 1811,
+            "log_loss": 0.5652842294066651,
+            "brier": 0.18970651890923093,
+            "accuracy": 0.7178354500276091
+          },
+          "established_players": {
+            "outcomes": 7172,
+            "log_loss": 0.5377635284149193,
+            "brier": 0.18074857884631995,
+            "accuracy": 0.7274121583937535
+          },
+          "established_repeat_capped": {
+            "outcomes": 7172,
+            "log_loss": 0.5377599379241673,
+            "brier": 0.18075279057652283,
+            "accuracy": 0.727429050747938
+          },
+          "established_same_hull": {
+            "outcomes": 508,
+            "log_loss": 0.6047804088042142,
+            "brier": 0.2065946206896882,
+            "accuracy": 0.6968503937007874
+          }
+        },
+        "hulls_only_pairs16": {
+          "all": {
+            "outcomes": 46458,
+            "log_loss": 0.30334285359895025,
+            "brier": 0.0966177057214774,
+            "accuracy": 0.8553209350380989
+          },
+          "repeat_capped": {
+            "outcomes": 46458,
+            "log_loss": 0.3037185285240566,
+            "brier": 0.09673816856208481,
+            "accuracy": 0.8551772337715605
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 8332,
+              "prediction": 0.033404782005025384,
+              "observed": 0.038766202592414784
+            },
+            {
+              "bin": 1,
+              "n": 2538,
+              "prediction": 0.1409737437566662,
+              "observed": 0.17888100866824272
+            },
+            {
+              "bin": 2,
+              "n": 1885,
+              "prediction": 0.24875055539509972,
+              "observed": 0.33050397877984083
+            },
+            {
+              "bin": 3,
+              "n": 1946,
+              "prediction": 0.3543531170003956,
+              "observed": 0.4773895169578623
+            },
+            {
+              "bin": 4,
+              "n": 2223,
+              "prediction": 0.45413656764501353,
+              "observed": 0.550157444894287
+            },
+            {
+              "bin": 5,
+              "n": 4328,
+              "prediction": 0.5283204447264439,
+              "observed": 0.6441774491682071
+            },
+            {
+              "bin": 6,
+              "n": 2134,
+              "prediction": 0.6464548246845732,
+              "observed": 0.7446110590440488
+            },
+            {
+              "bin": 7,
+              "n": 2565,
+              "prediction": 0.7531432517764728,
+              "observed": 0.8288499025341131
+            },
+            {
+              "bin": 8,
+              "n": 3642,
+              "prediction": 0.8587612978380269,
+              "observed": 0.9255903349807798
+            },
+            {
+              "bin": 9,
+              "n": 16865,
+              "prediction": 0.9709032919554009,
+              "observed": 0.9883782982508152
+            }
+          ],
+          "known_players": {
+            "outcomes": 25185,
+            "log_loss": 0.3296230911392843,
+            "brier": 0.10563417354132347,
+            "accuracy": 0.8405598570577725
+          },
+          "unseen_pairing": {
+            "outcomes": 45239,
+            "log_loss": 0.30011320642261363,
+            "brier": 0.09540768284512444,
+            "accuracy": 0.857711266827295
+          },
+          "same_hull": {
+            "outcomes": 1811,
+            "log_loss": 0.6931471805599452,
+            "brier": 0.25,
+            "accuracy": 0.5
+          },
+          "established_players": {
+            "outcomes": 7172,
+            "log_loss": 0.40376889119683035,
+            "brier": 0.13247883696910678,
+            "accuracy": 0.7976854433909648
+          },
+          "established_repeat_capped": {
+            "outcomes": 7172,
+            "log_loss": 0.403542798762604,
+            "brier": 0.13238476162824298,
+            "accuracy": 0.7978855025863274
+          },
+          "established_same_hull": {
+            "outcomes": 508,
+            "log_loss": 0.6931471805599454,
+            "brier": 0.25,
+            "accuracy": 0.5
+          }
+        },
+        "players_ridge1": {
+          "all": {
+            "outcomes": 46458,
+            "log_loss": 0.4462972801361652,
+            "brier": 0.1446551663392228,
+            "accuracy": 0.7854406130268199
+          },
+          "repeat_capped": {
+            "outcomes": 46458,
+            "log_loss": 0.4461646199579526,
+            "brier": 0.1446082793847499,
+            "accuracy": 0.7856539947758133
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 3300,
+              "prediction": 0.05558561943993812,
+              "observed": 0.062424242424242424
+            },
+            {
+              "bin": 1,
+              "n": 3261,
+              "prediction": 0.14888334820419935,
+              "observed": 0.13738117141980988
+            },
+            {
+              "bin": 2,
+              "n": 2681,
+              "prediction": 0.24911557695223588,
+              "observed": 0.24692279000372996
+            },
+            {
+              "bin": 3,
+              "n": 2856,
+              "prediction": 0.3512127094634316,
+              "observed": 0.4068627450980392
+            },
+            {
+              "bin": 4,
+              "n": 3580,
+              "prediction": 0.450642167926437,
+              "observed": 0.5346368715083799
+            },
+            {
+              "bin": 5,
+              "n": 6435,
+              "prediction": 0.5316602673637437,
+              "observed": 0.6671328671328671
+            },
+            {
+              "bin": 6,
+              "n": 4196,
+              "prediction": 0.6513590322688184,
+              "observed": 0.7390371782650142
+            },
+            {
+              "bin": 7,
+              "n": 4545,
+              "prediction": 0.7514814301746455,
+              "observed": 0.8257425742574257
+            },
+            {
+              "bin": 8,
+              "n": 6615,
+              "prediction": 0.8531783642953543,
+              "observed": 0.8979591836734694
+            },
+            {
+              "bin": 9,
+              "n": 8989,
+              "prediction": 0.9465281153046534,
+              "observed": 0.9585048392479697
+            }
+          ],
+          "known_players": {
+            "outcomes": 25185,
+            "log_loss": 0.4381895241480939,
+            "brier": 0.14097273915045522,
+            "accuracy": 0.7982132221560453
+          },
+          "unseen_pairing": {
+            "outcomes": 45239,
+            "log_loss": 0.4474817663276056,
+            "brier": 0.14516100730401169,
+            "accuracy": 0.7844558898295718
+          },
+          "same_hull": {
+            "outcomes": 1811,
+            "log_loss": 0.5343010383313339,
+            "brier": 0.17794938615096761,
+            "accuracy": 0.7302595251242407
+          },
+          "established_players": {
+            "outcomes": 7172,
+            "log_loss": 0.4759527400448455,
+            "brier": 0.1551555775432977,
+            "accuracy": 0.774261015058561
+          },
+          "established_repeat_capped": {
+            "outcomes": 7172,
+            "log_loss": 0.4762232870414837,
+            "brier": 0.15527351499459655,
+            "accuracy": 0.7739689640710191
+          },
+          "established_same_hull": {
+            "outcomes": 508,
+            "log_loss": 0.5330507748718036,
+            "brier": 0.17499122772225922,
+            "accuracy": 0.7539370078740157
+          }
+        }
+      },
+      "day_block_comparisons": {
+        "elo_k48": {
+          "baseline_minus_selected_log_loss": 0.16908444699227673,
+          "ci95": [
+            0.15715495101934246,
+            0.1807674425887912
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "smoothed_win_loss": {
+          "baseline_minus_selected_log_loss": 0.16984512943456573,
+          "ci95": [
+            0.15714393906810528,
+            0.18163172190007484
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "old_strength_proxy": {
+          "baseline_minus_selected_log_loss": 0.22515750275953197,
+          "ci95": [
+            0.21508699109410911,
+            0.23527692117148638
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "hulls_only_pairs16": {
+          "baseline_minus_selected_log_loss": 0.09094036359796868,
+          "ci95": [
+            0.08230663123325056,
+            0.0994559306885877
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "players_ridge1": {
+          "baseline_minus_selected_log_loss": 0.1636208518768484,
+          "ci95": [
+            0.1511850672751273,
+            0.1759517370590838
+          ],
+          "days": 31,
+          "resamples": 3000
+        }
+      }
+    },
+    "2022": {
+      "outcomes": 36879,
+      "established_outcomes": 7052,
+      "metrics": {
+        "players_hulls_pairs16": {
+          "all": {
+            "outcomes": 36879,
+            "log_loss": 0.25984795516794024,
+            "brier": 0.08075905062185132,
+            "accuracy": 0.8853412511185227
+          },
+          "repeat_capped": {
+            "outcomes": 36879,
+            "log_loss": 0.25914577939507716,
+            "brier": 0.0804929585992733,
+            "accuracy": 0.885790317434377
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 6404,
+              "prediction": 0.03192106794868466,
+              "observed": 0.021549031855090568
+            },
+            {
+              "bin": 1,
+              "n": 2031,
+              "prediction": 0.14798206358685076,
+              "observed": 0.12703101920236337
+            },
+            {
+              "bin": 2,
+              "n": 1507,
+              "prediction": 0.24764874417734636,
+              "observed": 0.27604512276045123
+            },
+            {
+              "bin": 3,
+              "n": 1491,
+              "prediction": 0.35082149637693033,
+              "observed": 0.397719651240778
+            },
+            {
+              "bin": 4,
+              "n": 1752,
+              "prediction": 0.45440304943350657,
+              "observed": 0.5131278538812786
+            },
+            {
+              "bin": 5,
+              "n": 1940,
+              "prediction": 0.5474649333996341,
+              "observed": 0.6365979381443299
+            },
+            {
+              "bin": 6,
+              "n": 1878,
+              "prediction": 0.6499033021252222,
+              "observed": 0.7497337593184239
+            },
+            {
+              "bin": 7,
+              "n": 2128,
+              "prediction": 0.7519846996382373,
+              "observed": 0.8280075187969925
+            },
+            {
+              "bin": 8,
+              "n": 3213,
+              "prediction": 0.854184583589901,
+              "observed": 0.9221910986616869
+            },
+            {
+              "bin": 9,
+              "n": 14535,
+              "prediction": 0.9731826736281898,
+              "observed": 0.9914000687994496
+            }
+          ],
+          "known_players": {
+            "outcomes": 20967,
+            "log_loss": 0.29109722456002374,
+            "brier": 0.09171059974113144,
+            "accuracy": 0.8671722230171222
+          },
+          "unseen_pairing": {
+            "outcomes": 35376,
+            "log_loss": 0.2533813683151324,
+            "brier": 0.07843634336182413,
+            "accuracy": 0.8890349389416553
+          },
+          "same_hull": {
+            "outcomes": 3329,
+            "log_loss": 0.5577673067939656,
+            "brier": 0.18917288956484285,
+            "accuracy": 0.707269450285371
+          },
+          "established_players": {
+            "outcomes": 7052,
+            "log_loss": 0.37125047152661866,
+            "brier": 0.12031867007120815,
+            "accuracy": 0.8245887691435054
+          },
+          "established_repeat_capped": {
+            "outcomes": 7052,
+            "log_loss": 0.37070718833950966,
+            "brier": 0.12012447548271063,
+            "accuracy": 0.8248696112786245
+          },
+          "established_same_hull": {
+            "outcomes": 1715,
+            "log_loss": 0.5630443298150622,
+            "brier": 0.19151830410969073,
+            "accuracy": 0.7055393586005831
+          }
+        },
+        "elo_k48": {
+          "all": {
+            "outcomes": 36879,
+            "log_loss": 0.47548564108773583,
+            "brier": 0.1554798893899097,
+            "accuracy": 0.7719433824127552
+          },
+          "repeat_capped": {
+            "outcomes": 36879,
+            "log_loss": 0.475063992632865,
+            "brier": 0.1553332205763855,
+            "accuracy": 0.772134218943338
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 2305,
+              "prediction": 0.05822569513081005,
+              "observed": 0.0876355748373102
+            },
+            {
+              "bin": 1,
+              "n": 2474,
+              "prediction": 0.14943513619187854,
+              "observed": 0.17219078415521422
+            },
+            {
+              "bin": 2,
+              "n": 2128,
+              "prediction": 0.24828629637143776,
+              "observed": 0.2462406015037594
+            },
+            {
+              "bin": 3,
+              "n": 2299,
+              "prediction": 0.3524367793499569,
+              "observed": 0.3806002609830361
+            },
+            {
+              "bin": 4,
+              "n": 3725,
+              "prediction": 0.4543548886459535,
+              "observed": 0.5624161073825503
+            },
+            {
+              "bin": 5,
+              "n": 6039,
+              "prediction": 0.5360401541711143,
+              "observed": 0.6885245901639344
+            },
+            {
+              "bin": 6,
+              "n": 3629,
+              "prediction": 0.6499307588286874,
+              "observed": 0.7801047120418848
+            },
+            {
+              "bin": 7,
+              "n": 3816,
+              "prediction": 0.7516812747623722,
+              "observed": 0.8372641509433962
+            },
+            {
+              "bin": 8,
+              "n": 5004,
+              "prediction": 0.8528725592653424,
+              "observed": 0.9094724220623501
+            },
+            {
+              "bin": 9,
+              "n": 5460,
+              "prediction": 0.9452204790288219,
+              "observed": 0.956959706959707
+            }
+          ],
+          "known_players": {
+            "outcomes": 20967,
+            "log_loss": 0.4848079517592752,
+            "brier": 0.15878459926824184,
+            "accuracy": 0.772666571278676
+          },
+          "unseen_pairing": {
+            "outcomes": 35376,
+            "log_loss": 0.47381911064660875,
+            "brier": 0.15469977255078526,
+            "accuracy": 0.7735894391677973
+          },
+          "same_hull": {
+            "outcomes": 3329,
+            "log_loss": 0.5869482130374293,
+            "brier": 0.1985254313267422,
+            "accuracy": 0.700360468609192
+          },
+          "established_players": {
+            "outcomes": 7052,
+            "log_loss": 0.5256788399947201,
+            "brier": 0.17599072365524632,
+            "accuracy": 0.7345433919455474
+          },
+          "established_repeat_capped": {
+            "outcomes": 7052,
+            "log_loss": 0.5256633994469301,
+            "brier": 0.17599743329555093,
+            "accuracy": 0.7345030967321328
+          },
+          "established_same_hull": {
+            "outcomes": 1715,
+            "log_loss": 0.6205291130234275,
+            "brier": 0.21300725619480612,
+            "accuracy": 0.6752186588921283
+          }
+        },
+        "smoothed_win_loss": {
+          "all": {
+            "outcomes": 36879,
+            "log_loss": 0.5087258959292428,
+            "brier": 0.16938670643818585,
+            "accuracy": 0.7449632582228368
+          },
+          "repeat_capped": {
+            "outcomes": 36879,
+            "log_loss": 0.5083397459045674,
+            "brier": 0.16921995510257665,
+            "accuracy": 0.7454114428906061
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 983,
+              "prediction": 0.06225489328544416,
+              "observed": 0.03763987792472025
+            },
+            {
+              "bin": 1,
+              "n": 1988,
+              "prediction": 0.15409702534377667,
+              "observed": 0.14084507042253522
+            },
+            {
+              "bin": 2,
+              "n": 2544,
+              "prediction": 0.2515844525713657,
+              "observed": 0.24646226415094338
+            },
+            {
+              "bin": 3,
+              "n": 3221,
+              "prediction": 0.3513981793412173,
+              "observed": 0.4067059919279727
+            },
+            {
+              "bin": 4,
+              "n": 4132,
+              "prediction": 0.4477318065170195,
+              "observed": 0.5532429816069699
+            },
+            {
+              "bin": 5,
+              "n": 6836,
+              "prediction": 0.5360808966314117,
+              "observed": 0.680661205383265
+            },
+            {
+              "bin": 6,
+              "n": 4832,
+              "prediction": 0.647698526507071,
+              "observed": 0.761796357615894
+            },
+            {
+              "bin": 7,
+              "n": 4784,
+              "prediction": 0.7493493313348515,
+              "observed": 0.8551421404682275
+            },
+            {
+              "bin": 8,
+              "n": 4371,
+              "prediction": 0.8475201617409795,
+              "observed": 0.9199267902081903
+            },
+            {
+              "bin": 9,
+              "n": 3188,
+              "prediction": 0.9408956335635468,
+              "observed": 0.9711417816813049
+            }
+          ],
+          "known_players": {
+            "outcomes": 20967,
+            "log_loss": 0.4911777808945239,
+            "brier": 0.1617701170292243,
+            "accuracy": 0.7651309200171699
+          },
+          "unseen_pairing": {
+            "outcomes": 35376,
+            "log_loss": 0.5092186561433535,
+            "brier": 0.1695017468920233,
+            "accuracy": 0.7451238127544098
+          },
+          "same_hull": {
+            "outcomes": 3329,
+            "log_loss": 0.5883175706086202,
+            "brier": 0.20175023065468564,
+            "accuracy": 0.6839891859417242
+          },
+          "established_players": {
+            "outcomes": 7052,
+            "log_loss": 0.5217101489807062,
+            "brier": 0.17500645329620101,
+            "accuracy": 0.732770845150312
+          },
+          "established_repeat_capped": {
+            "outcomes": 7052,
+            "log_loss": 0.5219332867980925,
+            "brier": 0.17510705094681991,
+            "accuracy": 0.732634870833673
+          },
+          "established_same_hull": {
+            "outcomes": 1715,
+            "log_loss": 0.6088236502970709,
+            "brier": 0.21017260709089647,
+            "accuracy": 0.668804664723032
+          }
+        },
+        "old_strength_proxy": {
+          "all": {
+            "outcomes": 36879,
+            "log_loss": 0.48068181027907686,
+            "brier": 0.15641998049555333,
+            "accuracy": 0.7775021014669595
+          },
+          "repeat_capped": {
+            "outcomes": 36879,
+            "log_loss": 0.48038807349224283,
+            "brier": 0.1563379946663485,
+            "accuracy": 0.7777451575498643
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 2420,
+              "prediction": 0.07120584476131388,
+              "observed": 0.11322314049586776
+            },
+            {
+              "bin": 1,
+              "n": 2867,
+              "prediction": 0.1469098006632215,
+              "observed": 0.2064876177188699
+            },
+            {
+              "bin": 2,
+              "n": 2119,
+              "prediction": 0.24707435497937233,
+              "observed": 0.2817366682397357
+            },
+            {
+              "bin": 3,
+              "n": 2153,
+              "prediction": 0.35142348023430015,
+              "observed": 0.36321411983279145
+            },
+            {
+              "bin": 4,
+              "n": 3439,
+              "prediction": 0.4617496749075882,
+              "observed": 0.5248618784530387
+            },
+            {
+              "bin": 5,
+              "n": 5700,
+              "prediction": 0.530548950789904,
+              "observed": 0.6907017543859649
+            },
+            {
+              "bin": 6,
+              "n": 3415,
+              "prediction": 0.6495936130961785,
+              "observed": 0.7915080527086383
+            },
+            {
+              "bin": 7,
+              "n": 3740,
+              "prediction": 0.7508892372339262,
+              "observed": 0.8443850267379679
+            },
+            {
+              "bin": 8,
+              "n": 5435,
+              "prediction": 0.8547776685536378,
+              "observed": 0.902851885924563
+            },
+            {
+              "bin": 9,
+              "n": 5591,
+              "prediction": 0.930038816702813,
+              "observed": 0.95278125558934
+            }
+          ],
+          "known_players": {
+            "outcomes": 20967,
+            "log_loss": 0.5152007826928346,
+            "brier": 0.17050642170773042,
+            "accuracy": 0.7551867219917012
+          },
+          "unseen_pairing": {
+            "outcomes": 35376,
+            "log_loss": 0.4779464436745891,
+            "brier": 0.1552099337048223,
+            "accuracy": 0.7798083446404342
+          },
+          "same_hull": {
+            "outcomes": 3329,
+            "log_loss": 0.590685386190381,
+            "brier": 0.2005074186569306,
+            "accuracy": 0.6972063682787624
+          },
+          "established_players": {
+            "outcomes": 7052,
+            "log_loss": 0.5615116922732993,
+            "brier": 0.1907403232608815,
+            "accuracy": 0.7084515031196824
+          },
+          "established_repeat_capped": {
+            "outcomes": 7052,
+            "log_loss": 0.5615308778322057,
+            "brier": 0.1907483384091716,
+            "accuracy": 0.7084762855512999
+          },
+          "established_same_hull": {
+            "outcomes": 1715,
+            "log_loss": 0.6055481692752438,
+            "brier": 0.2093857478617537,
+            "accuracy": 0.671137026239067
+          }
+        },
+        "hulls_only_pairs16": {
+          "all": {
+            "outcomes": 36879,
+            "log_loss": 0.32555105601682544,
+            "brier": 0.10551985549265232,
+            "accuracy": 0.8326554407657475
+          },
+          "repeat_capped": {
+            "outcomes": 36879,
+            "log_loss": 0.32501588779679025,
+            "brier": 0.10531951612008804,
+            "accuracy": 0.8330204515210236
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 5761,
+              "prediction": 0.03306345149968581,
+              "observed": 0.03610484290921715
+            },
+            {
+              "bin": 1,
+              "n": 2021,
+              "prediction": 0.14844677944358545,
+              "observed": 0.17714002968827314
+            },
+            {
+              "bin": 2,
+              "n": 1089,
+              "prediction": 0.24694043225205484,
+              "observed": 0.31129476584022037
+            },
+            {
+              "bin": 3,
+              "n": 1349,
+              "prediction": 0.3497920164689231,
+              "observed": 0.4766493699036323
+            },
+            {
+              "bin": 4,
+              "n": 2087,
+              "prediction": 0.4540612950287902,
+              "observed": 0.5711547676090082
+            },
+            {
+              "bin": 5,
+              "n": 5611,
+              "prediction": 0.5195524002250529,
+              "observed": 0.6004277312422028
+            },
+            {
+              "bin": 6,
+              "n": 1683,
+              "prediction": 0.6493891380081398,
+              "observed": 0.7688651218062983
+            },
+            {
+              "bin": 7,
+              "n": 1449,
+              "prediction": 0.7524267551484112,
+              "observed": 0.8481711525189786
+            },
+            {
+              "bin": 8,
+              "n": 3164,
+              "prediction": 0.8525689511722548,
+              "observed": 0.9244627054361567
+            },
+            {
+              "bin": 9,
+              "n": 12665,
+              "prediction": 0.9717954407025495,
+              "observed": 0.9889459139360443
+            }
+          ],
+          "known_players": {
+            "outcomes": 20967,
+            "log_loss": 0.3688791117140208,
+            "brier": 0.12133801715131246,
+            "accuracy": 0.8038345972242095
+          },
+          "unseen_pairing": {
+            "outcomes": 35376,
+            "log_loss": 0.3168784524906843,
+            "brier": 0.10227149791817615,
+            "accuracy": 0.8389727498869289
+          },
+          "same_hull": {
+            "outcomes": 3329,
+            "log_loss": 0.6931471805599453,
+            "brier": 0.25,
+            "accuracy": 0.5
+          },
+          "established_players": {
+            "outcomes": 7052,
+            "log_loss": 0.4700313366090302,
+            "brier": 0.15923610427257398,
+            "accuracy": 0.7307855927396484
+          },
+          "established_repeat_capped": {
+            "outcomes": 7052,
+            "log_loss": 0.46917895515697206,
+            "brier": 0.1588974255931151,
+            "accuracy": 0.7315270760329232
+          },
+          "established_same_hull": {
+            "outcomes": 1715,
+            "log_loss": 0.6931471805599454,
+            "brier": 0.25,
+            "accuracy": 0.5
+          }
+        },
+        "players_ridge1": {
+          "all": {
+            "outcomes": 36879,
+            "log_loss": 0.45557176112277,
+            "brier": 0.1480667938387526,
+            "accuracy": 0.7807017543859649
+          },
+          "repeat_capped": {
+            "outcomes": 36879,
+            "log_loss": 0.45521751926773185,
+            "brier": 0.14793411014525765,
+            "accuracy": 0.7809992684767975
+          },
+          "calibration": [
+            {
+              "bin": 0,
+              "n": 2410,
+              "prediction": 0.058726037979607584,
+              "observed": 0.06846473029045644
+            },
+            {
+              "bin": 1,
+              "n": 2590,
+              "prediction": 0.1468514422072078,
+              "observed": 0.17104247104247106
+            },
+            {
+              "bin": 2,
+              "n": 2242,
+              "prediction": 0.2503814126709078,
+              "observed": 0.26181980374665476
+            },
+            {
+              "bin": 3,
+              "n": 2366,
+              "prediction": 0.3504245672893338,
+              "observed": 0.3994082840236686
+            },
+            {
+              "bin": 4,
+              "n": 2926,
+              "prediction": 0.45216421385204647,
+              "observed": 0.5539986329460014
+            },
+            {
+              "bin": 5,
+              "n": 4832,
+              "prediction": 0.5343431255276172,
+              "observed": 0.6554221854304636
+            },
+            {
+              "bin": 6,
+              "n": 3604,
+              "prediction": 0.6489255288244948,
+              "observed": 0.746392896781354
+            },
+            {
+              "bin": 7,
+              "n": 4114,
+              "prediction": 0.752666195391649,
+              "observed": 0.8354399611084103
+            },
+            {
+              "bin": 8,
+              "n": 5352,
+              "prediction": 0.8533859790366798,
+              "observed": 0.9007847533632287
+            },
+            {
+              "bin": 9,
+              "n": 6443,
+              "prediction": 0.944206187063417,
+              "observed": 0.9632158932174453
+            }
+          ],
+          "known_players": {
+            "outcomes": 20967,
+            "log_loss": 0.460928597190222,
+            "brier": 0.15023704364763493,
+            "accuracy": 0.7824199933228406
+          },
+          "unseen_pairing": {
+            "outcomes": 35376,
+            "log_loss": 0.45432645329254673,
+            "brier": 0.14744374195715063,
+            "accuracy": 0.7820697648123022
+          },
+          "same_hull": {
+            "outcomes": 3329,
+            "log_loss": 0.5682058616308026,
+            "brier": 0.1923181291659165,
+            "accuracy": 0.7105737458696305
+          },
+          "established_players": {
+            "outcomes": 7052,
+            "log_loss": 0.5029015583057321,
+            "brier": 0.1677745975027362,
+            "accuracy": 0.7473057288712422
+          },
+          "established_repeat_capped": {
+            "outcomes": 7052,
+            "log_loss": 0.5030148367498645,
+            "brier": 0.1678262704369668,
+            "accuracy": 0.7474054681770027
+          },
+          "established_same_hull": {
+            "outcomes": 1715,
+            "log_loss": 0.5778089736296232,
+            "brier": 0.1981206414105842,
+            "accuracy": 0.6944606413994169
+          }
+        }
+      },
+      "day_block_comparisons": {
+        "elo_k48": {
+          "baseline_minus_selected_log_loss": 0.15495621110742042,
+          "ci95": [
+            0.13044176429224671,
+            0.18551995693838563
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "smoothed_win_loss": {
+          "baseline_minus_selected_log_loss": 0.1512260984585828,
+          "ci95": [
+            0.12483462618868484,
+            0.18484841643508962
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "old_strength_proxy": {
+          "baseline_minus_selected_log_loss": 0.19082368949269607,
+          "ci95": [
+            0.15365807101914988,
+            0.2349823300283702
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "hulls_only_pairs16": {
+          "baseline_minus_selected_log_loss": 0.09847176681746245,
+          "ci95": [
+            0.08278624406616764,
+            0.11100672316616166
+          ],
+          "days": 31,
+          "resamples": 3000
+        },
+        "players_ridge1": {
+          "baseline_minus_selected_log_loss": 0.13230764841035486,
+          "ci95": [
+            0.10131747974452135,
+            0.16933955914090285
+          ],
+          "days": 31,
+          "resamples": 3000
+        }
+      }
+    }
+  },
+  "quality_gate": {
+    "passed": true,
+    "current_year_improves_elo_and_hull_only_at_95_percent_day_block_ci": true,
+    "eras_improved_over_elo": 5,
+    "eras": 5
+  }
+}

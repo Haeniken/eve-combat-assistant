@@ -54,7 +54,7 @@ python3 scripts/build_bootstrap.py --directory build/seed --end 2026-10-29 --day
 
 Для актуализации существующего снимка используйте `build_bootstrap.py --refresh-period`: перекрывающиеся полные дни переиспользуются, из периода выходят старые даты, новые и изменённые дни дозагружаются. После проверки обновлённой годовой истории повторите калибровку и присоединение таблиц. Клиенту поставляются только компактные дневные суммы. Его обновление пересчитывает винрейты и цвета по локальной базе, отдельную годовую загрузку не запускает.
 
-Для упаковки также нужен каталог текстов лицензий зависимостей с `DEPENDENCIES.json`. Список требований и лицензий — в [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). Само приложение и комплект лицензий должны соответствовать одному `Cargo.lock`.
+Перед упаковкой присоедините годовые наблюдения SOLO по инструкции в следующем разделе. Также нужен каталог текстов лицензий зависимостей с `DEPENDENCIES.json`. Список требований и лицензий — в [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). Само приложение и комплект лицензий должны соответствовать одному `Cargo.lock`.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/package_windows.ps1 -SeedDirectory C:\build\seed -LicenseDirectory C:\build\licenses
@@ -63,10 +63,36 @@ powershell -ExecutionPolicy Bypass -File scripts/build_installer.ps1
 
 `package_windows.ps1` принимает необязательный `-Executable`. Он создаёт portable-архив в `dist`, затем `build_installer.ps1` собирает установщик из той же папки приложения.
 
+## Подготовка годового SOLO-рейтинга
+
+Исследовательские скрипты выполняются отдельно от приложения. Нужны Python 3.11, NumPy и SciPy; Windows-клиент эти библиотеки не использует.
+
+1. Создайте каталог исследования и сохраните в нём `https://r2z2.zkillboard.com/history/totals.json`.
+2. `build_pilot_catalog.py` создаёт каталог корпусов и боевых предметов из закреплённого SDE.
+3. `collect_pilot_history.py` сохраняет сжатые дневные архивы, проверяет дневные итоги и извлекает компактные наблюдения. Он возобновляет работу по SQLite; два потока используют общее ограничение частоты запросов. При нехватке 25 ГиБ свободного места загрузка останавливается.
+4. `evaluate_pilot_ratings.py` сравнивает варианты на последовательных временных отрезках. `compare_pilot_rating_holdouts.py` содержит воспроизводимый эксперимент по пяти годовым окнам 2022–2026 и проверку дневных доверительных интервалов. Результаты поставки сохранены в `resources/pilot-rating-validation.json`.
+5. `export_pilot_ratings.py` обучает выбранную конфигурацию на текущих 365 днях и создаёт `pilot-rating-model.json.gz`. `export_pilot_duels.py` создаёт компактную SQLite-базу этих же наблюдений. Экспорт модели требует сходимости оптимизации.
+6. Скопируйте готовую модель в `resources/pilot-rating-model.json.gz`, пересчитайте цветовые метаданные через `calibrate_ratings.py` и присоедините наблюдения к подготовленному снимку базы:
+
+```bash
+python3 scripts/build_pilot_catalog.py research/annual-rating-catalog.json
+python3 scripts/collect_pilot_history.py --directory research --catalog research/annual-rating-catalog.json --start 2021-10-30 --end 2026-10-29
+python3 scripts/evaluate_pilot_ratings.py --directory research --end 2026-10-29 --output research/validation/2026
+python3 scripts/compare_pilot_rating_holdouts.py --directory research
+python3 scripts/export_pilot_ratings.py --directory research --end 2026-10-29 --model players_hulls_pairs16 --output research/pilot-rating-model.json.gz
+python3 scripts/export_pilot_duels.py --directory research --end 2026-10-29 --output research/annual-duels.sqlite3
+python3 scripts/install_pilot_seed.py --seed-directory build/seed --observations research/annual-duels.sqlite3 --model resources/pilot-rating-model.json.gz
+```
+
+В клиент входят модель и компактные наблюдения за один год. Пятилетние архивы нужны для исследования и не поставляются. Личная оценка уточняется с фиксированными коэффициентами соперников и корпусов; полноценное обучение общей модели выполняют исследовательские скрипты.
+
+`install_pilot_seed.py` открывает источник наблюдений только для чтения и заменяет только таблицы годового рейтинга в сборочном снимке. Он проверяет период, количество исходов, сходимость модели, целостность SQLite и SHA256. Настройки и пользовательская база в этой операции не участвуют.
+
 ## Диагностические команды
 
 ```text
 eve-combat-assistant.exe --analyze --ship Rifter --fit my-fit.eft
+eve-combat-assistant.exe --annual-rating-diagnostic 123456789 --data-dir C:\EVECheck --seed-database C:\build\seed\seed.sqlite3
 eve-combat-assistant.exe --sync --ship Rifter --days 90
 eve-combat-assistant.exe --archive-from 2026-10-01 --archive-to 2026-10-26
 ```

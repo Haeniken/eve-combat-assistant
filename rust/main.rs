@@ -2,6 +2,8 @@
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod account;
+mod annual_rating;
+mod annual_store;
 mod app;
 mod control;
 mod diagnostics;
@@ -50,6 +52,8 @@ pub struct Args {
     fit_diagnostic: bool,
     #[arg(long, hide = true)]
     seed_database: Option<PathBuf>,
+    #[arg(long, hide = true)]
+    annual_rating_diagnostic: Option<i64>,
     #[arg(long)]
     analyze: bool,
     #[arg(long)]
@@ -88,6 +92,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     std::fs::create_dir_all(&directory)?;
+    if let Some(character) = args.annual_rating_diagnostic {
+        let prepared = annual_rating::prepared(character);
+        let at = prepared
+            .as_ref()
+            .map(|e| e.checked_at)
+            .unwrap_or_else(store::timestamp);
+        let store = if args.seed_database.is_some() {
+            store::Store::open_with_seed(&directory, args.seed_database.as_deref())?
+        } else {
+            store::Store::open(&directory)?
+        };
+        let start = std::time::Instant::now();
+        let rows = store.annual_duels(character, at)?;
+        let mut evidence = annual_rating::Evidence::new(character, at);
+        evidence.extend_duels(&rows);
+        let estimate = evidence.finish();
+        let value = serde_json::json!({"prepared":prepared,"recalculated":estimate,"rows":rows.len(),"elapsed_ms":start.elapsed().as_millis()});
+        std::fs::write(
+            directory.join("annual-rating-diagnostic.json"),
+            serde_json::to_vec_pretty(&value)?,
+        )?;
+        println!("{value}");
+        return Ok(());
+    }
     if let Some(path) = &args.prepare_seed {
         seed::prepare(path, &directory)?;
         return Ok(());

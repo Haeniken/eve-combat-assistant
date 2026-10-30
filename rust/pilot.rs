@@ -1,11 +1,10 @@
-//! Solo evidence and group participation are separate; this is not opponent-based Elo.
+//! Annual solo player strength and historical group participation are separate.
 use crate::{
     model::{id, n},
     store::Store,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::OnceLock;
 
 pub const ACTIVITY_WINDOW: i64 = 3 * 86400;
 pub const ACTIVITY_TTL: i64 = 3600;
@@ -106,39 +105,6 @@ pub fn cached_activity(store: &Store, character: i64) -> Option<ActivityCache> {
     (entry.character_id == character).then_some(entry)
 }
 
-#[derive(Deserialize)]
-struct Reference {
-    knots: Vec<[f64; 2]>,
-}
-fn reference() -> &'static Reference {
-    static REFERENCE: OnceLock<Reference> = OnceLock::new();
-    REFERENCE.get_or_init(|| {
-        serde_json::from_str(include_str!("../resources/pilot-rating-reference.json"))
-            .expect("bundled solo calibration")
-    })
-}
-fn solo_score(wins: u64, losses: u64) -> Option<u16> {
-    let sample = wins.checked_add(losses)?;
-    if sample < 20 || wins < 5 {
-        return None;
-    }
-    // Smoothed outcome quality times experience. A loss cannot increase it.
-    let strength = (wins as f64 + 5.) / (sample as f64 + 150.);
-    let knots = &reference().knots;
-    let index = knots.partition_point(|k| k[0] < strength);
-    let percentile = if index == 0 {
-        0.
-    } else if index == knots.len() {
-        1.
-    } else {
-        let [left, low] = knots[index - 1];
-        let [right, high] = knots[index];
-        low + (high - low) * (strength - left) / (right - left)
-    };
-    // 9000..9998 is deliberately reserved for a future model revision.
-    Some((1000. + (7999. * percentile.clamp(0., 1.)).floor()).clamp(1000., 8999.) as u16)
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Rating {
     #[serde(default = "stats_available_default")]
@@ -153,6 +119,8 @@ pub struct Rating {
     pub average_gang: Option<f64>,
     #[serde(default)]
     pub recent: RecentActivity,
+    #[serde(default)]
+    pub annual: Option<crate::annual_rating::Estimate>,
 }
 fn stats_available_default() -> bool {
     true
@@ -173,6 +141,7 @@ impl Rating {
             large_group_fraction: None,
             average_gang: None,
             recent: RecentActivity::default(),
+            annual: None,
         }
     }
     pub fn from_stats(stats: &Value, character_id: i64) -> Result<Self, String> {
@@ -196,7 +165,6 @@ impl Rating {
         if solo_kills > kills || solo_losses > losses {
             return Err("Несогласованные соло-счётчики zKillboard".into());
         }
-        let score = solo_score(solo_kills, solo_losses);
         let large_keys = ["#:10+", "#:25+", "#:50+", "#:100+", "#:1000+"];
         let large = large_keys
             .iter()
@@ -218,13 +186,14 @@ impl Rating {
             solo_kills,
             solo_losses,
             kills,
-            score,
+            score: None,
             group_fraction: (kills > 0).then(|| 1. - solo_kills as f64 / kills as f64),
             large_group_fraction: large
                 .filter(|n| *n <= kills && kills > 0)
                 .map(|n| n as f64 / kills as f64),
             average_gang: (average.is_finite() && average > 0.).then_some(average),
             recent: RecentActivity::default(),
+            annual: None,
         })
     }
     pub fn tier(&self) -> Option<usize> {
@@ -269,19 +238,21 @@ impl Rating {
         format!("{who} · {time}")
     }
     pub fn hint(&self) -> String {
-        if !self.stats_available {
+        if !self.stats_available && self.annual.is_none() {
             return "Статистика zKillboard для персонажа пока недоступна".into();
         }
         let mut hint = if self.score.is_some() {
-            "Условная оценка соло по zKillboard; не официальный ELO.\n"
+            "Годовая соло-оценка по результатам против игроков с учётом корпусов.\n"
         } else {
             "Недостаточно соло-данных для оценки.\n"
         }
         .to_string();
-        hint += &format!(
-            "Соло-убийства: {} · соло-потери: {}\n",
-            self.solo_kills, self.solo_losses
-        );
+        if let Some(annual) = &self.annual {
+            hint += &format!(
+                "За 365 дней: {} побед · {} потерь\nРазных соперников: {}\n",
+                annual.wins, annual.losses, annual.opponents
+            );
+        }
         if let Some(group) = self.group_fraction {
             hint += &format!("Убийства в группе: {:.0}%\n", group * 100.);
         }
@@ -291,7 +262,7 @@ impl Rating {
         if let Some(avg) = self.average_gang {
             hint += &format!("Средний размер группы по zKillboard: {avg:.1}\n");
         }
-        hint += "Статистика за всё время. Соло-метка zKillboard не доказывает честную дуэль; помощь и состав флота полностью не видны. Групповые убийства не повышают соло-оценку.";
+        hint += "Групповые метки — за всё время. Не отражённая в killmail помощь и бои без уничтожения корабля не видны. Групповые убийства не повышают соло-оценку.";
         hint
     }
 }
@@ -303,13 +274,34 @@ pub fn cached(store: &Store, name: &str) -> Option<Rating> {
     cached_character(store, character)
 }
 pub fn cached_character(store: &Store, character: i64) -> Option<Rating> {
-    let mut rating: Rating =
-        serde_json::from_value(store.meta(&format!("pilot_rating:v1:{character}"))?).ok()?;
-    rating.score = solo_score(rating.solo_kills, rating.solo_losses);
+    let mut rating: Rating = store
+        .meta(&format!("pilot_rating:v1:{character}"))
+        .and_then(|v| serde_json::from_value(v).ok())
+        .or_else(|| {
+            (store
+                .meta(&format!("annual_rating:v1:{character}"))
+                .is_some()
+                || crate::annual_rating::prepared(character).is_some())
+            .then(|| Rating::unavailable(character))
+        })?;
+    apply_annual(store, &mut rating);
     if let Some(cached) = cached_activity(store, character) {
         rating.recent = cached.activity;
     }
     (rating.character_id == character).then_some(rating)
+}
+pub fn apply_annual(store: &Store, rating: &mut Rating) {
+    let now = crate::store::timestamp();
+    rating.annual = store
+        .meta(&format!("annual_rating:v1:{}", rating.character_id))
+        .and_then(|v| serde_json::from_value::<crate::annual_rating::Estimate>(v).ok())
+        .filter(|e| {
+            e.character_id == rating.character_id
+                && e.model == crate::annual_rating::version()
+                && (0..crate::annual_rating::WINDOW).contains(&now.saturating_sub(e.checked_at))
+        })
+        .or_else(|| crate::annual_rating::prepared(rating.character_id));
+    rating.score = rating.annual.as_ref().and_then(|e| e.score);
 }
 
 #[cfg(test)]
@@ -473,53 +465,14 @@ mod tests {
             assert_eq!(r.tier(), Some(tier));
             assert!(!r.hint().contains("log") && !r.hint().contains("обновлен"));
         }
-        let small = Rating::from_stats(&stats(30, 30, 10), 123)
-            .unwrap()
-            .score
-            .unwrap();
-        let large = Rating::from_stats(&stats(300, 300, 100), 123)
-            .unwrap()
-            .score
-            .unwrap();
-        assert!(large > small);
-        let perfect = Rating::from_stats(&stats(1_000_000_000, 1_000_000_000, 0), 123).unwrap();
-        assert_eq!(perfect.score, Some(8999));
-        for (wins, losses) in [(15, 5), (50, 20), (1000, 500)] {
-            let original = Rating::from_stats(&stats(wins, wins, losses), 123)
-                .unwrap()
-                .score
-                .unwrap();
-            let win = Rating::from_stats(&stats(wins + 1, wins + 1, losses), 123)
-                .unwrap()
-                .score
-                .unwrap();
-            let loss = Rating::from_stats(&stats(wins, wins, losses + 1), 123)
-                .unwrap()
-                .score
-                .unwrap();
-            assert!(win >= original && loss <= original);
+        // Lifetime aggregates cannot stand in for complete annual evidence.
+        for (wins, losses) in [(30, 10), (300, 100), (1_000_000_000, 0)] {
+            assert!(
+                Rating::from_stats(&stats(wins, wins, losses), 123)
+                    .unwrap()
+                    .score
+                    .is_none()
+            );
         }
-    }
-    #[test]
-    fn real_reference_is_ordered_and_spreads_eligible_players_across_the_current_scale() {
-        let knots = &reference().knots;
-        assert!(knots.len() >= 30);
-        assert_eq!(knots.first().unwrap()[1], 0.);
-        assert_eq!(knots.last().unwrap()[1], 1.);
-        for pair in knots.windows(2) {
-            assert!(pair[0][0] < pair[1][0] && pair[0][1] <= pair[1][1]);
-        }
-        let data: Value =
-            serde_json::from_str(include_str!("../resources/pilot-rating-reference.json")).unwrap();
-        let mut tiers = [0; 7];
-        for row in data["samples"].as_array().unwrap() {
-            let wins = row["solo_kills"].as_u64().unwrap();
-            let losses = row["solo_losses"].as_u64().unwrap();
-            let r = Rating::from_stats(&stats(wins, wins, losses), 123).unwrap();
-            let score = r.score.unwrap();
-            assert!((1000..=8999).contains(&score));
-            tiers[r.tier().unwrap()] += 1;
-        }
-        assert!(tiers.iter().all(|n| *n > 0));
     }
 }

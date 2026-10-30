@@ -84,6 +84,7 @@ impl Store {
           CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);
           CREATE TABLE IF NOT EXISTS global_membership(id INTEGER PRIMARY KEY);") .map_err(|e|e.to_string())?;
         crate::matchups::setup(&db)?;
+        crate::annual_store::setup(&db)?;
         let mut store = Self {
             db,
             seed: None,

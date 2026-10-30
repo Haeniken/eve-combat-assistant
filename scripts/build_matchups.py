@@ -22,7 +22,8 @@ EXCLUDED_GROUPS = {29, 31, 237}  # capsules, shuttles, corvettes, on both sides
 def records(path):
     """Iterate either {id: killmail} or [killmail], with bounded decoding memory."""
     decoder = json.JSONDecoder()
-    with path.open(encoding='utf-8') as source:
+    opener = gzip.open if path.suffix == '.gz' else Path.open
+    with opener(path, mode='rt', encoding='utf-8') as source:
         buffer, pos = '', 0
 
         def more():

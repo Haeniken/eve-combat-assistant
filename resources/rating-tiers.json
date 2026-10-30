@@ -111,8 +111,8 @@
       7000,
       8000
     ],
-    "reference_profiles": 39,
-    "reference_model": "solo-reference-2026-10-28-v1",
+    "reference_profiles": 9164,
+    "reference_model": "annual-pairwise-v1-20261029-c48ba194-fbe458c0-2af5b3b8",
     "reference_percentiles": [
       0.125,
       0.25,
@@ -122,29 +122,33 @@
       0.875
     ],
     "unrounded_boundaries": [
-      1999.5,
-      2999.5,
-      3999.5,
-      5999.25,
+      1999.375,
+      2999.0,
+      3999.125,
+      5998.875,
       6999.0,
-      7998.75
+      7998.625
     ],
     "tier_reference_counts": [
-      5,
-      5,
-      5,
-      9,
-      5,
-      5,
-      5
+      1146,
+      1146,
+      1145,
+      2291,
+      1146,
+      1145,
+      1145
     ],
-    "scope": "lifetime",
+    "scope": "rolling_365_days",
+    "period_start": "2025-10-30",
+    "period_end": "2026-10-29",
+    "reference_participants": 157673,
+    "qualifying_outcomes": 526673,
     "score_min": 1000,
     "score_max": 8999,
     "reserved": [
       9000,
       9998
     ],
-    "method": "Empirical score quantiles at 12.5,25,37.5,62.5,75,87.5 percent, rounded upwards to a hundred; the central quarter is green. Score model and lifetime counters are unchanged."
+    "method": "Empirical percentiles of annual regularized player strength, with joint hull and matchup effects. Score quantiles at 12.5,25,37.5,62.5,75,87.5 percent, rounded upwards to a hundred; the central quarter is green."
   }
 }

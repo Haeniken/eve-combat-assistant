@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Derive the shared seven-color scale from recorded hull and lifetime pilot data."""
+"""Derive the shared seven-color scale from recorded hull and annual player-model data."""
 import argparse
 import bisect
+import gzip
 import json
 import math
 from pathlib import Path
@@ -19,8 +20,7 @@ COLORS = [
 ]
 
 
-def pilot_score(wins, losses, knots):
-    strength=(wins+5)/(wins+losses+150)
+def pilot_score(strength, knots):
     index=bisect.bisect_left([k[0] for k in knots],strength)
     if index==0:
         percentile=0
@@ -50,8 +50,8 @@ def main():
     boundaries=[math.floor(v+.5) for v in raw]
     assert len(set(boundaries))==6 and boundaries==sorted(boundaries)
     assert bisect.bisect_right(boundaries,50)==3
-    reference=json.loads((root/'resources/pilot-rating-reference.json').read_text())
-    scores=sorted(pilot_score(r['solo_kills'],r['solo_losses'],reference['knots']) for r in reference['samples'])
+    reference=json.loads(gzip.decompress((root/'resources/pilot-rating-model.json.gz').read_bytes()))
+    scores=sorted(pilot_score(r[1],reference['calibration_knots']) for r in reference['players'] if r[2]+r[3]>=reference['minimum_battles'] and r[4]>=reference['minimum_opponents'])
     percentiles=[.125,.25,.375,.625,.75,.875]
     elo_quantiles=[quantile(scores,p) for p in percentiles]
     elo_boundaries=[math.ceil(value/100)*100 for value in elo_quantiles]
@@ -72,10 +72,10 @@ def main():
         },
         'solo':{
             'boundaries':elo_boundaries,'reference_profiles':len(scores),
-            'reference_model':reference['model_id'],'reference_percentiles':percentiles,'unrounded_boundaries':elo_quantiles,
+            'reference_model':reference['version'],'reference_percentiles':percentiles,'unrounded_boundaries':elo_quantiles,
             'tier_reference_counts':count(scores,elo_boundaries),
-            'scope':'lifetime','score_min':1000,'score_max':8999,'reserved':[9000,9998],
-            'method':'Empirical score quantiles at 12.5,25,37.5,62.5,75,87.5 percent, rounded upwards to a hundred; the central quarter is green. Score model and lifetime counters are unchanged.',
+            'scope':'rolling_365_days','period_start':reference['period_start'],'period_end':reference['period_end'],'reference_participants':len(reference['players']),'qualifying_outcomes':reference['evidence']['filtered_outcomes'],'score_min':1000,'score_max':8999,'reserved':[9000,9998],
+            'method':'Empirical percentiles of annual regularized player strength, with joint hull and matchup effects. Score quantiles at 12.5,25,37.5,62.5,75,87.5 percent, rounded upwards to a hundred; the central quarter is green.',
         },
     }
     (root/'resources/rating-tiers.json').write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')

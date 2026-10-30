@@ -71,6 +71,38 @@ pub struct Sources {
     on_update: Option<Box<dyn Fn(UpdateProgress) + Send>>,
     interactive_deadline: Option<Instant>,
 }
+fn annual_routes(base: &str, character: i64, since: i64, now: i64) -> Result<Vec<String>, String> {
+    if since >= now {
+        return Ok(Vec::new());
+    }
+    if now - since <= 604800 {
+        return Ok(vec![format!(
+            "{base}/characterID/{character}/solo/pastSeconds/604800"
+        )]);
+    }
+    let date = chrono::DateTime::from_timestamp(
+        (since - 604800).max(now - crate::annual_rating::WINDOW),
+        0,
+    )
+    .ok_or("Некорректное начало истории")?
+    .date_naive();
+    let end = chrono::DateTime::from_timestamp(now, 0)
+        .ok_or("Некорректное время истории")?
+        .date_naive();
+    let mut month = NaiveDate::from_ymd_opt(date.year(), date.month(), 1).unwrap();
+    let mut routes = Vec::new();
+    while month <= end {
+        routes.push(format!(
+            "{base}/characterID/{character}/solo/year/{}/month/{}",
+            month.year(),
+            month.month()
+        ));
+        month = month
+            .checked_add_months(chrono::Months::new(1))
+            .ok_or("Переполнение периода истории")?;
+    }
+    Ok(routes)
+}
 impl Sources {
     pub fn refresh_statistics(
         &mut self,
@@ -566,6 +598,7 @@ impl Sources {
         };
         self.store.set_meta(&missing_key, &Value::Null)?;
         let mut rating = crate::pilot::Rating::from_stats(&stats, character)?;
+        crate::pilot::apply_annual(&self.store, &mut rating);
         if let Some(cached) = crate::pilot::cached_activity(&self.store, character) {
             rating.recent = cached.activity;
         }
@@ -578,6 +611,138 @@ impl Sources {
             json!({"character_id":character,"rating":rating}),
         );
         Ok(rating)
+    }
+    pub fn refresh_annual_rating(
+        &mut self,
+        rating: &mut crate::pilot::Rating,
+        stop: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, String> {
+        let result = self.refresh_annual_rating_at(
+            rating,
+            "https://zkillboard.com/api",
+            Utc::now().timestamp(),
+            stop,
+        );
+        self.record("annual_rating_end",json!({"character_id":rating.character_id,"annual":rating.annual,"error":result.as_ref().err()}));
+        result
+    }
+    fn refresh_annual_rating_at(
+        &mut self,
+        rating: &mut crate::pilot::Rating,
+        base: &str,
+        now: i64,
+        stop: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, String> {
+        let character = rating.character_id;
+        let cache = format!("annual_rating:v1:{character}");
+        let cached = self
+            .store
+            .meta(&cache)
+            .and_then(|v| serde_json::from_value::<crate::annual_rating::Estimate>(v).ok());
+        if let Some(estimate) = cached.filter(|e| {
+            e.character_id == character
+                && e.model == crate::annual_rating::version()
+                && (0..3600).contains(&now.saturating_sub(e.checked_at))
+        }) {
+            rating.score = estimate.score;
+            rating.annual = Some(estimate);
+            return Ok(false);
+        }
+        let attempt = format!("annual_rating_attempt:v1:{character}");
+        if self
+            .store
+            .meta(&attempt)
+            .and_then(|v| v.as_i64())
+            .is_some_and(|at| (0..60).contains(&now.saturating_sub(at)))
+        {
+            return Ok(false);
+        }
+        self.store.set_meta(&attempt, &json!(now))?;
+        self.limit_interactive(Duration::from_secs(8));
+        let mut evidence = crate::annual_rating::Evidence::new(character, now);
+        evidence.extend_duels(&self.store.annual_duels(character, now)?);
+        let checked_key = format!("annual_personal_checked:v3:{character}");
+        let checked = self
+            .store
+            .meta(&checked_key)
+            .and_then(|v| v.as_i64())
+            .filter(|at| *at <= now)
+            .unwrap_or(0);
+        let since = self
+            .store
+            .annual_gap(now)?
+            .max(checked)
+            .max(now - crate::annual_rating::WINDOW);
+        let routes = annual_routes(base, character, since, now)?;
+        let mut requests = 0;
+        for route in routes {
+            let mut complete = false;
+            for page in 1..=100 {
+                if stop() {
+                    return Err("Дозагрузка годовой оценки отложена для нового запроса".into());
+                }
+                let url = format!("{route}/page/{page}/");
+                if self.store.cached(&url).is_none() {
+                    if requests >= 6 {
+                        return Err(
+                            "Дозагрузка годовой оценки продолжится из кеша при следующей проверке"
+                                .into(),
+                        );
+                    }
+                    requests += 1;
+                }
+                let value = self.request_bounded(
+                    &url,
+                    None,
+                    3600,
+                    RequestPolicy {
+                        limit: 8 * 1024 * 1024,
+                        attempts: 1,
+                        timeout_seconds: 4,
+                    },
+                )?;
+                let rows = value
+                    .as_array()
+                    .ok_or("Некорректный ответ истории пилота")?;
+                if rows.iter().any(|r| {
+                    id(&r["victim"], "character_id") != character
+                        && !array(&r["attackers"])
+                            .iter()
+                            .any(|a| id(a, "character_id") == character)
+                }) {
+                    return Err("История содержит другого персонажа".into());
+                }
+                if rows.iter().any(|r| {
+                    !r["victim"]["items"].is_array()
+                        || !r["attackers"].is_array()
+                        || r["killmail_time"]
+                            .as_str()
+                            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                            .is_none()
+                }) {
+                    return Err("Источник вернул неполные сведения о бое".into());
+                }
+                let delta = evidence.extend(rows, &self.catalog);
+                self.store.apply_annual_delta(&delta)?;
+                self.record("annual_rating_page",json!({"character_id":character,"page":page,"route":route,"records":rows.len(),"eligible":evidence.len(),"new_requests":requests}));
+                if rows.len() < 200 {
+                    complete = true;
+                    break;
+                }
+            }
+            if !complete {
+                return Err("Источник ограничил историю; сохранена предыдущая оценка".into());
+            }
+        }
+        let estimate = evidence.finish();
+        self.store.set_meta(&checked_key, &json!(now))?;
+        self.store.set_meta(
+            &cache,
+            &serde_json::to_value(&estimate).map_err(|e| e.to_string())?,
+        )?;
+        rating.score = estimate.score;
+        rating.annual = Some(estimate);
+        Ok(true)
     }
     pub fn recent_participation(&mut self, rating: &mut crate::pilot::Rating) {
         let url = format!(
@@ -793,8 +958,10 @@ impl Sources {
             let matchup_covered = crate::matchups::covered(&self.store.db, &stamp);
             let needs_fits = force || !self.store.archive_matches(&stamp, expected);
             let needs_matchups = matchup_covered != Some(expected) || force;
-            self.record("archive_day",json!({"day":stamp,"expected":expected,"local_or_bundled":covered,"matchup_covered":matchup_covered,"download":expected>0 && (needs_fits || needs_matchups)}));
-            if expected == 0 || !needs_fits && !needs_matchups {
+            let annual_covered = self.store.annual_day_covered(&stamp);
+            let needs_annual = annual_covered != Some(expected) || force;
+            self.record("archive_day",json!({"day":stamp,"expected":expected,"local_or_bundled":covered,"matchup_covered":matchup_covered,"annual_covered":annual_covered,"download":expected>0 && (needs_fits || needs_matchups || needs_annual)}));
+            if expected == 0 || !needs_fits && !needs_matchups && !needs_annual {
                 self.finish_day();
                 date -= TimeDelta::days(1);
                 continue;
@@ -901,6 +1068,9 @@ impl Sources {
             };
             if verified {
                 crate::matchups::replace_day(&self.store.db, &stamp, expected, &matchup_counts)?;
+                let annual = crate::annual_rating::collect(&rows, &self.catalog);
+                self.store.replace_annual_day(&stamp, expected, &annual)?;
+                self.store.prune_annual(Utc::now().timestamp())?;
             }
             count += inserted;
             self.update_progress.inserted = count;
@@ -1173,16 +1343,16 @@ mod tests {
             crate::engine::Catalog::load().unwrap(),
         );
         let unknown = source.character_rating_at(2124807832, &url).unwrap();
-        assert!(!unknown.stats_available && unknown.score.is_none());
+        assert!(!unknown.stats_available);
+        let prepared_score = crate::annual_rating::prepared(2124807832).and_then(|e| e.score);
+        assert_eq!(unknown.score, prepared_score);
         assert_eq!(unknown.character_id, 2124807832);
         assert!(!unknown.hint().contains("Соло-убийства"));
-        assert!(
-            source
-                .character_rating_at(2124807832, &url)
-                .unwrap()
-                .score
-                .is_none()
+        assert_eq!(
+            source.character_rating_at(2124807832, &url).unwrap().score,
+            prepared_score
         );
+
         source
             .store
             .set_meta(
@@ -1191,7 +1361,8 @@ mod tests {
             )
             .unwrap();
         let recovered = source.character_rating_at(2124807832, &url).unwrap();
-        assert!(recovered.stats_available && recovered.score.is_some());
+        assert!(recovered.stats_available);
+        assert_eq!(recovered.score, prepared_score);
         assert_eq!(server.join().unwrap().len(), 2);
         drop(source);
         std::fs::remove_dir_all(directory).unwrap();
@@ -1291,7 +1462,7 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
-    fn quick_lookup_uses_lifetime_cached_rating_without_a_hull() {
+    fn quick_lookup_keeps_identity_and_group_stats_without_a_hull() {
         let directory = temp();
         let store = Store::open_with_seed(&directory, None).unwrap();
         store
@@ -1311,7 +1482,7 @@ mod tests {
         assert_eq!(profile.name, "Example Pilot");
         assert_eq!(profile.rating.character_id, 123);
         assert_eq!(profile.rating.solo_kills, 70);
-        assert!(profile.rating.score.is_some());
+        assert!(profile.rating.score.is_none());
         drop(source);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -1581,6 +1752,7 @@ mod tests {
             &crate::matchups::Counts::new(),
         )
         .unwrap();
+        source.store.replace_annual_day("20261026", 1, &[]).unwrap();
         let start = NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
         let end = start + TimeDelta::days(1);
         assert_eq!(source.archive(start, end, &|_| {}).unwrap(), 2);
@@ -1616,6 +1788,154 @@ mod tests {
         let last = updates.lock().unwrap().last().unwrap().clone();
         assert!(last.finished && last.error.is_some());
         assert_eq!(last.fraction(), Some(0.));
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    fn annual_test_coverage(store: &Store, now: i64) {
+        let date = chrono::DateTime::from_timestamp(now, 0)
+            .unwrap()
+            .date_naive();
+        let tx = store.db.unchecked_transaction().unwrap();
+        for offset in 1..=365 {
+            tx.execute(
+                "INSERT INTO annual_rating_days VALUES(?,0,?)",
+                rusqlite::params![
+                    (date - TimeDelta::days(offset))
+                        .format("%Y%m%d")
+                        .to_string(),
+                    crate::annual_store::POLICY
+                ],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    fn annual_test_rows(catalog: &crate::engine::Catalog, now: i64, count: usize) -> Vec<Value> {
+        let gun = *catalog.names.get("125mm gatling autocannon ii").unwrap();
+        (0..count).map(|i|json!({"killmail_id":128000000+i,"killmail_time":chrono::DateTime::from_timestamp(now-3600-i as i64*2,0).unwrap().to_rfc3339(),
+            "victim":{"character_id":9000000+i%10,"ship_type_id":587,"corporation_id":2,"items":[{"item_type_id":gun,"flag":27}]},
+            "attackers":[{"character_id":123,"ship_type_id":593,"corporation_id":1,"damage_done":100}]})).collect()
+    }
+    #[test]
+    fn annual_history_uses_week_delta_and_never_an_unsupported_year_seconds_filter() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 10, 30)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
+        let short = annual_routes("http://fixture", 123, now - 86400, now).unwrap();
+        assert_eq!(
+            short,
+            ["http://fixture/characterID/123/solo/pastSeconds/604800"]
+        );
+        let long = annual_routes(
+            "http://fixture",
+            123,
+            now - crate::annual_rating::WINDOW,
+            now,
+        )
+        .unwrap();
+        assert_eq!(long.len(), 13);
+        assert!(
+            long.iter()
+                .all(|s| s.contains("/year/") && !s.contains("pastSeconds"))
+        );
+        assert!(
+            annual_routes("http://fixture", 123, now, now)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    #[test]
+    fn annual_local_year_and_cached_fresh_pages_are_deduplicated() {
+        let directory = temp();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 10, 30)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
+        let catalog = crate::engine::Catalog::load().unwrap();
+        let (url, server) = mock(vec![(
+            200,
+            Value::Array(annual_test_rows(&catalog, now, 25)),
+        )]);
+        let store = Store::open_with_seed(&directory, None).unwrap();
+        annual_test_coverage(&store, now);
+        let mut source = Sources::new(store, Arc::new(AtomicBool::new(false)), catalog);
+        let mut rating = crate::pilot::Rating::unavailable(123);
+        assert!(
+            source
+                .refresh_annual_rating_at(&mut rating, &url, now, &mut || false)
+                .unwrap()
+        );
+        let year = rating.annual.as_ref().unwrap();
+        assert_eq!((year.wins, year.losses, year.opponents), (25, 0, 10));
+        assert!(year.score.is_some());
+        assert!(
+            !source
+                .refresh_annual_rating_at(&mut rating, &url, now + 1, &mut || false)
+                .unwrap()
+        );
+        assert!(
+            source
+                .refresh_annual_rating_at(&mut rating, &url, now + 3601, &mut || false)
+                .unwrap()
+        );
+        assert_eq!(
+            source.store.annual_duels(123, now + 3601).unwrap().len(),
+            25
+        );
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].contains("/pastSeconds/604800/page/1/"));
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn interrupted_year_preserves_rating_and_resumes_from_cached_page() {
+        let directory = temp();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 10, 30)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
+        let catalog = crate::engine::Catalog::load().unwrap();
+        let (url, server) = mock(vec![
+            (200, Value::Array(annual_test_rows(&catalog, now, 200))),
+            (200, json!([])),
+        ]);
+        let store = Store::open_with_seed(&directory, None).unwrap();
+        annual_test_coverage(&store, now);
+        let mut source = Sources::new(store, Arc::new(AtomicBool::new(false)), catalog);
+        let mut rating = crate::pilot::Rating::unavailable(123);
+        rating.score = Some(5000);
+        let mut checks = 0;
+        let interrupted = source.refresh_annual_rating_at(&mut rating, &url, now, &mut || {
+            checks += 1;
+            checks > 1
+        });
+        assert!(interrupted.is_err());
+        assert_eq!(rating.score, Some(5000));
+        assert!(source.store.meta("annual_rating:v1:123").is_none());
+        assert!(
+            source
+                .store
+                .meta("annual_personal_checked:v3:123")
+                .is_none()
+        );
+        assert_eq!(source.store.annual_duels(123, now).unwrap().len(), 200);
+        assert!(
+            source
+                .refresh_annual_rating_at(&mut rating, &url, now + 61, &mut || false)
+                .unwrap()
+        );
+        assert_eq!(rating.annual.unwrap().wins, 200);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("/page/1/") && requests[1].contains("/page/2/"));
         drop(source);
         std::fs::remove_dir_all(directory).unwrap();
     }

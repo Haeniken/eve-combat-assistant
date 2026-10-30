@@ -100,6 +100,17 @@ fn next_network_request(
     }
     Some(request)
 }
+fn network_waiting(
+    rx: &mpsc::Receiver<NetworkRequest>,
+    pending: &mut Option<NetworkRequest>,
+) -> bool {
+    if pending.is_none()
+        && let Ok(next) = rx.try_recv()
+    {
+        *pending = Some(next);
+    }
+    pending.is_some()
+}
 #[derive(Clone)]
 pub struct OcrConfig {
     pub epoch: u64,
@@ -549,7 +560,22 @@ impl Workers {
                     if let Some(character) = request.own_character {
                         let result = source.character_rating(character);
                         trace.event("own_pilot_rating_end", json!({"character_id":character,"rating":result.as_ref().ok(),"error":result.as_ref().err()}));
-                        emit(&event_tx, &ctx, Message::OwnPilotRating(character, result));
+                        emit(
+                            &event_tx,
+                            &ctx,
+                            Message::OwnPilotRating(character, result.clone()),
+                        );
+                        if let Ok(mut rating) = result
+                            && let Ok(true) = source.refresh_annual_rating(&mut rating, &mut || {
+                                network_waiting(&network_rx, &mut pending)
+                            })
+                        {
+                            emit(
+                                &event_tx,
+                                &ctx,
+                                Message::OwnPilotRating(character, Ok(rating)),
+                            );
+                        }
                         continue;
                     }
                     let progress = |text| {
@@ -586,11 +612,7 @@ impl Workers {
                         let mut activity_rating = None;
                         if request.settings.pilot_rating {
                             let rating = source.pilot_rating(&request.target.pilot);
-                            activity_rating = rating
-                                .as_ref()
-                                .ok()
-                                .filter(|r| r.group_marker().is_some())
-                                .cloned();
+                            activity_rating = rating.as_ref().ok().cloned();
                             trace.event("pilot_rating_end",json!({"error":rating.as_ref().err(),"rating":rating.as_ref().ok()}));
                             emit(
                                 &event_tx,
@@ -618,6 +640,10 @@ impl Workers {
                             );
                         }
                         if let Some(mut rating) = activity_rating {
+                            if network_waiting(&network_rx, &mut pending) {
+                                continue;
+                            }
+                            source.limit_interactive(Duration::from_secs(8));
                             source.recent_participation(&mut rating);
                             emit(
                                 &event_tx,
@@ -625,9 +651,22 @@ impl Workers {
                                 Message::PilotRating(
                                     request.generation,
                                     request.target.pilot.clone(),
-                                    Ok(rating),
+                                    Ok(rating.clone()),
                                 ),
                             );
+                            if let Ok(true) = source.refresh_annual_rating(&mut rating, &mut || {
+                                network_waiting(&network_rx, &mut pending)
+                            }) {
+                                emit(
+                                    &event_tx,
+                                    &ctx,
+                                    Message::PilotRating(
+                                        request.generation,
+                                        request.target.pilot.clone(),
+                                        Ok(rating),
+                                    ),
+                                );
+                            }
                         }
                     }
                     if let Some(error) = trace.take_error() {
@@ -945,7 +984,12 @@ impl Workers {
                     }
                     source.limit_interactive(Duration::from_secs(8));
                     source.recent_participation(&mut profile.rating);
-                    send(Event::Activity(profile.rating));
+                    send(Event::Activity(profile.rating.clone()));
+                    if let Ok(true) = source.refresh_annual_rating(&mut profile.rating, &mut || {
+                        request.cancel.load(Ordering::Relaxed)
+                    }) {
+                        send(Event::Activity(profile.rating));
+                    }
                 }
             });
         }

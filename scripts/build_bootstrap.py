@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-AGENT = 'EVECombatAssistant/0.3.4 (https://github.com/Haeniken/eve-combat-assistant)'
+AGENT = 'EVECombatAssistant bootstrap (https://github.com/Haeniken/eve-combat-assistant)'
 BASE = 'https://r2z2.zkillboard.com/history'
 
 
@@ -105,7 +105,7 @@ def main():
     parser.add_argument('--prepare-executable', type=Path, help='Built native app: precompute default populations before publishing the manifest')
     parser.add_argument('--matchup-directory',type=Path,help='Prepared 365-day compact hull-vs-hull statistics')
     parser.add_argument('--refresh-period',action='store_true',help='Advance an existing build snapshot by reusing overlapping complete days')
-    parser.add_argument('--directory', type=Path, default=Path('build/bootstrap-v0.3.4'))
+    parser.add_argument('--directory', type=Path, default=Path('build/bootstrap'))
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     directory = args.directory.resolve()

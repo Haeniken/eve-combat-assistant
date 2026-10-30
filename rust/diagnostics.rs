@@ -9,6 +9,7 @@ use std::{
 const LOG_LIMIT: u64 = 20 * 1024 * 1024;
 const SNAPSHOT_LIMIT: u64 = 64 * 1024 * 1024;
 const SNAPSHOT_COUNT: usize = 512;
+static LOG_WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub struct DebugLog {
     directory: PathBuf,
@@ -45,6 +46,10 @@ impl DebugLog {
         self.remember(result);
     }
     fn write_event(&self, event: Value) -> Result<(), String> {
+        let record = json!({"time": chrono::Utc::now().to_rfc3339(), "version": env!("CARGO_PKG_VERSION"), "event": event});
+        let mut bytes = serde_json::to_vec(&record).map_err(|e| e.to_string())?;
+        bytes.push(b'\n');
+        let _guard = LOG_WRITER.lock().map_err(|e| e.to_string())?;
         fs::create_dir_all(&self.directory).map_err(|e| e.to_string())?;
         let path = self.directory.join(format!("{}.jsonl", self.stem));
         if fs::metadata(&path).is_ok_and(|m| m.len() >= LOG_LIMIT) {
@@ -66,13 +71,12 @@ impl DebugLog {
             fs::rename(&path, self.directory.join(format!("{}.1.jsonl", self.stem)))
                 .map_err(|e| e.to_string())?;
         }
-        let record = json!({"time": chrono::Utc::now().to_rfc3339(), "version": env!("CARGO_PKG_VERSION"), "event": event});
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
             .map_err(|e| e.to_string())?;
-        writeln!(file, "{record}").map_err(|e| e.to_string())
+        file.write_all(&bytes).map_err(|e| e.to_string())
     }
     pub fn snapshot(
         &mut self,
@@ -130,6 +134,41 @@ fn prune_snapshots(directory: &Path, max_count: usize, max_bytes: u64) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn independent_workers_write_complete_json_lines() {
+        let dir = std::env::temp_dir().join(trace_id("eve-debug-concurrent"));
+        let workers: Vec<_> = (0..8)
+            .map(|worker| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    let mut log = DebugLog::named(dir, "fits");
+                    for sequence in 0..100 {
+                        log.event(
+                            true,
+                            json!({"worker":worker,"sequence":sequence,"text":"Пилот".repeat(100)}),
+                        );
+                    }
+                    assert!(log.take_error().is_none());
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let lines = fs::read_to_string(dir.join("fits.jsonl")).unwrap();
+        let records: std::collections::HashSet<_> = lines
+            .lines()
+            .map(|line| {
+                let record: Value = serde_json::from_str(line).unwrap();
+                (
+                    record["event"]["worker"].as_u64().unwrap(),
+                    record["event"]["sequence"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(records.len(), 800);
+        fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn disabled_logging_writes_nothing_and_enabled_logging_rotates_and_prunes() {
         let dir = std::env::temp_dir().join(format!("eve-debug-{}", std::process::id()));
