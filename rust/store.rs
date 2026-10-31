@@ -2,10 +2,10 @@
 
 use crate::model::{id, s};
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use std::{
-    io::{Read, Write},
+    io::Read,
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -15,6 +15,7 @@ pub struct Store {
     pub seed_error: Option<String>,
     trace: Option<crate::diagnostics::Trace>,
 }
+
 pub fn timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -23,8 +24,7 @@ pub fn timestamp() -> i64 {
 }
 pub fn compress(v: &Value) -> Result<Vec<u8>, String> {
     let mut z = GzEncoder::new(Vec::new(), Compression::fast());
-    z.write_all(v.to_string().as_bytes())
-        .map_err(|e| e.to_string())?;
+    serde_json::to_writer(&mut z, v).map_err(|e| e.to_string())?;
     z.finish().map_err(|e| e.to_string())
 }
 pub fn decompress(raw: &[u8]) -> Result<Value, String> {
@@ -167,59 +167,77 @@ impl Store {
             .ok()?;
         decompress(&raw).ok()
     }
-    pub fn ingest(&mut self, mails: &[Value]) -> Result<usize, String> {
+    fn ingest_rows<'a>(
+        &mut self,
+        mails: impl IntoIterator<Item = &'a Value>,
+        global: bool,
+    ) -> Result<usize, String> {
         let tx = self.db.transaction().map_err(|e| e.to_string())?;
         let mut count = 0;
-        for m in mails {
-            if id(m, "killmail_id") == 0
-                || id(&m["victim"], "ship_type_id") == 0
-                || s(m, "killmail_time").is_empty()
-            {
-                continue;
-            }
-            let raw = compress(m)?;
-            count += tx
-                .execute(
-                    "INSERT OR IGNORE INTO killmails VALUES(?,?,?,?,?,?,?)",
-                    params![
-                        id(m, "killmail_id"),
-                        id(&m["victim"], "ship_type_id"),
-                        id(&m["victim"], "character_id"),
-                        s(m, "killmail_time"),
-                        id(m, "solar_system_id"),
-                        id(&m["victim"], "corporation_id"),
-                        raw
-                    ],
-                )
-                .map_err(|e| e.to_string())?;
-        }
-        tx.commit().map_err(|e| e.to_string())?;
-        Ok(count)
-    }
-    // Персональные запросы пишут в killmails, но не в global_membership.
-    // Это сохраняет проценты общей выборки во время игры.
-    pub fn ingest_global(&mut self, mails: &[Value]) -> Result<usize, String> {
-        let count = self.ingest(mails)?;
         let mut ships = std::collections::HashSet::new();
-        for mail in mails {
-            let km = id(mail, "killmail_id");
-            if km == 0 {
-                continue;
-            }
-            let changed = self
-                .db
-                .execute("INSERT OR IGNORE INTO global_membership VALUES(?)", [km])
+        {
+            let mut insert = tx
+                .prepare("INSERT OR IGNORE INTO killmails VALUES(?,?,?,?,?,?,?)")
                 .map_err(|e| e.to_string())?;
-            if changed > 0 {
-                ships.insert(id(&mail["victim"], "ship_type_id"));
+            let mut membership = if global {
+                Some(
+                    tx.prepare("INSERT OR IGNORE INTO global_membership VALUES(?)")
+                        .map_err(|e| e.to_string())?,
+                )
+            } else {
+                None
+            };
+            for mail in mails {
+                let km = id(mail, "killmail_id");
+                let ship = id(&mail["victim"], "ship_type_id");
+                if km == 0 || ship == 0 || s(mail, "killmail_time").is_empty() {
+                    continue;
+                }
+                count += insert
+                    .execute(params![
+                        km,
+                        ship,
+                        id(&mail["victim"], "character_id"),
+                        s(mail, "killmail_time"),
+                        id(mail, "solar_system_id"),
+                        id(&mail["victim"], "corporation_id"),
+                        compress(mail)?
+                    ])
+                    .map_err(|e| e.to_string())?;
+                if let Some(membership) = &mut membership
+                    && membership.execute([km]).map_err(|e| e.to_string())? > 0
+                {
+                    ships.insert(ship);
+                }
             }
         }
         for ship in ships {
             let key = format!("global_revision:{ship}");
-            let revision = self.meta(&key).and_then(|v| v.as_i64()).unwrap_or(0) + 1;
-            self.set_meta(&key, &serde_json::json!(revision))?;
+            let previous: Option<String> = tx
+                .query_row("SELECT value FROM meta WHERE key=?", [&key], |r| r.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let revision = previous
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
+                + 1;
+            tx.execute(
+                "INSERT OR REPLACE INTO meta VALUES(?,?)",
+                params![key, revision.to_string()],
+            )
+            .map_err(|e| e.to_string())?;
         }
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(count)
+    }
+    pub fn ingest(&mut self, mails: &[Value]) -> Result<usize, String> {
+        self.ingest_rows(mails, false)
+    }
+    // Персональные запросы пишут в killmails, но не в global_membership.
+    // Это сохраняет проценты общей выборки во время игры.
+    pub fn ingest_global(&mut self, mails: &[Value]) -> Result<usize, String> {
+        self.ingest_rows(mails, true)
     }
     /// Normal archive updates only add records absent from the read-only starter snapshot.
     pub fn ingest_archive(&mut self, mails: &[Value], force: bool) -> Result<usize, String> {
@@ -237,12 +255,12 @@ impl Store {
                     .exists([id(mail, "killmail_id")])
                     .map_err(|error| error.to_string())?
                 {
-                    fresh.push(mail.clone());
+                    fresh.push(mail);
                 }
             }
             fresh
         };
-        self.ingest_global(&fresh)
+        self.ingest_rows(fresh, true)
     }
     pub fn global_mails(&self, ship: i32) -> Result<Vec<Value>, String> {
         let sql = if self.seed.is_some() {
@@ -352,5 +370,35 @@ impl Store {
             )
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn failed_global_import_preserves_mails_membership_and_revision() {
+        let directory =
+            std::env::temp_dir().join(crate::diagnostics::trace_id("eve-global-import-rollback"));
+        let mut store = Store::open_with_seed(&directory, None).unwrap();
+        let mail = |km| {
+            json!({"killmail_id":km,"killmail_time":"2026-10-29T12:00:00Z",
+                "victim":{"ship_type_id":587,"character_id":123}})
+        };
+        store.ingest_global(&[mail(1)]).unwrap();
+        let previous_revision = store.meta("global_revision:587");
+        store.db.execute_batch("CREATE TRIGGER reject_import BEFORE INSERT ON global_membership WHEN NEW.id=3 BEGIN SELECT RAISE(ABORT,'simulated membership failure'); END;").unwrap();
+
+        let error = store.ingest_global(&[mail(2), mail(3)]).unwrap_err();
+        assert!(error.contains("simulated membership failure"));
+        // A failed archive must not become visible as personal or popular fits,
+        // nor advance the revision used to invalidate the population cache.
+        assert_eq!(store.pilot_mails(587, 123).unwrap().len(), 1);
+        assert_eq!(store.local_global_count(587).unwrap(), 1);
+        assert_eq!(store.meta("global_revision:587"), previous_revision);
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

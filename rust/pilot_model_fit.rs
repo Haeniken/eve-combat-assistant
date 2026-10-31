@@ -191,12 +191,14 @@ pub(super) fn train(
     let mut players: Vec<_> = raw.iter().flat_map(|r| [r.winner, r.loser]).collect();
     players.sort_unstable();
     players.dedup();
+    players.shrink_to_fit();
     let mut hulls: Vec<_> = raw
         .iter()
         .flat_map(|r| [r.winner_hull, r.loser_hull])
         .collect();
     hulls.sort_unstable();
     hulls.dedup();
+    hulls.shrink_to_fit();
     let mut pairs: Vec<_> = raw
         .iter()
         .filter(|r| r.winner_hull != r.loser_hull)
@@ -209,6 +211,7 @@ pub(super) fn train(
         .collect();
     pairs.sort_unstable();
     pairs.dedup();
+    pairs.shrink_to_fit();
     let p = players.len();
     let h = hulls.len();
     let dimension = p + h + pairs.len();
