@@ -273,9 +273,10 @@ impl CombatApp {
                 self.pilot_status.clear();
                 self.pilot_error = None;
                 self.pilot_generation = 0;
+                self.workers.cancel_target(self.generation);
             }
             self.workers.trace.job(self.settings.ocr_debug,json!({"generation":self.generation,"parent_generation":parent_generation,"job":"ui","target_ship":target.ship,"pilot":target.pilot})).event("analysis_enqueued",json!({"phase":phase}));
-            let _ = self.workers.compute.send(AnalysisRequest {
+            let _ = self.workers.analyze(AnalysisRequest {
                 generation: self.generation,
                 phase,
                 parent_generation,
@@ -284,10 +285,14 @@ impl CombatApp {
                 target: target.clone(),
                 selected_loss: self.selected_loss.clone(),
             });
+            if phase == AnalysisPhase::Local {
+                self.request_pilot();
+            }
         }
     }
     fn request_pilot(&mut self) {
-        if self.selected_loss.is_some()
+        if self.pilot_generation == self.generation
+            || self.selected_loss.is_some()
             || !(self.settings.auto_pilot_lookup || self.settings.pilot_rating)
             || self.args.demo
         {
@@ -301,8 +306,9 @@ impl CombatApp {
             if self.settings.auto_pilot_lookup {
                 self.pilot_status = "Поиск фита пилота в фоне…".into();
             }
-            self.workers.trace.job(self.settings.ocr_debug,json!({"generation":self.generation,"job":"ui","target_ship":target.ship,"pilot":target.pilot})).event("pilot_enqueued",json!({"after":"local_analysis_displayed"}));
-            let _ = self.workers.network.send(NetworkRequest {
+            self.workers.trace.job(self.settings.ocr_debug,json!({"generation":self.generation,"job":"ui","target_ship":target.ship,"pilot":target.pilot})).event("pilot_enqueued",json!({"with":"local_analysis"}));
+            let _ = self.workers.request_pilot(NetworkRequest {
+                cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 generation: self.generation,
                 queued_at: Instant::now(),
                 settings: self.settings.clone(),
@@ -321,6 +327,7 @@ impl CombatApp {
             self.generation += 1;
             self.target = None;
             self.matchup = None;
+            self.workers.cancel_target(self.generation);
         }
         let _ = self.workers.ocr.send(OcrRequest::Configure(OcrConfig {
             epoch: self.ocr_epoch,
@@ -355,6 +362,7 @@ impl CombatApp {
             angular: 0.,
         };
         let _ = self.workers.update.send(NetworkRequest {
+            cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             generation: self.generation,
             queued_at: Instant::now(),
             settings,
@@ -368,9 +376,7 @@ impl CombatApp {
         let character = self.profile.character_id;
         if character != self.own_rating_character {
             self.own_rating_character = character;
-            self.own_rating = Store::open(&self.directory)
-                .ok()
-                .and_then(|store| crate::pilot::cached_character(&store, character));
+            self.own_rating = None;
             self.own_rating_error = None;
             self.next_own_rating_check = Instant::now();
         }
@@ -380,6 +386,7 @@ impl CombatApp {
         if Instant::now() >= self.next_own_rating_check {
             self.next_own_rating_check = Instant::now() + std::time::Duration::from_secs(3600);
             let result = self.workers.network.send(NetworkRequest {
+                cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 generation: self.generation,
                 queued_at: Instant::now(),
                 settings: self.settings.clone(),
@@ -517,6 +524,7 @@ impl CombatApp {
         self.target = None;
         self.matchup = None;
         self.generation += 1;
+        self.workers.cancel_target(self.generation);
         self.pilot_generation = 0;
         self.pilot_status.clear();
         self.pilot_error = None;
@@ -653,7 +661,14 @@ impl CombatApp {
                 Message::Analyzed(generation, phase, result) => {
                     if generation == self.generation {
                         match result {
-                            Ok(m) => {
+                            Ok(mut m) => {
+                                if let Some(target) = self
+                                    .target
+                                    .as_ref()
+                                    .filter(|t| t.identity() == m.target.identity())
+                                {
+                                    m.target = target.clone();
+                                }
                                 self.status = if self.args.demo {
                                     format!("Демонстрация · {} подходящих фитов", m.pop.total)
                                 } else {
@@ -664,11 +679,40 @@ impl CombatApp {
                                 };
                                 let personal = m.variants.iter().any(|v| v.personal);
                                 self.workers.trace.job(self.settings.ocr_debug,json!({"generation":generation,"job":"ui","target_ship":m.target.ship,"pilot":m.target.pilot})).event("analysis_displayed",json!({"phase":phase,"popular_variants":m.pop.variants.len(),"personal":personal}));
+                                let introduces_personal =
+                                    m.variants.first().is_some_and(|v| v.personal)
+                                        && !self.matchup.as_ref().is_some_and(|previous| {
+                                            previous.variants.iter().any(|v| v.personal)
+                                        });
+                                let selected = if introduces_personal {
+                                    0
+                                } else {
+                                    self.matchup
+                                        .as_ref()
+                                        .filter(|previous| {
+                                            previous.target.identity() == m.target.identity()
+                                        })
+                                        .and_then(|previous| previous.variants.get(self.selected))
+                                        .and_then(|selected| {
+                                            m.variants.iter().position(|v| {
+                                                v.key == selected.key
+                                                    && v.personal == selected.personal
+                                            })
+                                        })
+                                        .unwrap_or(0)
+                                };
+                                if selected >= m.results.len()
+                                    && m.results.len() < m.variants.len()
+                                    && self.matchup.as_ref().is_some_and(|previous| {
+                                        previous.target.identity() == m.target.identity()
+                                            && previous.results.get(self.selected).is_some()
+                                    })
+                                {
+                                    continue;
+                                }
                                 self.matchup = Some(*m);
-                                self.selected = 0;
-                                if phase == AnalysisPhase::Local {
-                                    self.request_pilot();
-                                } else if personal {
+                                self.selected = selected;
+                                if phase != AnalysisPhase::Local && personal {
                                     self.pilot_status = if self.pilot_error.is_some() {
                                         "Фит пилота из кеша; обновление недоступно"
                                     } else {
@@ -2162,6 +2206,99 @@ pub(crate) fn selection_rectangle(
 mod manual_target_tests {
     use super::*;
     use clap::Parser;
+    #[test]
+    fn later_comparisons_keep_live_distance_and_the_selected_variant() {
+        let directory =
+            std::env::temp_dir().join(crate::diagnostics::trace_id("progressive-display"));
+        let context = egui::Context::default();
+        let cc = eframe::CreationContext::_new_kittest(context.clone());
+        let mut app = CombatApp::new(&cc, Args::parse_from(["test"]), directory);
+        let target = Target {
+            ship: "Rifter".into(),
+            pilot: "Test Pilot".into(),
+            distance: Some(2000.),
+            angular: 0.,
+        };
+        let variant = |key: &str| fits::Variant {
+            title: key.into(),
+            key: key.into(),
+            fit: json!({"ship_type_id":587}),
+            count: 1,
+            percent: Some(50.),
+            personal: false,
+            examples: Vec::new(),
+        };
+        let result = Matchup {
+            target: target.clone(),
+            pop: fits::population(&[], &app.catalog, &app.settings),
+            variants: vec![variant("first"), variant("second")],
+            advice: vec![],
+            results: vec![],
+            own: None,
+            hull_statistic: None,
+            failures: vec![],
+            seed: None,
+            seed_error: None,
+        };
+        app.target = Some(Target {
+            distance: Some(4500.),
+            ..target
+        });
+        app.matchup = Some(result.clone());
+        app.selected = 1;
+        app.tx
+            .send(Message::Analyzed(
+                app.generation,
+                AnalysisPhase::Local,
+                Ok(Box::new(result)),
+            ))
+            .unwrap();
+        app.messages(&context);
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.matchup.as_ref().unwrap().target.distance, Some(4500.));
+        let mut personal = app.matchup.as_ref().unwrap().clone();
+        let mut fit = variant("pilot");
+        fit.personal = true;
+        personal.variants.insert(0, fit);
+        app.tx
+            .send(Message::Analyzed(
+                app.generation,
+                AnalysisPhase::CachedPilot,
+                Ok(Box::new(personal)),
+            ))
+            .unwrap();
+        app.messages(&context);
+        assert_eq!(
+            app.selected, 0,
+            "the first recovered personal fit must become active"
+        );
+    }
+    #[test]
+    fn pilot_network_starts_with_local_analysis_without_waiting_for_dogma() {
+        let directory = std::env::temp_dir().join(crate::diagnostics::trace_id("parallel-pilot"));
+        let context = egui::Context::default();
+        let cc = eframe::CreationContext::_new_kittest(context);
+        let mut app = CombatApp::new(&cc, Args::parse_from(["test"]), directory);
+        let (compute, analyses) = mpsc::channel();
+        let (network, pilots) = mpsc::channel();
+        app.workers.compute = compute;
+        app.workers.network = network;
+        app.settings.auto_pilot_lookup = true;
+        app.settings.pilot_rating = true;
+        app.target = Some(Target {
+            ship: "Rifter".into(),
+            pilot: "Test Pilot".into(),
+            distance: None,
+            angular: 0.,
+        });
+        app.recalculate();
+        let local = analyses.try_recv().unwrap();
+        let pilot = pilots
+            .try_recv()
+            .expect("pilot lookup waited for the local dogma result");
+        assert_eq!(local.generation, pilot.generation);
+        assert_eq!(local.target, pilot.target);
+    }
     #[test]
     fn clicking_lookup_loss_selects_exact_fit_and_blocks_old_replies_until_escape() {
         let directory =

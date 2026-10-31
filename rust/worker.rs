@@ -14,9 +14,13 @@ use chrono::Utc;
 use eframe::egui;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::PathBuf,
-    sync::{Arc, atomic::AtomicBool, mpsc},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
     time::Duration,
 };
@@ -73,6 +77,7 @@ pub struct AnalysisRequest {
     pub selected_loss: Option<Variant>,
 }
 pub struct NetworkRequest {
+    pub cancel: Arc<AtomicBool>,
     pub generation: u64,
     pub queued_at: std::time::Instant,
     pub settings: Settings,
@@ -132,6 +137,8 @@ pub struct Workers {
     pub lookup: mpsc::Sender<crate::pilot_lookup::Request>,
     pub ocr: mpsc::Sender<OcrRequest>,
     pub cancel: Arc<AtomicBool>,
+    latest_analysis: Arc<AtomicU64>,
+    pilot_cancel: Arc<AtomicBool>,
 }
 fn emit(event_tx: &mpsc::Sender<Message>, ctx: &egui::Context, message: Message) {
     let _ = event_tx.send(message);
@@ -145,15 +152,26 @@ struct AnalysisCore {
     catalog: Catalog,
     // Ключ включает свой фит/навыки и полный фит противника, но не текущую дистанцию.
     cache: HashMap<String, CachedComparison>,
+    cache_order: VecDeque<String>,
+    own_cache: Option<(String, Value)>,
     trace: crate::diagnostics::Trace,
 }
 impl AnalysisCore {
+    #[cfg(test)]
     fn analyze(&mut self, request: &AnalysisRequest) -> Result<Matchup, String> {
+        self.analyze_with(request, &|| true, &mut |_| {})
+    }
+    fn analyze_with(
+        &mut self,
+        request: &AnalysisRequest,
+        current: &impl Fn() -> bool,
+        publish: &mut impl FnMut(&Matchup),
+    ) -> Result<Matchup, String> {
         let trace=self.trace.job(request.settings.ocr_debug,json!({"correlation":format!("{}-{}",std::process::id(),request.generation),"generation":request.generation,"parent_generation":request.parent_generation,"job":"analysis","phase":request.phase,"target_ship":request.target.ship,"pilot":request.target.pilot}));
         self.store.set_trace(trace.clone());
         let started = std::time::Instant::now();
         trace.event("analysis_start",json!({"queue_ms":request.queued_at.elapsed().as_millis(),"filters":{"days":request.settings.days,"max_attackers":request.settings.max_attackers,"max_variants":request.settings.max_variants,"coverage":request.settings.coverage,"min_percent":request.settings.min_percent,"excluded":request.settings.excluded.len()},"bundled":self.store.seed,"seed_error":self.store.seed_error}));
-        let result = self.analyze_inner(request, &trace);
+        let result = self.analyze_inner(request, &trace, current, publish);
         trace.event("analysis_end",json!({"elapsed_ms":started.elapsed().as_millis(),"error":result.as_ref().err(),"variants":result.as_ref().ok().map(|m|m.variants.len()),"failures":result.as_ref().ok().map(|m|&m.failures)}));
         result
     }
@@ -161,7 +179,12 @@ impl AnalysisCore {
         &mut self,
         request: &AnalysisRequest,
         trace: &crate::diagnostics::Trace,
+        current: &impl Fn() -> bool,
+        publish: &mut impl FnMut(&Matchup),
     ) -> Result<Matchup, String> {
+        if !current() {
+            return Err("Расчёт отменён".into());
+        }
         let target = &request.target;
         let settings = &request.settings;
         let ship = self
@@ -256,8 +279,13 @@ impl AnalysisCore {
             );
         }
         let mut failures = Vec::new();
+        let own_key = settings
+            .own_request(json!(settings.own_fit), true)
+            .to_string();
         let own = if settings.own_fit.trim().is_empty() {
             None
+        } else if let Some((_, own)) = self.own_cache.as_ref().filter(|(key, _)| *key == own_key) {
+            Some(own.clone())
         } else {
             match self
                 .engine
@@ -283,6 +311,7 @@ impl AnalysisCore {
                             }
                         }
                     }
+                    self.own_cache = Some((own_key, own.clone()));
                     Some(own)
                 }
                 Err(error) => {
@@ -341,7 +370,11 @@ impl AnalysisCore {
             ])
             .to_string(),
         );
-        for variant in &out.variants {
+        for index in 0..out.variants.len() {
+            if !current() {
+                return Err("Расчёт отменён".into());
+            }
+            let variant = &out.variants[index];
             let key = format!("{revision}:{}", fits::hash(&variant.fit.to_string()));
             if let Some((advice, result, error)) = self.cache.get(&key) {
                 trace.event(
@@ -352,6 +385,9 @@ impl AnalysisCore {
                 out.results.push(result.clone());
                 if let Some(e) = error {
                     out.failures.push(e.clone());
+                }
+                if index == 0 && out.variants.len() > 1 && current() {
+                    publish(&out);
                 }
                 continue;
             }
@@ -407,9 +443,12 @@ impl AnalysisCore {
                 Err(error) => (None, None, Some(error)),
             };
             trace.event("comparison_ready",json!({"variant_key":variant.key,"personal":variant.personal,"error":error,"elapsed_ms":comparison_started.elapsed().as_millis(),"hull_id":result.as_ref().map(|r|&r["hull"]["id"]),"defense":result.as_ref().map(|r|&r["summary"]["defense"]),"base_defense":result.as_ref().map(|r|&r["base_defense"]),"incoming":result.as_ref().map(|r|&r["incoming"]),"fitted_speed":result.as_ref().map(|r|&r["fitted_speed"]),"own_fitted_speed":out.own.as_ref().map(|r|&r["fitted_speed"]),"weapon_range":result.as_ref().map(|r|&r["weapon_range"]),"neutralizers":result.as_ref().map(|r|&r["neutralizers"]),"warnings":result.as_ref().map(|r|&r["warnings"]),"approximations":result.as_ref().map(|r|&r["approximations"]),"own_approximations":out.own.as_ref().map(|r|&r["approximations"]),"advice":advice}));
-            if self.cache.len() >= 64 {
-                self.cache.clear();
+            if self.cache.len() >= 64
+                && let Some(oldest) = self.cache_order.pop_front()
+            {
+                self.cache.remove(&oldest);
             }
+            self.cache_order.push_back(key.clone());
             self.cache
                 .insert(key, (advice.clone(), result.clone(), error.clone()));
             out.advice.push(advice);
@@ -417,11 +456,36 @@ impl AnalysisCore {
             if let Some(e) = error {
                 out.failures.push(e);
             }
+            if index == 0 && out.variants.len() > 1 && current() {
+                publish(&out);
+            }
+        }
+        if !current() {
+            return Err("Расчёт отменён".into());
         }
         Ok(out)
     }
 }
 impl Workers {
+    pub fn analyze(&self, request: AnalysisRequest) -> Result<(), String> {
+        self.latest_analysis
+            .store(request.generation, Ordering::Relaxed);
+        self.compute
+            .send(request)
+            .map_err(|_| "Поток расчёта недоступен".into())
+    }
+    pub fn cancel_target(&self, generation: u64) {
+        self.latest_analysis.store(generation, Ordering::Relaxed);
+        self.pilot_cancel.store(true, Ordering::Relaxed);
+    }
+    pub fn request_pilot(&mut self, mut request: NetworkRequest) -> Result<(), String> {
+        self.pilot_cancel.store(true, Ordering::Relaxed);
+        self.pilot_cancel = Arc::new(AtomicBool::new(false));
+        request.cancel = self.pilot_cancel.clone();
+        self.network
+            .send(request)
+            .map_err(|_| "Поток сети недоступен".into())
+    }
     pub fn start(
         directory: PathBuf,
         catalog: Catalog,
@@ -436,12 +500,14 @@ impl Workers {
         let (lookup, lookup_rx) = mpsc::channel::<crate::pilot_lookup::Request>();
         let (ocr, ocr_rx) = mpsc::channel::<OcrRequest>();
         let cancel = Arc::new(AtomicBool::new(false));
+        let latest_analysis = Arc::new(AtomicU64::new(0));
         {
             let event_tx = event_tx.clone();
             let ctx = ctx.clone();
             let dir = directory.clone();
             let fit_trace = fit_trace.clone();
             let catalog = catalog.clone();
+            let latest_analysis = latest_analysis.clone();
             thread::spawn(move || {
                 platform::low_priority();
                 let store = match Store::open(&dir) {
@@ -456,6 +522,8 @@ impl Workers {
                     engine: Engine::default(),
                     catalog,
                     cache: HashMap::new(),
+                    cache_order: VecDeque::new(),
+                    own_cache: None,
                     trace: fit_trace,
                 };
                 while let Ok(mut request) = compute_rx.recv() {
@@ -463,7 +531,25 @@ impl Workers {
                     while let Ok(new) = compute_rx.try_recv() {
                         request = new;
                     }
-                    let result = core.analyze(&request);
+                    let current = || {
+                        let latest = latest_analysis.load(Ordering::Relaxed);
+                        latest == 0 || latest == request.generation
+                    };
+                    let mut publish = |matchup: &Matchup| {
+                        emit(
+                            &event_tx,
+                            &ctx,
+                            Message::Analyzed(
+                                request.generation,
+                                request.phase,
+                                Ok(Box::new(matchup.clone())),
+                            ),
+                        );
+                    };
+                    let result = core.analyze_with(&request, &current, &mut publish);
+                    if !current() {
+                        continue;
+                    }
                     emit(
                         &event_tx,
                         &ctx,
@@ -497,7 +583,22 @@ impl Workers {
                     {
                         let mut cached = request.clone();
                         cached.phase = AnalysisPhase::CachedPilot;
-                        let result = core.analyze(&cached);
+                        let result = core.analyze_with(&cached, &current, &mut |matchup| {
+                            if matchup.variants.iter().any(|v| v.personal) {
+                                emit(
+                                    &event_tx,
+                                    &ctx,
+                                    Message::Analyzed(
+                                        cached.generation,
+                                        cached.phase,
+                                        Ok(Box::new(matchup.clone())),
+                                    ),
+                                );
+                            }
+                        });
+                        if !current() {
+                            continue;
+                        }
                         if result
                             .as_ref()
                             .is_ok_and(|m| m.variants.iter().any(|v| v.personal))
@@ -531,6 +632,9 @@ impl Workers {
                 platform::low_priority();
                 let mut pending = None;
                 while let Some(request) = next_network_request(&network_rx, &mut pending) {
+                    if request.cancel.load(Ordering::Relaxed) {
+                        continue;
+                    }
                     let ship = catalog.ship_id(&request.target.ship);
                     if !request.global && request.own_character.is_none() && ship.is_none() {
                         continue;
@@ -554,11 +658,23 @@ impl Workers {
                     let job_cancel = if request.global {
                         cancel.clone()
                     } else {
-                        Arc::new(AtomicBool::new(false))
+                        request.cancel.clone()
                     };
                     let mut source = Sources::new(store, job_cancel, catalog.clone());
                     source.set_trace(trace.clone());
+                    if !request.global {
+                        source.limit_interactive(Duration::from_secs(25));
+                    }
                     if let Some(character) = request.own_character {
+                        if let Some(rating) =
+                            crate::pilot::cached_character(&source.store, character)
+                        {
+                            emit(
+                                &event_tx,
+                                &ctx,
+                                Message::OwnPilotRating(character, Ok(rating)),
+                            );
+                        }
                         let result = source.character_rating(character);
                         trace.event("own_pilot_rating_end", json!({"character_id":character,"rating":result.as_ref().ok(),"error":result.as_ref().err()}));
                         emit(
@@ -633,9 +749,16 @@ impl Workers {
                                 ),
                             );
                         }
-                        if request.settings.auto_pilot_lookup {
-                            let result =
-                                source.sync_pilot(&request.target.pilot, ship.unwrap(), &progress);
+                        if request.settings.auto_pilot_lookup
+                            && !request.cancel.load(Ordering::Relaxed)
+                        {
+                            source.limit_interactive(Duration::from_secs(25));
+                            let result = source.sync_pilot(
+                                &request.target.pilot,
+                                ship.unwrap(),
+                                &request.settings,
+                                &progress,
+                            );
                             trace.event("network_end",json!({"error":result.as_ref().err(),"elapsed_ms":started.elapsed().as_millis()}));
                             emit(
                                 &event_tx,
@@ -1010,6 +1133,8 @@ impl Workers {
             lookup,
             ocr,
             cancel,
+            latest_analysis,
+            pilot_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -1028,6 +1153,7 @@ mod tests {
             (5, false, None),
         ] {
             tx.send(NetworkRequest {
+                cancel: Arc::new(AtomicBool::new(false)),
                 generation,
                 global,
                 solo_model: false,
@@ -1074,6 +1200,8 @@ mod tests {
             engine: Engine::default(),
             catalog,
             cache: HashMap::new(),
+            cache_order: VecDeque::new(),
+            own_cache: None,
             trace: crate::diagnostics::Trace::new(dir.join("debug")),
         };
         let mut request = AnalysisRequest {
@@ -1112,6 +1240,99 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
     #[test]
+    fn first_variant_is_published_before_the_remaining_comparisons() {
+        let dir = std::env::temp_dir().join(crate::diagnostics::trace_id("first-comparison"));
+        let sample =
+            crate::store::decompress(include_bytes!("../resources/sample-rifter.json.gz")).unwrap();
+        let mut store = Store::open_with_seed(&dir, None).unwrap();
+        store.ingest_global(crate::model::array(&sample)).unwrap();
+        drop(store);
+        let (tx, rx) = mpsc::channel();
+        let workers = Workers::start(dir, Catalog::load().unwrap(), tx, egui::Context::default());
+        workers
+            .compute
+            .send(AnalysisRequest {
+                generation: 1,
+                phase: AnalysisPhase::Local,
+                parent_generation: None,
+                selected_loss: None,
+                queued_at: std::time::Instant::now(),
+                settings: Settings {
+                    days: 3650,
+                    max_attackers: 1000,
+                    min_percent: 0.,
+                    coverage: 100.,
+                    max_variants: 3,
+                    own_fit: include_str!("../tests/fixtures/kikimora-ammo.eft").into(),
+                    ..Default::default()
+                },
+                target: Target {
+                    ship: "Rifter".into(),
+                    pilot: String::new(),
+                    distance: None,
+                    angular: 0.,
+                },
+            })
+            .unwrap();
+        loop {
+            if let Message::Analyzed(1, _, result) =
+                rx.recv_timeout(Duration::from_secs(30)).unwrap()
+            {
+                let first = result.unwrap();
+                assert!(first.variants.len() > 1);
+                assert_eq!(
+                    first.results.len(),
+                    1,
+                    "first conclusion waited for all variants"
+                );
+                workers.cancel_target(2);
+                let current = std::cell::Cell::new(true);
+                let mut core = AnalysisCore {
+                    store: Store::open_with_seed(
+                        &std::env::temp_dir()
+                            .join(crate::diagnostics::trace_id("cancel-comparison")),
+                        None,
+                    )
+                    .unwrap(),
+                    engine: Engine::default(),
+                    catalog: Catalog::load().unwrap(),
+                    cache: HashMap::new(),
+                    cache_order: VecDeque::new(),
+                    own_cache: None,
+                    trace: workers.trace.clone(),
+                };
+                core.store
+                    .ingest_global(crate::model::array(&sample))
+                    .unwrap();
+                let request = AnalysisRequest {
+                    generation: 1,
+                    phase: AnalysisPhase::Local,
+                    parent_generation: None,
+                    queued_at: std::time::Instant::now(),
+                    selected_loss: None,
+                    target: first.target.clone(),
+                    settings: Settings {
+                        days: 3650,
+                        max_attackers: 1000,
+                        min_percent: 0.,
+                        coverage: 100.,
+                        max_variants: 3,
+                        ..Default::default()
+                    },
+                };
+                let cancelled =
+                    core.analyze_with(&request, &|| current.get(), &mut |_| current.set(false));
+                assert!(cancelled.is_err());
+                assert_eq!(
+                    core.cache.len(),
+                    1,
+                    "cancelled target kept computing remaining variants"
+                );
+                break;
+            }
+        }
+    }
+    #[test]
     fn distance_change_reuses_population_and_dogma_results() {
         let dir = std::env::temp_dir().join(format!(
             "eve-combat-warm-{}-{}",
@@ -1131,6 +1352,8 @@ mod tests {
             engine: Engine::default(),
             catalog: Catalog::load().unwrap(),
             cache: HashMap::new(),
+            cache_order: VecDeque::new(),
+            own_cache: None,
             trace: crate::diagnostics::Trace::new(dir.join("debug")),
         };
         let mut request = AnalysisRequest {
@@ -1337,6 +1560,8 @@ pub fn diagnose(
         engine: Engine::default(),
         catalog: Catalog::load()?,
         cache: HashMap::new(),
+        cache_order: VecDeque::new(),
+        own_cache: None,
         trace: crate::diagnostics::Trace::new(directory.join("debug")),
     };
     let request = AnalysisRequest {
@@ -1354,8 +1579,12 @@ pub fn diagnose(
         settings,
     };
     let started = std::time::Instant::now();
-    let m = core.analyze(&request)?;
+    let mut first_result_ms = None;
+    let m = core.analyze_with(&request, &|| true, &mut |_| {
+        first_result_ms = Some(started.elapsed().as_millis());
+    })?;
+    let elapsed_ms = started.elapsed().as_millis();
     Ok(
-        json!({"version":env!("CARGO_PKG_VERSION"),"ship":ship,"seed":m.seed,"seed_error":m.seed_error,"report":m.pop.report,"variants":m.variants.iter().enumerate().map(|(i,v)|{let r=m.results.get(i).and_then(Option::as_ref);json!({"title":v.title,"percent":v.percent,"personal":v.personal,"defense":r.map(|r|&r["summary"]["defense"]),"base_defense":r.map(|r|&r["base_defense"]),"incoming":r.map(|r|&r["incoming"]),"fitted_speed":r.map(|r|&r["fitted_speed"]),"weapon_range":r.map(|r|&r["weapon_range"]),"neutralizers":r.map(|r|&r["neutralizers"]),"advice":m.advice.get(i).and_then(Option::as_ref),"comparison_error":r.map(|r|&r["comparison_error"]),"warnings":r.map(|r|&r["warnings"]),"approximations":r.map(|r|&r["approximations"])})}).collect::<Vec<_>>(),"failures":m.failures,"own_evaluated":m.own.is_some(),"own_fitted_speed":m.own.as_ref().map(|r|&r["fitted_speed"]),"advice_count":m.advice.iter().filter(|v|v.is_some()).count(),"elapsed_ms":started.elapsed().as_millis()}),
+        json!({"version":env!("CARGO_PKG_VERSION"),"ship":ship,"seed":m.seed,"seed_error":m.seed_error,"report":m.pop.report,"variants":m.variants.iter().enumerate().map(|(i,v)|{let r=m.results.get(i).and_then(Option::as_ref);json!({"title":v.title,"percent":v.percent,"personal":v.personal,"defense":r.map(|r|&r["summary"]["defense"]),"base_defense":r.map(|r|&r["base_defense"]),"incoming":r.map(|r|&r["incoming"]),"fitted_speed":r.map(|r|&r["fitted_speed"]),"weapon_range":r.map(|r|&r["weapon_range"]),"neutralizers":r.map(|r|&r["neutralizers"]),"advice":m.advice.get(i).and_then(Option::as_ref),"comparison_error":r.map(|r|&r["comparison_error"]),"warnings":r.map(|r|&r["warnings"]),"approximations":r.map(|r|&r["approximations"])})}).collect::<Vec<_>>(),"failures":m.failures,"own_evaluated":m.own.is_some(),"own_fitted_speed":m.own.as_ref().map(|r|&r["fitted_speed"]),"advice_count":m.advice.iter().filter(|v|v.is_some()).count(),"first_result_ms":first_result_ms.unwrap_or(elapsed_ms),"elapsed_ms":elapsed_ms}),
     )
 }

@@ -392,6 +392,7 @@ impl Sources {
                     .header("X-Compatibility-Date", "2026-10-27")
                     .call()
             };
+            self.check()?;
             let mut response = match result {
                 Ok(response) => response,
                 Err(error) => {
@@ -487,6 +488,9 @@ impl Sources {
                     return Err("Источник вернул некорректные данные".into());
                 }
             };
+            let bytes = raw.len();
+            drop(raw);
+            self.check()?;
             if let Some(error) = value.get("error").and_then(Value::as_str) {
                 self.record(
                     "http_error",
@@ -502,7 +506,7 @@ impl Sources {
                     json!({"request_id":request_id,"error":error}),
                 );
             }
-            self.record("http_complete",json!({"request_id":request_id,"attempt":attempt,"status":status,"bytes":raw.len(),"response":shape(&value),"elapsed_ms":started.elapsed().as_millis(),"cached":ttl>0}));
+            self.record("http_complete",json!({"request_id":request_id,"attempt":attempt,"status":status,"bytes":bytes,"response":shape(&value),"elapsed_ms":started.elapsed().as_millis(),"cached":ttl>0}));
             return Ok(value);
         }
         Err("Источник временно недоступен".into())
@@ -951,6 +955,7 @@ impl Sources {
         &mut self,
         name: &str,
         ship: i32,
+        settings: &crate::model::Settings,
         progress: &dyn Fn(String),
     ) -> Result<(), String> {
         if name.trim().is_empty() {
@@ -970,24 +975,49 @@ impl Sources {
             &format!("character:{}", name.to_lowercase()),
             &json!(character),
         )?;
-        let rows = self.request(
+        self.sync_pilot_at(
+            name,
+            character,
+            ship,
+            settings,
             &format!(
                 "https://zkillboard.com/api/losses/characterID/{character}/shipTypeID/{ship}/"
             ),
-            None,
-            3600,
-        )?;
-        let mut mails = Vec::new();
-        for row in array(&rows) {
-            let m = self.complete(row)?;
-            if id(&m["victim"], "character_id") == character
-                && id(&m["victim"], "ship_type_id") == ship as i64
+        )
+    }
+    fn sync_pilot_at(
+        &mut self,
+        name: &str,
+        character: i64,
+        ship: i32,
+        settings: &crate::model::Settings,
+        url: &str,
+    ) -> Result<(), String> {
+        let rows = self.request(url, None, 3600)?;
+        let mut rows: Vec<_> = array(&rows).iter().collect();
+        rows.sort_by_key(|row| std::cmp::Reverse(id(row, "killmail_id")));
+        let mut matching = 0;
+        let mut inserted = 0;
+        let mut found = false;
+        for row in rows {
+            self.check()?;
+            let mail = self.complete(row)?;
+            if id(&mail["victim"], "character_id") == character
+                && id(&mail["victim"], "ship_type_id") == ship as i64
             {
-                mails.push(m);
+                let mails = std::slice::from_ref(&mail);
+                inserted += self.store.ingest(mails)?;
+                matching += 1;
+                if crate::fits::pilot_selection(mails, character, ship, &self.catalog, settings)
+                    .variant
+                    .is_some()
+                {
+                    found = true;
+                    break;
+                }
             }
         }
-        let inserted = self.store.ingest(&mails)?;
-        self.record("pilot_ingested",json!({"pilot":name,"character_id":character,"ship_id":ship,"matching_losses":mails.len(),"inserted":inserted}));
+        self.record("pilot_ingested",json!({"pilot":name,"character_id":character,"ship_id":ship,"matching_losses":matching,"inserted":inserted,"found":found}));
         Ok(())
     }
     pub fn archive(
@@ -1309,6 +1339,94 @@ mod tests {
         let path = std::env::temp_dir().join(crate::diagnostics::trace_id("eve-source-test"));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+    #[test]
+    fn pilot_fit_is_saved_before_an_unavailable_older_loss_is_resolved() {
+        let directory = temp();
+        let newest = json!({"killmail_id":20,"killmail_time":Utc::now().to_rfc3339(),
+            "victim":{"character_id":123,"ship_type_id":587,"items":[{"item_type_id":484,"flag":27,"quantity_destroyed":1}]},
+            "attackers":[{"character_id":456}],"zkb":{"npc":false}});
+        // No hash means the older ESI mail cannot be retrieved; it must never be needed.
+        let older = json!({"killmail_id":10,"zkb":{}});
+        let (url, server) = mock(vec![(200, json!([newest, older]))]);
+        let catalog = crate::engine::Catalog::load().unwrap();
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            catalog,
+        );
+        let settings = crate::model::Settings::default();
+        let result = source.sync_pilot_at("Pilot", 123, 587, &settings, &url);
+        assert_eq!(server.join().unwrap().len(), 1);
+        assert!(
+            result.is_ok(),
+            "a valid newest fit depended on an unavailable older loss: {result:?}"
+        );
+        let mails = source.store.pilot_mails(587, 123).unwrap();
+        assert_eq!(mails.len(), 1);
+        assert_eq!(id(&mails[0], "killmail_id"), 20);
+        assert!(
+            crate::fits::pilot_selection(&mails, 123, 587, &source.catalog, &settings)
+                .variant
+                .is_some()
+        );
+        assert!(source.store.global_mails(587).unwrap().is_empty());
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn pilot_lookup_continues_past_rejected_losses_and_uses_latest_id_order() {
+        let directory = temp();
+        let catalog = crate::engine::Catalog::load().unwrap();
+        let mail = |killmail, module| {
+            json!({"killmail_id":killmail,"killmail_time":Utc::now().to_rfc3339(),
+            "victim":{"character_id":123,"ship_type_id":587,"items":[{"item_type_id":module,"flag":27,"quantity_destroyed":1}]},
+            "attackers":[{"character_id":456}],"zkb":{"npc":false}})
+        };
+        let valid = mail(20, 484);
+        let mut npc = mail(70, 484);
+        npc["zkb"]["npc"] = json!(true);
+        let unknown = mail(60, 0);
+        let excluded = mail(50, 2889);
+        let mut settings = crate::model::Settings::default();
+        settings.excluded.push(crate::fits::fingerprint(
+            &crate::fits::normalize(&excluded, &catalog).unwrap(),
+        ));
+        let mut expired = mail(40, 484);
+        expired["killmail_time"] =
+            json!((Utc::now() - TimeDelta::days(i64::from(settings.pilot_days) + 1)).to_rfc3339());
+        let mut wrong_hull = mail(30, 484);
+        wrong_hull["victim"]["ship_type_id"] = json!(603);
+        let older = json!({"killmail_id":10,"zkb":{}});
+        // Input order must not determine which complete loss is selected.
+        let (url, server) = mock(vec![(
+            200,
+            json!([valid, older, excluded, npc, wrong_hull, expired, unknown]),
+        )]);
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            catalog,
+        );
+        let result = source.sync_pilot_at("Pilot", 123, 587, &settings, &url);
+        assert_eq!(server.join().unwrap().len(), 1);
+        assert!(
+            result.is_ok(),
+            "a rejected newer loss stopped the lookup: {result:?}"
+        );
+        let mails = source.store.pilot_mails(587, 123).unwrap();
+        assert_eq!(
+            mails.len(),
+            5,
+            "completed matching losses were not saved incrementally"
+        );
+        let selected = crate::fits::pilot_selection(&mails, 123, 587, &source.catalog, &settings)
+            .variant
+            .unwrap();
+        assert_eq!(id(&selected.fit["modules"][0], "type_id"), 484);
+        assert!(source.store.global_mails(587).unwrap().is_empty());
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn recent_activity_is_cached_for_an_hour_and_failure_keeps_confirmed_timestamp() {
@@ -1662,6 +1780,86 @@ mod tests {
                 .contains("Время поиска")
         );
         assert_eq!(server.join().unwrap().len(), 1);
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn cancellation_at_download_completion_does_not_cache_or_publish_success() {
+        let directory = temp();
+        let (base, server) = mock(vec![(200, json!({"download":"complete"}))]);
+        let url = format!("{base}/raw/cancelled");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            cancel.clone(),
+            crate::engine::Catalog::load().unwrap(),
+        );
+        source.set_trace(
+            crate::diagnostics::Trace::new(directory.join("debug")).job(true, json!({})),
+        );
+        // The first callback is a body chunk, the second is final download progress.
+        let callback_cancel = cancel.clone();
+        let progress_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback_calls = progress_calls.clone();
+        source.set_update_progress(move |_| {
+            if callback_calls.fetch_add(1, Ordering::Relaxed) > 0 {
+                callback_cancel.store(true, Ordering::Relaxed);
+            }
+        });
+        let result = source.request(&url, None, 3600);
+        assert!(
+            result.is_err(),
+            "cancelled download published a successful result"
+        );
+        assert!(
+            source.store.cached(&url).is_none(),
+            "cancelled response entered the success cache"
+        );
+        assert!(
+            source
+                .request(&format!("{base}/later"), None, 3600)
+                .is_err()
+        );
+        assert_eq!(server.join().unwrap().len(), 1);
+        assert_eq!(progress_calls.load(Ordering::Relaxed), 2);
+        let log = std::fs::read_to_string(directory.join("debug/fits.jsonl")).unwrap();
+        assert!(!log.contains("http_complete"));
+        drop(source);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn cancellation_while_waiting_for_headers_takes_precedence_over_http_status() {
+        let directory = temp();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/cancelled", listener.local_addr().unwrap());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let server_cancel = cancel.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = [0; 4096];
+            assert!(stream.read(&mut bytes).unwrap() > 0);
+            server_cancel.store(true, Ordering::Relaxed);
+            write!(
+                stream,
+                "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+        });
+        let mut source = Sources::new(
+            Store::open_with_seed(&directory, None).unwrap(),
+            cancel,
+            crate::engine::Catalog::load().unwrap(),
+        );
+        let error = source.request(&url, None, 3600).unwrap_err();
+        server.join().unwrap();
+        assert!(
+            error.contains("остановлено"),
+            "cancelled request returned {error}"
+        );
+        assert!(source.store.cached(&url).is_none());
         drop(source);
         std::fs::remove_dir_all(directory).unwrap();
     }
