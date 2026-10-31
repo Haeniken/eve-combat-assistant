@@ -107,7 +107,7 @@ struct Weapon {
 }
 #[derive(Clone)]
 pub struct Profile {
-    result: Value,
+    defense: [DefenseLayer; 3],
     weapons: Vec<Weapon>,
     speed: f64,
     base_speed: f64,
@@ -122,11 +122,49 @@ pub struct Profile {
     neut_rate: f64,
     cap_peak: f64,
 }
+#[derive(Clone, Copy)]
+struct DefenseLayer {
+    hp: f64,
+    resonance: [f64; 4],
+}
 impl Profile {
     pub fn new(result: &Value) -> Self {
         let hull = &result["hull"]["attributes"];
         let mut profile = Self {
-            result: result.clone(),
+            defense: [
+                (
+                    "shieldCapacity",
+                    [
+                        "shieldEmDamageResonance",
+                        "shieldThermalDamageResonance",
+                        "shieldKineticDamageResonance",
+                        "shieldExplosiveDamageResonance",
+                    ],
+                ),
+                (
+                    "armorHP",
+                    [
+                        "armorEmDamageResonance",
+                        "armorThermalDamageResonance",
+                        "armorKineticDamageResonance",
+                        "armorExplosiveDamageResonance",
+                    ],
+                ),
+                (
+                    "hp",
+                    [
+                        "emDamageResonance",
+                        "thermalDamageResonance",
+                        "kineticDamageResonance",
+                        "explosiveDamageResonance",
+                    ],
+                ),
+            ]
+            .map(|(hp, attributes)| DefenseLayer {
+                hp: n(hull, hp),
+                resonance: attributes
+                    .map(|key| hull.get(key).and_then(Value::as_f64).unwrap_or(1.)),
+            }),
             weapons: Vec::new(),
             speed: n(hull, "maxVelocity"),
             base_speed: n(hull, "maxVelocity"),
@@ -249,27 +287,13 @@ impl Profile {
         if total <= 0. {
             return f64::INFINITY;
         }
-        let a = &self.result["hull"]["attributes"];
         let mut ehp = 0.;
-        for (prefix, hp) in [
-            ("shield", "shieldCapacity"),
-            ("armor", "armorHP"),
-            ("", "hp"),
-        ] {
+        for layer in self.defense {
             let mut resonance = 0.;
-            for (i, (_, _, suffix)) in DAMAGE.iter().enumerate() {
-                let key = if prefix.is_empty() {
-                    format!(
-                        "{}{}DamageResonance",
-                        suffix[..1].to_lowercase(),
-                        &suffix[1..]
-                    )
-                } else {
-                    format!("{prefix}{suffix}DamageResonance")
-                };
-                resonance += damage[i] / total * a.get(&key).and_then(Value::as_f64).unwrap_or(1.);
+            for (damage, multiplier) in damage.iter().zip(layer.resonance) {
+                resonance += damage / total * multiplier;
             }
-            ehp += n(a, hp) / resonance.max(0.01);
+            ehp += layer.hp / resonance.max(0.01);
         }
         ehp.max(1.)
     }
@@ -519,9 +543,12 @@ pub fn advise(
 ) -> Result<Advice, String> {
     let mut own_profile = Profile::new(own);
     let mut enemy_profile = Profile::new(enemy);
-    for (profile, own_pilot) in [(&mut own_profile, true), (&mut enemy_profile, false)] {
+    for (profile, source, own_pilot) in [
+        (&mut own_profile, own, true),
+        (&mut enemy_profile, enemy, false),
+    ] {
         if profile.mwd {
-            let mut fit = profile.result["fit"].clone();
+            let mut fit = source["fit"].clone();
             for module in fit["modules"].as_array_mut().unwrap() {
                 if catalog
                     .name(id(module, "type_id") as i32)
@@ -787,3 +814,25 @@ pub fn advise(
     })
 }
 use std::collections::HashSet;
+
+#[cfg(test)]
+mod profile_regressions {
+    use super::*;
+
+    #[test]
+    fn ehp_keeps_layer_resonances_defaults_and_damage_normalization() {
+        let result = json!({"hull":{"attributes":{
+            "shieldCapacity":100.,"armorHP":200.,"hp":300.,
+            "shieldEmDamageResonance":0.5,"shieldThermalDamageResonance":0.25,
+            "armorEmDamageResonance":0.25,"armorThermalDamageResonance":0.5,
+            "emDamageResonance":1.,"thermalDamageResonance":0.5
+        }}});
+        let profile = Profile::new(&result);
+        assert_eq!(profile.ehp(&[1., 0., 0., 0.]), 1300.);
+        assert_eq!(profile.ehp(&[0., 1., 0., 0.]), 1400.);
+        assert!((profile.ehp(&[1., 1., 0., 0.]) - 1200.).abs() < 1e-9);
+        assert_eq!(profile.ehp(&[0., 0., 1., 0.]), 600.);
+        assert_eq!(profile.ehp(&[0.; 4]), f64::INFINITY);
+        assert_eq!(Profile::new(&json!({})).ehp(&[1., 0., 0., 0.]), 1.);
+    }
+}

@@ -1,6 +1,6 @@
 //! Характеристики фитов через EVEShipFit. Справочники встроены в EXE.
-use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{HashMap, VecDeque};
 use std::io::Read;
 use std::sync::{Arc, OnceLock};
 
@@ -457,6 +457,7 @@ impl Catalog {
 #[derive(Default)]
 pub struct Engine {
     cache: HashMap<String, Value>,
+    cache_order: VecDeque<String>,
     #[cfg(test)]
     pub calculations: usize,
 }
@@ -466,16 +467,19 @@ impl Engine {
         if let Some(v) = self.cache.get(&key) {
             return Ok(v.clone());
         }
-        let req: Request = serde_json::from_value(request.clone()).map_err(|e| e.to_string())?;
+        let req: Request = serde_json::from_value(request).map_err(|e| e.to_string())?;
         #[cfg(test)]
         {
             self.calculations += 1;
         }
         let result = std::panic::catch_unwind(|| run(req))
             .unwrap_or_else(|_| Err("Не удалось рассчитать фит".into()))?;
-        if self.cache.len() > 256 {
-            self.cache.clear();
+        if self.cache.len() >= 256
+            && let Some(oldest) = self.cache_order.pop_front()
+        {
+            self.cache.remove(&oldest);
         }
+        self.cache_order.push_back(key.clone());
         self.cache.insert(key, result.clone());
         Ok(result)
     }
@@ -484,6 +488,34 @@ impl Engine {
 #[cfg(test)]
 mod resistance_regressions {
     use super::*;
+    #[test]
+    fn cache_overflow_preserves_recent_fits_instead_of_recalculating_them() {
+        let mut engine = Engine::default();
+        let request =
+            |index| json!({"raw_fit":format!("[Rifter, Cached fit {index}]"),"skill_level":0});
+        for index in 0..258 {
+            engine.evaluate(request(index)).unwrap();
+        }
+        let calculations = engine.calculations;
+        let recent = engine.evaluate(request(256)).unwrap();
+        assert_eq!(crate::model::s(&recent["hull"], "name"), "Rifter");
+        assert_eq!(
+            engine.calculations, calculations,
+            "overflow discarded a recent fit"
+        );
+        engine.evaluate(request(1)).unwrap();
+        assert_eq!(
+            engine.calculations,
+            calculations + 1,
+            "cache exceeded its fit budget"
+        );
+        engine.evaluate(request(0)).unwrap();
+        assert_eq!(
+            engine.calculations,
+            calculations + 2,
+            "oldest fit was not evicted"
+        );
+    }
     fn fixture(raw: &str) -> Value {
         Engine::default()
             .evaluate(serde_json::from_str(raw).unwrap())
